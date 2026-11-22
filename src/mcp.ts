@@ -2,9 +2,18 @@ import { randomBytes } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  MCP_ADAPTER_BY_ID,
+  MCP_ADAPTERS,
+  normalizeAntigravityComparable,
+  normalizeClaudeComparable,
+  type McpAdapterDef,
+} from "./adapters.ts";
+import {
   atomicWriteDurable,
   captureFileSnapshot,
   isPlainObject,
+  parseJsonFile,
+  predictNewEntryOwner,
   sha256Hex,
   snapshotsEqual,
   stableJson,
@@ -15,7 +24,7 @@ import {
   saveOwnershipState,
   writeJournal,
 } from "./state.ts";
-import { normalizeCodexComparable, rewriteCodexToml } from "./toml-edit.ts";
+import { rewriteCodexToml } from "./toml-edit.ts";
 import {
   ALL_AGENTS,
   type AgentId,
@@ -32,6 +41,8 @@ import {
   type StateDelta,
   type TargetSnapshot,
 } from "./types.ts";
+
+export { normalizeAntigravityComparable, normalizeClaudeComparable };
 
 const SERVER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
@@ -54,6 +65,22 @@ export type PlannedMcpTarget = {
 };
 
 type TransportFamily = "stdio" | "remote" | null;
+
+type TargetPlanCtx = {
+  adapter: McpAdapterDef;
+  configPath: string;
+  existingMap: Record<string, unknown>;
+  codexUpdates: Map<string, Record<string, unknown> | null>;
+  nextAgentMcp: Record<string, ManagedMcpRecord>;
+  nextResolvedLegacySet: Set<string>;
+  ops: PlannedOp[];
+  changeSummaries: string[];
+  targetMutation: boolean;
+  ledgerMutation: boolean;
+  basisUsed: OwnershipBasis | "managed";
+  now: string;
+  opts: { adopt: boolean; force: boolean };
+};
 
 function detectFamily(spec: McpServerSpec): TransportFamily {
   const hasStdio =
@@ -161,12 +188,6 @@ export function parseSpecSnippet(raw: unknown, sourceLabel: string): McpServerSp
   return spec;
 }
 
-/**
- * Merge a per-agent override onto a base spec with deterministic transport-family switching:
- * - Switching remote -> stdio clears inherited url/headers and sets transport to "stdio".
- * - Switching stdio -> remote clears inherited command/args/env and uses override's transport/url/headers.
- * - Staying within the same family shallow-merges scalars and merges sorted env/headers maps.
- */
 export function mergeSpec(
   base: McpServerSpec,
   override: McpServerSpec | undefined,
@@ -177,7 +198,6 @@ export function mergeSpec(
   const baseFamily = detectFamily(base);
   const ovFamily = detectFamily(override);
 
-  // Explicit transport-family switch clears opposite-family inherited fields.
   const isFamilySwitch =
     baseFamily !== null &&
     ovFamily !== null &&
@@ -232,11 +252,6 @@ export function mergeSpec(
   return merged;
 }
 
-/**
- * Compile a resolved per-agent spec using disabled-first precedence:
- * 1. If `spec.disabled === true`, omit (`null`) across ALL adapters before validating active transport.
- * 2. Otherwise validate explicit transport and adapter transport capabilities.
- */
 export function compileAgentEntry(
   agent: AgentId,
   serverName: string,
@@ -283,59 +298,7 @@ export function compileAgentEntry(
     );
   }
 
-  if (agent === "claude") {
-    if (transport === "stdio") {
-      const out: Record<string, unknown> = {
-        type: "stdio",
-        command: spec.command,
-        args: spec.args ?? [],
-      };
-      if (spec.env && Object.keys(spec.env).length > 0) out.env = spec.env;
-      return out;
-    }
-    const out: Record<string, unknown> = {
-      type: transport, // "http" or "sse"
-      url: spec.url,
-    };
-    if (spec.headers && Object.keys(spec.headers).length > 0) out.headers = spec.headers;
-    return out;
-  }
-
-  if (agent === "codex") {
-    if (transport === "sse") {
-      throw new Error(
-        `${sourceLabel}: Codex does not support SSE transport for MCP "${serverName}" (set overrides.codex.disabled = true or override codex to http/stdio)`,
-      );
-    }
-    const out: Record<string, unknown> = {};
-    if (transport === "stdio") {
-      out.command = spec.command;
-      if (spec.args && spec.args.length > 0) out.args = spec.args;
-      if (spec.env && Object.keys(spec.env).length > 0) out.env = spec.env;
-    } else {
-      out.url = spec.url;
-      if (spec.headers && Object.keys(spec.headers).length > 0) out.http_headers = spec.headers;
-    }
-    return out;
-  }
-
-  // agent === "antigravity"
-  if (transport === "sse") {
-    throw new Error(
-      `${sourceLabel}: Antigravity does not support SSE transport for MCP "${serverName}" (set overrides.antigravity.disabled = true or override antigravity to http/stdio)`,
-    );
-  }
-  const out: Record<string, unknown> = {};
-  if (transport === "stdio") {
-    out.command = spec.command;
-    if (spec.args && spec.args.length > 0) out.args = spec.args;
-    if (spec.env && Object.keys(spec.env).length > 0) out.env = spec.env;
-  } else {
-    out.serverUrl = spec.url;
-    if (spec.headers && Object.keys(spec.headers).length > 0) out.headers = spec.headers;
-  }
-  out.disabled = false;
-  return out;
+  return MCP_ADAPTER_BY_ID[agent].compile(transport, spec, serverName, sourceLabel);
 }
 
 export function loadCanonicalServers(canonicalHubPath: string): CompiledServerMap {
@@ -356,7 +319,6 @@ export function loadCanonicalServers(canonicalHubPath: string): CompiledServerMa
     const basePath = join(serverDir, "mcp.json");
     if (!existsSync(basePath)) continue;
 
-    // Detect legacy "gemini/" override subdirectory explicitly.
     const legacyGeminiSub = join(serverDir, "gemini", "mcp.json");
     if (existsSync(legacyGeminiSub)) {
       throw new Error(
@@ -364,7 +326,7 @@ export function loadCanonicalServers(canonicalHubPath: string): CompiledServerMa
       );
     }
 
-    const rawDoc = JSON.parse(readFileSync(basePath, "utf8")) as RawMcpDocument;
+    const rawDoc = parseJsonFile(basePath) as RawMcpDocument;
     const baseSpec = parseSpecSnippet(rawDoc, basePath);
 
     if (rawDoc.overrides !== undefined) {
@@ -400,7 +362,7 @@ export function loadCanonicalServers(canonicalHubPath: string): CompiledServerMa
 
       const subPath = join(serverDir, agent, "mcp.json");
       if (existsSync(subPath)) {
-        const subRaw = JSON.parse(readFileSync(subPath, "utf8"));
+        const subRaw = parseJsonFile(subPath);
         const subOv = parseSpecSnippet(subRaw, subPath);
         resolved = mergeSpec(resolved, subOv, subPath);
       }
@@ -414,78 +376,19 @@ export function loadCanonicalServers(canonicalHubPath: string): CompiledServerMa
   return result;
 }
 
-export function normalizeAntigravityComparable(entry: unknown): Record<string, unknown> {
-  if (!isPlainObject(entry)) return {};
-  const copy: Record<string, unknown> = { ...entry };
-  if (typeof copy.url === "string" && copy.serverUrl === undefined) {
-    copy.serverUrl = copy.url;
-    delete copy.url;
-  }
-  copy.disabled = Boolean(copy.disabled);
-  if (Array.isArray(copy.args) && copy.args.length === 0) delete copy.args;
-  if (isPlainObject(copy.env) && Object.keys(copy.env).length === 0) delete copy.env;
-  if (isPlainObject(copy.headers) && Object.keys(copy.headers).length === 0) delete copy.headers;
-  return copy;
-}
-
-export function normalizeClaudeComparable(entry: unknown): Record<string, unknown> {
-  if (!isPlainObject(entry)) return {};
-  const copy: Record<string, unknown> = { ...entry };
-  if (copy.command && !copy.type) copy.type = "stdio";
-  if (copy.type === "stdio" && copy.args === undefined) copy.args = [];
-  if (isPlainObject(copy.env) && Object.keys(copy.env).length === 0) delete copy.env;
-  if (isPlainObject(copy.headers) && Object.keys(copy.headers).length === 0) delete copy.headers;
-  return copy;
-}
-
-function normalizeComparable(agent: AgentId, entry: unknown): Record<string, unknown> {
-  if (agent === "antigravity") return normalizeAntigravityComparable(entry);
-  if (agent === "claude") return normalizeClaudeComparable(entry);
-  return normalizeCodexComparable(entry);
-}
-
-function predictNewFileOwner(parentDir: string): { uid: number; gid: number } {
-  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
-  const procGid = typeof process.getgid === "function" ? process.getgid() : 0;
-  try {
-    let cursor = parentDir;
-    while (!existsSync(cursor)) {
-      const next = dirname(cursor);
-      if (next === cursor) return { uid, gid: procGid };
-      cursor = next;
-    }
-    const st = statSync(cursor);
-    if (process.platform === "darwin" || (st.mode & 0o2000) !== 0) {
-      return { uid, gid: st.gid };
-    }
-  } catch {
-    // ignore
-  }
-  return { uid, gid: procGid };
-}
-
-export function planMcpSync(
-  canonicalHubPath: string,
-  homeDir: string,
-  state: OwnershipStateV2,
+function validateDisownRequests(
+  disownLegacy: Array<{ agent: AgentId; name: string }>,
   legacyV1: LegacyManifestV1 | null,
-  opts: {
-    adopt: boolean;
-    force: boolean;
-    disownLegacy: Array<{ agent: AgentId; name: string }>;
-  },
-): { targets: PlannedMcpTarget[]; globalOps: PlannedOp[] } {
+  servers: CompiledServerMap,
+): { disownByAgent: Record<AgentId, Set<string>>; globalOps: PlannedOp[] } {
   const globalOps: PlannedOp[] = [];
-  const servers = loadCanonicalServers(canonicalHubPath);
-  const now = new Date().toISOString();
-
-  // Validate --disown-legacy requests upfront.
   const disownByAgent: Record<AgentId, Set<string>> = {
     antigravity: new Set(),
     claude: new Set(),
     codex: new Set(),
   };
-  for (const req of opts.disownLegacy) {
+
+  for (const req of disownLegacy) {
     const inLegacy = legacyV1?.managed[req.agent].has(req.name) ?? false;
     if (!inLegacy) {
       globalOps.push({
@@ -522,671 +425,727 @@ export function planMcpSync(
     disownByAgent[req.agent].add(req.name);
   }
 
-  const targetSpecs: Array<{
-    agent: AgentId;
-    rootDir: string;
-    configPath: string;
-    defaultMode: number;
-  }> = [
-    {
-      agent: "antigravity",
-      rootDir: join(homeDir, ".gemini", "config"),
-      configPath: join(homeDir, ".gemini", "config", "mcp_config.json"),
-      defaultMode: 0o644,
-    },
-    {
-      agent: "claude",
-      rootDir: join(homeDir, ".claude"),
-      configPath: join(homeDir, ".claude.json"),
-      defaultMode: 0o600,
-    },
-    {
-      agent: "codex",
-      rootDir: join(homeDir, ".codex"),
-      configPath: join(homeDir, ".codex", "config.toml"),
-      defaultMode: 0o600,
-    },
-  ];
+  return { disownByAgent, globalOps };
+}
+
+function planDisabledServerOp(
+  ctx: TargetPlanCtx,
+  name: string,
+  hasExisting: boolean,
+  existingDigest: string | null,
+  managedRec: ManagedMcpRecord | undefined,
+  isLegacy: boolean,
+): void {
+  const { adapter, configPath } = ctx;
+  const agent = adapter.id;
+
+  if (!hasExisting) {
+    if (managedRec) {
+      ctx.ledgerMutation = true;
+      ctx.changeSummaries.push(`drop absent MCP record ${name}`);
+      ctx.ops.push({
+        domain: "mcp",
+        action: "drop-absent-mcp",
+        status: "change",
+        destination: `${configPath}#${name}`,
+        observed: "absent in target config (stale managed record in ledger)",
+        intended: "remove absent record from ownership ledger",
+        ownershipBasis: managedRec.basis,
+        reason: `MCP "${name}" is disabled and already absent from ${configPath}`,
+        targetMutation: false,
+        ledgerMutation: true,
+      });
+    } else if (isLegacy) {
+      ctx.nextResolvedLegacySet.add(name);
+      ctx.ledgerMutation = true;
+      ctx.changeSummaries.push(`retire absent legacy v1 claim ${name}`);
+      ctx.ops.push({
+        domain: "mcp",
+        action: "retire-legacy-absent",
+        status: "change",
+        destination: `${configPath}#${name}`,
+        observed: "absent in target config (unverified legacy v1 claim)",
+        intended: "record legacy v1 claim as resolved in ownership ledger",
+        ownershipBasis: "legacy-v1-unverified",
+        reason: `legacy v1 MCP "${name}" is disabled and already absent from ${configPath}`,
+        targetMutation: false,
+        ledgerMutation: true,
+      });
+    } else {
+      ctx.ops.push({
+        domain: "mcp",
+        action: "keep",
+        status: "ok",
+        destination: `${configPath}#${name}`,
+        observed: "absent",
+        intended: "omitted (disabled)",
+        ownershipBasis: "none",
+        reason: `MCP "${name}" is disabled and absent; no ownership recorded`,
+        targetMutation: false,
+        ledgerMutation: false,
+      });
+    }
+    return;
+  }
+
+  if (managedRec) {
+    if (existingDigest === managedRec.digest || ctx.opts.force) {
+      delete ctx.existingMap[name];
+      if (adapter.format === "toml") ctx.codexUpdates.set(name, null);
+      ctx.targetMutation = true;
+      ctx.ledgerMutation = true;
+      ctx.basisUsed =
+        ctx.opts.force && existingDigest !== managedRec.digest ? "forced" : "managed";
+      ctx.changeSummaries.push(`remove disabled MCP ${name}`);
+      ctx.ops.push({
+        domain: "mcp",
+        action: "mcp-remove",
+        status: "change",
+        destination: `${configPath}#${name}`,
+        observed:
+          existingDigest === managedRec.digest
+            ? "managed entry matches recorded digest"
+            : "managed entry externally modified (overridden by --force)",
+        intended: "remove disabled MCP entry and drop ownership record",
+        ownershipBasis: ctx.basisUsed,
+        reason: `MCP "${name}" is disabled in canonical config`,
+        targetMutation: true,
+        ledgerMutation: true,
+      });
+    } else {
+      ctx.nextAgentMcp[name] = managedRec;
+      ctx.ops.push({
+        domain: "mcp",
+        action: "conflict",
+        status: "conflict",
+        destination: `${configPath}#${name}`,
+        observed: "managed entry was externally modified since last sync",
+        intended: "remove disabled MCP entry",
+        ownershipBasis: "managed-externally-modified",
+        reason: `MCP "${name}" in ${configPath} was modified outside sync-agents; refusing to delete disabled entry`,
+        nextStep: "Inspect local changes or re-run with --force to delete",
+        targetMutation: false,
+        ledgerMutation: false,
+      });
+    }
+    return;
+  }
+
+  if (isLegacy) {
+    if (ctx.opts.force) {
+      delete ctx.existingMap[name];
+      if (adapter.format === "toml") ctx.codexUpdates.set(name, null);
+      ctx.nextResolvedLegacySet.add(name);
+      ctx.targetMutation = true;
+      ctx.ledgerMutation = true;
+      ctx.basisUsed = "forced";
+      ctx.changeSummaries.push(`remove legacy-claimed disabled MCP ${name}`);
+      ctx.ops.push({
+        domain: "mcp",
+        action: "mcp-remove-legacy",
+        status: "change",
+        destination: `${configPath}#${name}`,
+        observed: "existing entry with unverified legacy v1 claim",
+        intended: "delete entry and retire legacy v1 claim (no phantom ownership)",
+        ownershipBasis: "forced",
+        reason: `explicit --force authorized deleting legacy-claimed disabled MCP "${name}"`,
+        targetMutation: true,
+        ledgerMutation: true,
+      });
+    } else {
+      ctx.ops.push({
+        domain: "mcp",
+        action: "conflict",
+        status: "conflict",
+        destination: `${configPath}#${name}`,
+        observed: "existing entry listed only in legacy v1 .mcp-managed.json (unverified provenance)",
+        intended: "omitted (disabled)",
+        ownershipBasis: "legacy-v1-unverified",
+        reason: `MCP "${name}" is disabled in canonical config, but ${configPath} has an existing entry with unverified legacy v1 provenance`,
+        nextStep: `Re-run with --force to delete it, or remove/rename <hub>/mcp/${name} and run --disown-legacy ${agent}:${name} to retain it unowned`,
+        targetMutation: false,
+        ledgerMutation: false,
+      });
+    }
+    return;
+  }
+
+  // Unmanaged collision on disabled canonical MCP: NEVER acquire ownership!
+  if (ctx.opts.force) {
+    delete ctx.existingMap[name];
+    if (adapter.format === "toml") ctx.codexUpdates.set(name, null);
+    ctx.targetMutation = true;
+    ctx.basisUsed = "forced";
+    ctx.changeSummaries.push(`force-remove unmanaged disabled MCP ${name}`);
+    ctx.ops.push({
+      domain: "mcp",
+      action: "mcp-remove-unmanaged",
+      status: "change",
+      destination: `${configPath}#${name}`,
+      observed: "unmanaged personal entry",
+      intended: "delete entry (ledger-neutral; no ownership recorded)",
+      ownershipBasis: "forced",
+      reason: `explicit --force authorized deleting unmanaged entry colliding with disabled MCP "${name}"`,
+      targetMutation: true,
+      ledgerMutation: false,
+    });
+  } else {
+    ctx.ops.push({
+      domain: "mcp",
+      action: "conflict",
+      status: "conflict",
+      destination: `${configPath}#${name}`,
+      observed: "unmanaged personal entry exists in target config",
+      intended: "omitted (disabled in canonical config)",
+      ownershipBasis: "unmanaged",
+      reason: `MCP "${name}" is disabled in canonical config, but an unmanaged entry exists in ${configPath}; preserving it`,
+      nextStep: "Remove it manually, rename the canonical server, or re-run with --force to delete",
+      targetMutation: false,
+      ledgerMutation: false,
+    });
+  }
+}
+
+function planEnabledServerOp(
+  ctx: TargetPlanCtx,
+  name: string,
+  desired: Record<string, unknown>,
+  hasExisting: boolean,
+  existingDigest: string | null,
+  managedRec: ManagedMcpRecord | undefined,
+  isLegacy: boolean,
+): void {
+  const { adapter, configPath } = ctx;
+  const desiredDigest = sha256Hex(stableJson(desired));
+
+  if (!hasExisting) {
+    ctx.existingMap[name] = desired;
+    if (adapter.format === "toml") ctx.codexUpdates.set(name, desired);
+    ctx.nextAgentMcp[name] = {
+      configPath,
+      digest: desiredDigest,
+      basis: "created",
+      updatedAt: ctx.now,
+    };
+    if (isLegacy) ctx.nextResolvedLegacySet.add(name);
+    ctx.targetMutation = true;
+    ctx.ledgerMutation = true;
+    if (ctx.basisUsed === "managed") ctx.basisUsed = "created";
+    ctx.changeSummaries.push(`add MCP ${name}`);
+    ctx.ops.push({
+      domain: "mcp",
+      action: "mcp-add",
+      status: "change",
+      destination: `${configPath}#${name}`,
+      observed: isLegacy ? "absent (legacy v1 claim)" : "absent",
+      intended: `add MCP "${name}" to ${configPath}`,
+      ownershipBasis: "created",
+      reason: `MCP "${name}" is absent from ${configPath}`,
+      targetMutation: true,
+      ledgerMutation: true,
+    });
+    return;
+  }
+
+  if (managedRec) {
+    const matchesDesired = existingDigest === desiredDigest;
+    const matchesRecorded = existingDigest === managedRec.digest;
+
+    if (matchesDesired && matchesRecorded) {
+      ctx.nextAgentMcp[name] = managedRec;
+      ctx.ops.push({
+        domain: "mcp",
+        action: "keep",
+        status: "ok",
+        destination: `${configPath}#${name}`,
+        observed: "managed entry matches canonical spec and recorded digest",
+        intended: `MCP "${name}" in ${configPath}`,
+        ownershipBasis: managedRec.basis,
+        reason: "in sync",
+        targetMutation: false,
+        ledgerMutation: false,
+      });
+      return;
+    }
+
+    if (matchesDesired && !matchesRecorded) {
+      ctx.nextAgentMcp[name] = {
+        ...managedRec,
+        configPath,
+        digest: desiredDigest,
+        updatedAt: ctx.now,
+      };
+      ctx.ledgerMutation = true;
+      ctx.changeSummaries.push(`refresh digest for MCP ${name}`);
+      ctx.ops.push({
+        domain: "mcp",
+        action: "refresh-mcp-digest",
+        status: "change",
+        destination: `${configPath}#${name}`,
+        observed: "managed entry matches canonical spec, but stored ledger digest is stale",
+        intended: "refresh stored digest in ownership ledger",
+        ownershipBasis: managedRec.basis,
+        reason: `ledger digest for managed MCP "${name}" differs from current target entry`,
+        targetMutation: false,
+        ledgerMutation: true,
+      });
+      return;
+    }
+
+    if (matchesRecorded || ctx.opts.force) {
+      ctx.existingMap[name] = desired;
+      if (adapter.format === "toml") ctx.codexUpdates.set(name, desired);
+      const nextBasis: OwnershipBasis =
+        !matchesRecorded && ctx.opts.force ? "forced" : managedRec.basis;
+      ctx.nextAgentMcp[name] = {
+        configPath,
+        digest: desiredDigest,
+        basis: nextBasis,
+        updatedAt: ctx.now,
+      };
+      ctx.targetMutation = true;
+      ctx.ledgerMutation = true;
+      if (nextBasis === "forced") ctx.basisUsed = "forced";
+      ctx.changeSummaries.push(`update MCP ${name}`);
+      ctx.ops.push({
+        domain: "mcp",
+        action: "mcp-update",
+        status: "change",
+        destination: `${configPath}#${name}`,
+        observed: matchesRecorded
+          ? "managed entry matches previous recorded digest (canonical changed)"
+          : "managed entry externally modified (overridden by --force)",
+        intended: `update MCP "${name}" in ${configPath}`,
+        ownershipBasis: nextBasis,
+        reason: matchesRecorded
+          ? "canonical MCP spec changed and target entry was not externally modified"
+          : "explicit --force authorized overwriting externally modified managed entry",
+        targetMutation: true,
+        ledgerMutation: true,
+      });
+    } else {
+      ctx.nextAgentMcp[name] = managedRec;
+      ctx.ops.push({
+        domain: "mcp",
+        action: "conflict",
+        status: "conflict",
+        destination: `${configPath}#${name}`,
+        observed: "managed entry in target config was modified outside sync-agents",
+        intended: `update MCP "${name}" in ${configPath}`,
+        ownershipBasis: "managed-externally-modified",
+        reason: `MCP "${name}" in ${configPath} differs from both canonical spec and recorded digest`,
+        nextStep: "Inspect local changes or re-run with --force to replace",
+        targetMutation: false,
+        ledgerMutation: false,
+      });
+    }
+    return;
+  }
+
+  const isIdentical = existingDigest === desiredDigest;
+  const provenanceLabel = isLegacy ? "legacy-v1-unverified" : "unmanaged";
+
+  if (isIdentical) {
+    if (ctx.opts.adopt || ctx.opts.force) {
+      ctx.nextAgentMcp[name] = {
+        configPath,
+        digest: desiredDigest,
+        basis: "adopted",
+        updatedAt: ctx.now,
+      };
+      if (isLegacy) ctx.nextResolvedLegacySet.add(name);
+      ctx.ledgerMutation = true;
+      ctx.changeSummaries.push(`adopt identical MCP ${name}`);
+      ctx.ops.push({
+        domain: "mcp",
+        action: "adopt-mcp",
+        status: "change",
+        destination: `${configPath}#${name}`,
+        observed: `${provenanceLabel} entry is identical to canonical spec`,
+        intended: "record verified v2 ownership in ledger (target file unchanged)",
+        ownershipBasis: "adopted",
+        reason: `explicit ${ctx.opts.adopt ? "--adopt" : "--force"} authorized adopting identical MCP "${name}"`,
+        targetMutation: false,
+        ledgerMutation: true,
+      });
+    } else {
+      ctx.ops.push({
+        domain: "mcp",
+        action: "conflict",
+        status: "conflict",
+        destination: `${configPath}#${name}`,
+        observed: `${provenanceLabel} entry matches canonical spec`,
+        intended: `managed MCP "${name}" in ${configPath}`,
+        ownershipBasis: provenanceLabel,
+        reason: isLegacy
+          ? `MCP "${name}" in ${configPath} matches canonical spec, but legacy v1 .mcp-managed.json provenance is unverified`
+          : `MCP "${name}" already exists in ${configPath} (unmanaged, identical)`,
+        nextStep: "Re-run with --adopt to record verified v2 ownership without rewriting config",
+        targetMutation: false,
+        ledgerMutation: false,
+      });
+    }
+    return;
+  }
+
+  if (ctx.opts.force) {
+    ctx.existingMap[name] = desired;
+    if (adapter.format === "toml") ctx.codexUpdates.set(name, desired);
+    ctx.nextAgentMcp[name] = {
+      configPath,
+      digest: desiredDigest,
+      basis: "forced",
+      updatedAt: ctx.now,
+    };
+    if (isLegacy) ctx.nextResolvedLegacySet.add(name);
+    ctx.targetMutation = true;
+    ctx.ledgerMutation = true;
+    ctx.basisUsed = "forced";
+    ctx.changeSummaries.push(`replace MCP ${name}`);
+    ctx.ops.push({
+      domain: "mcp",
+      action: "mcp-replace",
+      status: "change",
+      destination: `${configPath}#${name}`,
+      observed: `${provenanceLabel} entry differs from canonical spec`,
+      intended: `replace MCP "${name}" in ${configPath}`,
+      ownershipBasis: "forced",
+      reason: `explicit --force authorized replacing differing ${provenanceLabel} MCP "${name}"`,
+      targetMutation: true,
+      ledgerMutation: true,
+    });
+  } else {
+    ctx.ops.push({
+      domain: "mcp",
+      action: "conflict",
+      status: "conflict",
+      destination: `${configPath}#${name}`,
+      observed: `${provenanceLabel} entry differs from canonical spec`,
+      intended: `managed MCP "${name}" in ${configPath}`,
+      ownershipBasis: provenanceLabel,
+      reason: isLegacy
+        ? `MCP "${name}" in ${configPath} differs from canonical spec and legacy v1 provenance is unverified`
+        : `MCP "${name}" already exists in ${configPath} and differs`,
+      nextStep: "Inspect differences, re-run with --force to replace, or rename/withdraw the canonical entry",
+      targetMutation: false,
+      ledgerMutation: false,
+    });
+  }
+}
+
+function planRemovedManagedOp(
+  ctx: TargetPlanCtx,
+  oldName: string,
+  managedRec: ManagedMcpRecord,
+): void {
+  const { adapter, configPath } = ctx;
+  const hasExisting = Object.prototype.hasOwnProperty.call(ctx.existingMap, oldName);
+
+  if (!hasExisting) {
+    ctx.ledgerMutation = true;
+    ctx.changeSummaries.push(`drop absent removed MCP record ${oldName}`);
+    ctx.ops.push({
+      domain: "mcp",
+      action: "drop-absent-mcp",
+      status: "change",
+      destination: `${configPath}#${oldName}`,
+      observed: "absent in target config (removed canonical server still in ledger)",
+      intended: "remove stale record from ownership ledger",
+      ownershipBasis: managedRec.basis,
+      reason: `removed MCP "${oldName}" is already absent from ${configPath}`,
+      targetMutation: false,
+      ledgerMutation: true,
+    });
+    return;
+  }
+
+  const comparableExisting = adapter.normalizeComparable(ctx.existingMap[oldName]);
+  const existingDigest = sha256Hex(stableJson(comparableExisting));
+
+  if (existingDigest === managedRec.digest || ctx.opts.force) {
+    delete ctx.existingMap[oldName];
+    if (adapter.format === "toml") ctx.codexUpdates.set(oldName, null);
+    ctx.targetMutation = true;
+    ctx.ledgerMutation = true;
+    if (existingDigest !== managedRec.digest && ctx.opts.force) ctx.basisUsed = "forced";
+    ctx.changeSummaries.push(`prune removed MCP ${oldName}`);
+    ctx.ops.push({
+      domain: "mcp",
+      action: "mcp-prune",
+      status: "change",
+      destination: `${configPath}#${oldName}`,
+      observed:
+        existingDigest === managedRec.digest
+          ? "managed entry matches recorded digest"
+          : "managed entry externally modified (overridden by --force)",
+      intended: `prune removed MCP "${oldName}" from ${configPath}`,
+      ownershipBasis: existingDigest === managedRec.digest ? managedRec.basis : "forced",
+      reason: `canonical MCP "${oldName}" was removed`,
+      targetMutation: true,
+      ledgerMutation: true,
+    });
+  } else {
+    ctx.nextAgentMcp[oldName] = managedRec;
+    ctx.ops.push({
+      domain: "mcp",
+      action: "conflict",
+      status: "conflict",
+      destination: `${configPath}#${oldName}`,
+      observed: "managed entry was externally modified since last sync",
+      intended: `prune removed MCP "${oldName}" from ${configPath}`,
+      ownershipBasis: "managed-externally-modified",
+      reason: `MCP "${oldName}" in ${configPath} was modified outside sync-agents; refusing to prune`,
+      nextStep: "Inspect local changes or re-run with --force to prune",
+      targetMutation: false,
+      ledgerMutation: false,
+    });
+  }
+}
+
+function planRemovedLegacyOp(
+  ctx: TargetPlanCtx,
+  legacyName: string,
+  disownSet: Set<string>,
+): void {
+  const { adapter, configPath } = ctx;
+  const agent = adapter.id;
+  const hasExisting = Object.prototype.hasOwnProperty.call(ctx.existingMap, legacyName);
+
+  if (!hasExisting) {
+    ctx.nextResolvedLegacySet.add(legacyName);
+    ctx.ledgerMutation = true;
+    ctx.changeSummaries.push(`retire absent legacy v1 claim ${legacyName}`);
+    ctx.ops.push({
+      domain: "mcp",
+      action: "retire-legacy-absent",
+      status: "change",
+      destination: `${configPath}#${legacyName}`,
+      observed: "absent in target config (removed canonical server in legacy v1 manifest)",
+      intended: "retire legacy v1 claim in ownership ledger",
+      ownershipBasis: "legacy-v1-unverified",
+      reason: `legacy v1 MCP "${legacyName}" is absent from both canonical hub and ${configPath}`,
+      targetMutation: false,
+      ledgerMutation: true,
+    });
+    return;
+  }
+
+  if (disownSet.has(legacyName)) {
+    ctx.nextResolvedLegacySet.add(legacyName);
+    ctx.ledgerMutation = true;
+    ctx.changeSummaries.push(`disown legacy v1 claim ${legacyName}`);
+    ctx.ops.push({
+      domain: "mcp",
+      action: "disown-legacy",
+      status: "change",
+      destination: `${configPath}#${legacyName}`,
+      observed: "existing personal entry with unverified legacy v1 claim (canonical removed)",
+      intended: "retire legacy v1 claim in ledger and retain personal entry unowned",
+      ownershipBasis: "legacy-v1-unverified",
+      reason: `explicit --disown-legacy ${agent}:${legacyName} authorized retiring claim without modifying ${configPath}`,
+      targetMutation: false,
+      ledgerMutation: true,
+    });
+  } else if (ctx.opts.force) {
+    delete ctx.existingMap[legacyName];
+    if (adapter.format === "toml") ctx.codexUpdates.set(legacyName, null);
+    ctx.nextResolvedLegacySet.add(legacyName);
+    ctx.targetMutation = true;
+    ctx.ledgerMutation = true;
+    ctx.basisUsed = "forced";
+    ctx.changeSummaries.push(`prune legacy-claimed removed MCP ${legacyName}`);
+    ctx.ops.push({
+      domain: "mcp",
+      action: "mcp-prune-legacy",
+      status: "change",
+      destination: `${configPath}#${legacyName}`,
+      observed: "existing entry with unverified legacy v1 claim (canonical removed)",
+      intended: `delete "${legacyName}" from ${configPath} and retire legacy v1 claim`,
+      ownershipBasis: "forced",
+      reason: `explicit --force authorized pruning legacy-claimed MCP "${legacyName}"`,
+      targetMutation: true,
+      ledgerMutation: true,
+    });
+  } else {
+    ctx.ops.push({
+      domain: "mcp",
+      action: "conflict",
+      status: "conflict",
+      destination: `${configPath}#${legacyName}`,
+      observed: "existing entry listed only in legacy v1 .mcp-managed.json (canonical removed)",
+      intended: "verify whether to delete or retain personal entry",
+      ownershipBasis: "legacy-v1-unverified",
+      reason: `refusing to auto-prune "${legacyName}" from ${configPath}: legacy v1 provenance is unverified`,
+      nextStep: `Run --disown-legacy ${agent}:${legacyName} to keep it unowned, or --force to delete it`,
+      targetMutation: false,
+      ledgerMutation: false,
+    });
+  }
+}
+
+function planSingleMcpTarget(
+  adapter: McpAdapterDef,
+  homeDir: string,
+  servers: CompiledServerMap,
+  state: OwnershipStateV2,
+  legacyV1: LegacyManifestV1 | null,
+  disownSet: Set<string>,
+  now: string,
+  opts: { adopt: boolean; force: boolean },
+): PlannedMcpTarget | null {
+  const rootDir = adapter.rootDir(homeDir);
+  if (!existsSync(rootDir) || !statSync(rootDir).isDirectory()) return null;
+
+  const configPath = adapter.configPath(homeDir);
+  const beforeSnapshot = captureFileSnapshot(configPath);
+  if (beforeSnapshot.kind !== "absent" && beforeSnapshot.kind !== "file") {
+    throw new Error(`mcp-sync: expected regular file at ${configPath}`);
+  }
+  const targetMode = beforeSnapshot.kind === "file" ? beforeSnapshot.mode : adapter.defaultMode;
+
+  let originalText = "";
+  let jsonDoc: Record<string, unknown> = {};
+  let existingMap: Record<string, unknown> = {};
+
+  if (beforeSnapshot.kind === "file") {
+    if (adapter.format === "toml") {
+      originalText = readFileSync(configPath, "utf8");
+      const parsed = originalText.trim()
+        ? (Bun.TOML.parse(originalText) as Record<string, unknown>)
+        : {};
+      if (parsed.mcp_servers !== undefined && !isPlainObject(parsed.mcp_servers)) {
+        throw new Error(
+          `mcp-sync: ${configPath}: "mcp_servers" must be a TOML table; refusing to overwrite`,
+        );
+      }
+      existingMap = isPlainObject(parsed.mcp_servers)
+        ? { ...(parsed.mcp_servers as Record<string, unknown>) }
+        : {};
+    } else {
+      const parsed = parseJsonFile(configPath);
+      if (!isPlainObject(parsed)) {
+        throw new Error(`mcp-sync: ${configPath} must contain a JSON object`);
+      }
+      // Fail closed on corrupt mcpServers (null, array, primitive) instead of silently clobbering!
+      if (parsed.mcpServers !== undefined && !isPlainObject(parsed.mcpServers)) {
+        const foundType = Array.isArray(parsed.mcpServers)
+          ? "array"
+          : parsed.mcpServers === null
+            ? "null"
+            : typeof parsed.mcpServers;
+        throw new Error(
+          `mcp-sync: ${configPath}: "mcpServers" must be a JSON object (found ${foundType}); refusing to overwrite`,
+        );
+      }
+      jsonDoc = parsed;
+      existingMap = isPlainObject(jsonDoc.mcpServers) ? { ...jsonDoc.mcpServers } : {};
+    }
+  }
+
+  const prevManaged = state.mcp[adapter.id];
+  const legacySet = legacyV1?.managed[adapter.id] ?? new Set<string>();
+
+  const ctx: TargetPlanCtx = {
+    adapter,
+    configPath,
+    existingMap,
+    codexUpdates: new Map(),
+    nextAgentMcp: {},
+    nextResolvedLegacySet: new Set(state.resolvedLegacyV1[adapter.id]),
+    ops: [],
+    changeSummaries: [],
+    targetMutation: false,
+    ledgerMutation: false,
+    basisUsed: "managed",
+    now,
+    opts,
+  };
+
+  for (const [name, compiledPerAgent] of servers) {
+    const desired = compiledPerAgent[adapter.id];
+    const hasExisting = Object.prototype.hasOwnProperty.call(ctx.existingMap, name);
+    const managedRec = Object.prototype.hasOwnProperty.call(prevManaged, name)
+      ? prevManaged[name]!
+      : undefined;
+    const isLegacy = !managedRec && legacySet.has(name);
+    const comparableExisting = hasExisting
+      ? adapter.normalizeComparable(ctx.existingMap[name])
+      : null;
+    const existingDigest = comparableExisting ? sha256Hex(stableJson(comparableExisting)) : null;
+
+    if (desired === null) {
+      planDisabledServerOp(ctx, name, hasExisting, existingDigest, managedRec, isLegacy);
+    } else {
+      planEnabledServerOp(ctx, name, desired, hasExisting, existingDigest, managedRec, isLegacy);
+    }
+  }
+
+  for (const oldName of Object.keys(prevManaged).sort()) {
+    if (servers.has(oldName)) continue;
+    planRemovedManagedOp(ctx, oldName, prevManaged[oldName]!);
+  }
+
+  for (const legacyName of [...legacySet].sort()) {
+    if (servers.has(legacyName)) continue;
+    if (Object.prototype.hasOwnProperty.call(prevManaged, legacyName)) continue;
+    planRemovedLegacyOp(ctx, legacyName, disownSet);
+  }
+
+  let renderedContent: string | undefined;
+  if (ctx.targetMutation) {
+    if (adapter.format === "toml") {
+      renderedContent = rewriteCodexToml(originalText, ctx.codexUpdates);
+    } else {
+      const nextDoc = { ...jsonDoc, mcpServers: ctx.existingMap };
+      renderedContent = `${JSON.stringify(nextDoc, null, 2)}\n`;
+    }
+  }
+
+  return {
+    agent: adapter.id,
+    rootDir,
+    configPath,
+    ops: ctx.ops,
+    targetMutation: ctx.targetMutation,
+    ledgerMutation: ctx.ledgerMutation,
+    beforeSnapshot,
+    renderedContent,
+    targetMode,
+    nextAgentMcp: ctx.nextAgentMcp,
+    nextResolvedLegacyV1: [...ctx.nextResolvedLegacySet].sort(),
+    basis: ctx.basisUsed,
+    summaryReason: ctx.changeSummaries.join("; ") || `sync ${adapter.id} MCP config`,
+  };
+}
+
+export function planMcpSync(
+  canonicalHubPath: string,
+  homeDir: string,
+  state: OwnershipStateV2,
+  legacyV1: LegacyManifestV1 | null,
+  opts: {
+    adopt: boolean;
+    force: boolean;
+    disownLegacy: Array<{ agent: AgentId; name: string }>;
+  },
+): { targets: PlannedMcpTarget[]; globalOps: PlannedOp[] } {
+  const servers = loadCanonicalServers(canonicalHubPath);
+  const now = new Date().toISOString();
+  const { disownByAgent, globalOps } = validateDisownRequests(opts.disownLegacy, legacyV1, servers);
 
   const targets: PlannedMcpTarget[] = [];
-
-  for (const spec of targetSpecs) {
-    if (!existsSync(spec.rootDir) || !statSync(spec.rootDir).isDirectory()) continue;
-
-    const { agent, rootDir, configPath, defaultMode } = spec;
-    const beforeSnapshot = captureFileSnapshot(configPath);
-    if (beforeSnapshot.kind !== "absent" && beforeSnapshot.kind !== "file") {
-      throw new Error(`mcp-sync: expected regular file at ${configPath}`);
-    }
-    const targetMode = beforeSnapshot.kind === "file" ? beforeSnapshot.mode : defaultMode;
-
-    const prevManaged = state.mcp[agent];
-    const legacySet = legacyV1?.managed[agent] ?? new Set<string>();
-    const nextAgentMcp: Record<string, ManagedMcpRecord> = {};
-    const nextResolvedLegacySet = new Set<string>(state.resolvedLegacyV1[agent]);
-
-    let originalText = "";
-    let jsonDoc: Record<string, unknown> = {};
-    let existingMap: Record<string, unknown> = {};
-
-    if (beforeSnapshot.kind === "file") {
-      originalText = readFileSync(configPath, "utf8");
-      if (agent === "codex") {
-        const parsed = originalText.trim()
-          ? (Bun.TOML.parse(originalText) as Record<string, unknown>)
-          : {};
-        existingMap = isPlainObject(parsed.mcp_servers)
-          ? { ...(parsed.mcp_servers as Record<string, unknown>) }
-          : {};
-      } else {
-        const parsed = JSON.parse(originalText) as unknown;
-        if (!isPlainObject(parsed)) {
-          throw new Error(`mcp-sync: ${configPath} must contain a JSON object`);
-        }
-        jsonDoc = parsed;
-        existingMap = isPlainObject(jsonDoc.mcpServers)
-          ? { ...(jsonDoc.mcpServers as Record<string, unknown>) }
-          : {};
-      }
-    }
-
-    const codexUpdates = new Map<string, Record<string, unknown> | null>();
-    const ops: PlannedOp[] = [];
-    let targetMutation = false;
-    let ledgerMutation = false;
-    let basisUsed: OwnershipBasis | "managed" = "managed";
-    const changeSummaries: string[] = [];
-
-    // 1. Evaluate all canonical servers for this agent
-    for (const [name, compiledPerAgent] of servers) {
-      const desired = compiledPerAgent[agent];
-      const hasExisting = Object.prototype.hasOwnProperty.call(existingMap, name);
-      const managedRec = Object.prototype.hasOwnProperty.call(prevManaged, name)
-        ? prevManaged[name]!
-        : undefined;
-      const isLegacy = !managedRec && legacySet.has(name);
-
-      const comparableExisting = hasExisting ? normalizeComparable(agent, existingMap[name]) : null;
-      const existingDigest = comparableExisting ? sha256Hex(stableJson(comparableExisting)) : null;
-
-      // ---- DISABLED (desired === null) ----
-      if (desired === null) {
-        if (!hasExisting) {
-          if (managedRec) {
-            // T-MCP-05: Managed entry already absent -> ledger-only cleanup
-            ledgerMutation = true;
-            changeSummaries.push(`drop absent MCP record ${name}`);
-            ops.push({
-              domain: "mcp",
-              action: "drop-absent-mcp",
-              status: "change",
-              destination: `${configPath}#${name}`,
-              observed: "absent in target config (stale managed record in ledger)",
-              intended: "remove absent record from ownership ledger",
-              ownershipBasis: managedRec.basis,
-              reason: `MCP "${name}" is disabled and already absent from ${configPath}`,
-              targetMutation: false,
-              ledgerMutation: true,
-            });
-          } else if (isLegacy) {
-            // T-LEG-05: Legacy v1 claim, disabled, target already absent -> ledger-only retire
-            nextResolvedLegacySet.add(name);
-            ledgerMutation = true;
-            changeSummaries.push(`retire absent legacy v1 claim ${name}`);
-            ops.push({
-              domain: "mcp",
-              action: "retire-legacy-absent",
-              status: "change",
-              destination: `${configPath}#${name}`,
-              observed: "absent in target config (unverified legacy v1 claim)",
-              intended: "record legacy v1 claim as resolved in ownership ledger",
-              ownershipBasis: "legacy-v1-unverified",
-              reason: `legacy v1 MCP "${name}" is disabled and already absent from ${configPath}`,
-              targetMutation: false,
-              ledgerMutation: true,
-            });
-          } else {
-            // T-MCP-01: Disabled, absent, unmanaged -> keep (NEVER acquire ownership!)
-            ops.push({
-              domain: "mcp",
-              action: "keep",
-              status: "ok",
-              destination: `${configPath}#${name}`,
-              observed: "absent",
-              intended: "omitted (disabled)",
-              ownershipBasis: "none",
-              reason: `MCP "${name}" is disabled and absent; no ownership recorded`,
-              targetMutation: false,
-              ledgerMutation: false,
-            });
-          }
-          continue;
-        }
-
-        // hasExisting === true && desired === null
-        if (managedRec) {
-          if (existingDigest === managedRec.digest || opts.force) {
-            // T-MCP-03 / T-MCP-04 (forced): Remove managed entry and drop from ledger
-            delete existingMap[name];
-            if (agent === "codex") codexUpdates.set(name, null);
-            targetMutation = true;
-            ledgerMutation = true;
-            basisUsed = opts.force && existingDigest !== managedRec.digest ? "forced" : "managed";
-            changeSummaries.push(`remove disabled MCP ${name}`);
-            ops.push({
-              domain: "mcp",
-              action: "mcp-remove",
-              status: "change",
-              destination: `${configPath}#${name}`,
-              observed:
-                existingDigest === managedRec.digest
-                  ? "managed entry matches recorded digest"
-                  : "managed entry externally modified (overridden by --force)",
-              intended: "remove disabled MCP entry and drop ownership record",
-              ownershipBasis: basisUsed,
-              reason: `MCP "${name}" is disabled in canonical config`,
-              targetMutation: true,
-              ledgerMutation: true,
-            });
-          } else {
-            // T-MCP-04: Externally modified managed entry -> conflict
-            nextAgentMcp[name] = managedRec;
-            ops.push({
-              domain: "mcp",
-              action: "conflict",
-              status: "conflict",
-              destination: `${configPath}#${name}`,
-              observed: "managed entry was externally modified since last sync",
-              intended: "remove disabled MCP entry",
-              ownershipBasis: "managed-externally-modified",
-              reason: `MCP "${name}" in ${configPath} was modified outside sync-agents; refusing to delete disabled entry`,
-              nextStep: "Inspect local changes or re-run with --force to delete",
-              targetMutation: false,
-              ledgerMutation: false,
-            });
-          }
-          continue;
-        }
-
-        if (isLegacy) {
-          // T-LEG-04: Legacy v1 unverified claim on existing target while disabled!
-          if (opts.force) {
-            delete existingMap[name];
-            if (agent === "codex") codexUpdates.set(name, null);
-            nextResolvedLegacySet.add(name);
-            targetMutation = true;
-            ledgerMutation = true;
-            basisUsed = "forced";
-            changeSummaries.push(`remove legacy-claimed disabled MCP ${name}`);
-            ops.push({
-              domain: "mcp",
-              action: "mcp-remove-legacy",
-              status: "change",
-              destination: `${configPath}#${name}`,
-              observed: "existing entry with unverified legacy v1 claim",
-              intended: "delete entry and retire legacy v1 claim (no phantom ownership)",
-              ownershipBasis: "forced",
-              reason: `explicit --force authorized deleting legacy-claimed disabled MCP "${name}"`,
-              targetMutation: true,
-              ledgerMutation: true,
-            });
-          } else {
-            ops.push({
-              domain: "mcp",
-              action: "conflict",
-              status: "conflict",
-              destination: `${configPath}#${name}`,
-              observed: "existing entry listed only in legacy v1 .mcp-managed.json (unverified provenance)",
-              intended: "omitted (disabled)",
-              ownershipBasis: "legacy-v1-unverified",
-              reason: `MCP "${name}" is disabled in canonical config, but ${configPath} has an existing entry with unverified legacy v1 provenance`,
-              nextStep: `Re-run with --force to delete it, or remove/rename <hub>/mcp/${name} and run --disown-legacy ${agent}:${name} to retain it unowned`,
-              targetMutation: false,
-              ledgerMutation: false,
-            });
-          }
-          continue;
-        }
-
-        // T-MCP-02: Unmanaged collision on disabled canonical MCP!
-        // NEVER add to nextAgentMcp!
-        if (opts.force) {
-          delete existingMap[name];
-          if (agent === "codex") codexUpdates.set(name, null);
-          targetMutation = true;
-          // NOTE: ledgerMutation stays false — forced deletion of an unmanaged disabled entry
-          // leaves NO phantom ownership record and does NOT increment state.generation!
-          basisUsed = "forced";
-          changeSummaries.push(`force-remove unmanaged disabled MCP ${name}`);
-          ops.push({
-            domain: "mcp",
-            action: "mcp-remove-unmanaged",
-            status: "change",
-            destination: `${configPath}#${name}`,
-            observed: "unmanaged personal entry",
-            intended: "delete entry (ledger-neutral; no ownership recorded)",
-            ownershipBasis: "forced",
-            reason: `explicit --force authorized deleting unmanaged entry colliding with disabled MCP "${name}"`,
-            targetMutation: true,
-            ledgerMutation: false,
-          });
-        } else {
-          ops.push({
-            domain: "mcp",
-            action: "conflict",
-            status: "conflict",
-            destination: `${configPath}#${name}`,
-            observed: "unmanaged personal entry exists in target config",
-            intended: "omitted (disabled in canonical config)",
-            ownershipBasis: "unmanaged",
-            reason: `MCP "${name}" is disabled in canonical config, but an unmanaged entry exists in ${configPath}; preserving it`,
-            nextStep: "Remove it manually, rename the canonical server, or re-run with --force to delete",
-            targetMutation: false,
-            ledgerMutation: false,
-          });
-        }
-        continue;
-      }
-
-      // ---- ENABLED (desired !== null) ----
-      const desiredDigest = sha256Hex(stableJson(desired));
-
-      if (!hasExisting) {
-        // T-MCP-06 & T-LEG-02: Target does not have this server -> safe to add
-        existingMap[name] = desired;
-        if (agent === "codex") codexUpdates.set(name, desired);
-        nextAgentMcp[name] = {
-          configPath,
-          digest: desiredDigest,
-          basis: "created",
-          updatedAt: now,
-        };
-        if (isLegacy) nextResolvedLegacySet.add(name);
-        targetMutation = true;
-        ledgerMutation = true;
-        if (basisUsed === "managed") basisUsed = "created";
-        changeSummaries.push(`add MCP ${name}`);
-        ops.push({
-          domain: "mcp",
-          action: "mcp-add",
-          status: "change",
-          destination: `${configPath}#${name}`,
-          observed: isLegacy ? "absent (legacy v1 claim)" : "absent",
-          intended: `add MCP "${name}" to ${configPath}`,
-          ownershipBasis: "created",
-          reason: `MCP "${name}" is absent from ${configPath}`,
-          targetMutation: true,
-          ledgerMutation: true,
-        });
-        continue;
-      }
-
-      // hasExisting === true && desired !== null
-      if (managedRec) {
-        const matchesDesired = existingDigest === desiredDigest;
-        const matchesRecorded = existingDigest === managedRec.digest;
-
-        if (matchesDesired && matchesRecorded) {
-          // T-MCP-09: Exact match & fresh digest -> zero churn!
-          nextAgentMcp[name] = managedRec;
-          ops.push({
-            domain: "mcp",
-            action: "keep",
-            status: "ok",
-            destination: `${configPath}#${name}`,
-            observed: "managed entry matches canonical spec and recorded digest",
-            intended: `MCP "${name}" in ${configPath}`,
-            ownershipBasis: managedRec.basis,
-            reason: "in sync",
-            targetMutation: false,
-            ledgerMutation: false,
-          });
-          continue;
-        }
-
-        if (matchesDesired && !matchesRecorded) {
-          // T-MCP-10: Target matches desired, but stored digest is stale -> visible ledger-only op!
-          nextAgentMcp[name] = {
-            ...managedRec,
-            configPath,
-            digest: desiredDigest,
-            updatedAt: now,
-          };
-          ledgerMutation = true;
-          changeSummaries.push(`refresh digest for MCP ${name}`);
-          ops.push({
-            domain: "mcp",
-            action: "refresh-mcp-digest",
-            status: "change",
-            destination: `${configPath}#${name}`,
-            observed: "managed entry matches canonical spec, but stored ledger digest is stale",
-            intended: "refresh stored digest in ownership ledger",
-            ownershipBasis: managedRec.basis,
-            reason: `ledger digest for managed MCP "${name}" differs from current target entry`,
-            targetMutation: false,
-            ledgerMutation: true,
-          });
-          continue;
-        }
-
-        if (matchesRecorded || opts.force) {
-          // T-MCP-11 / T-MCP-12 (forced): Update managed entry
-          existingMap[name] = desired;
-          if (agent === "codex") codexUpdates.set(name, desired);
-          const nextBasis: OwnershipBasis =
-            !matchesRecorded && opts.force ? "forced" : managedRec.basis;
-          nextAgentMcp[name] = {
-            configPath,
-            digest: desiredDigest,
-            basis: nextBasis,
-            updatedAt: now,
-          };
-          targetMutation = true;
-          ledgerMutation = true;
-          if (nextBasis === "forced") basisUsed = "forced";
-          changeSummaries.push(`update MCP ${name}`);
-          ops.push({
-            domain: "mcp",
-            action: "mcp-update",
-            status: "change",
-            destination: `${configPath}#${name}`,
-            observed: matchesRecorded
-              ? "managed entry matches previous recorded digest (canonical changed)"
-              : "managed entry externally modified (overridden by --force)",
-            intended: `update MCP "${name}" in ${configPath}`,
-            ownershipBasis: nextBasis,
-            reason: matchesRecorded
-              ? "canonical MCP spec changed and target entry was not externally modified"
-              : "explicit --force authorized overwriting externally modified managed entry",
-            targetMutation: true,
-            ledgerMutation: true,
-          });
-        } else {
-          // T-MCP-12: Managed entry externally modified -> conflict!
-          nextAgentMcp[name] = managedRec;
-          ops.push({
-            domain: "mcp",
-            action: "conflict",
-            status: "conflict",
-            destination: `${configPath}#${name}`,
-            observed: "managed entry in target config was modified outside sync-agents",
-            intended: `update MCP "${name}" in ${configPath}`,
-            ownershipBasis: "managed-externally-modified",
-            reason: `MCP "${name}" in ${configPath} differs from both canonical spec and recorded digest`,
-            nextStep: "Inspect local changes or re-run with --force to replace",
-            targetMutation: false,
-            ledgerMutation: false,
-          });
-        }
-        continue;
-      }
-
-      // Unmanaged OR legacy v1 unverified entry (hasExisting && !managedRec)
-      const isIdentical = existingDigest === desiredDigest;
-      const provenanceLabel = isLegacy ? "legacy-v1-unverified" : "unmanaged";
-
-      if (isIdentical) {
-        // T-MCP-07 / T-LEG-01: Identical unmanaged or legacy v1 -> ledger-only adoption!
-        if (opts.adopt || opts.force) {
-          nextAgentMcp[name] = {
-            configPath,
-            digest: desiredDigest,
-            basis: "adopted",
-            updatedAt: now,
-          };
-          if (isLegacy) nextResolvedLegacySet.add(name);
-          ledgerMutation = true;
-          changeSummaries.push(`adopt identical MCP ${name}`);
-          ops.push({
-            domain: "mcp",
-            action: "adopt-mcp",
-            status: "change",
-            destination: `${configPath}#${name}`,
-            observed: `${provenanceLabel} entry is identical to canonical spec`,
-            intended: "record verified v2 ownership in ledger (target file unchanged)",
-            ownershipBasis: "adopted",
-            reason: `explicit ${opts.adopt ? "--adopt" : "--force"} authorized adopting identical MCP "${name}"`,
-            targetMutation: false,
-            ledgerMutation: true,
-          });
-        } else {
-          ops.push({
-            domain: "mcp",
-            action: "conflict",
-            status: "conflict",
-            destination: `${configPath}#${name}`,
-            observed: `${provenanceLabel} entry matches canonical spec`,
-            intended: `managed MCP "${name}" in ${configPath}`,
-            ownershipBasis: provenanceLabel,
-            reason: isLegacy
-              ? `MCP "${name}" in ${configPath} matches canonical spec, but legacy v1 .mcp-managed.json provenance is unverified`
-              : `MCP "${name}" already exists in ${configPath} (unmanaged, identical)`,
-            nextStep: "Re-run with --adopt to record verified v2 ownership without rewriting config",
-            targetMutation: false,
-            ledgerMutation: false,
-          });
-        }
-      } else {
-        // T-MCP-08 / T-LEG-03: Differing unmanaged or legacy v1
-        if (opts.force) {
-          existingMap[name] = desired;
-          if (agent === "codex") codexUpdates.set(name, desired);
-          nextAgentMcp[name] = {
-            configPath,
-            digest: desiredDigest,
-            basis: "forced",
-            updatedAt: now,
-          };
-          if (isLegacy) nextResolvedLegacySet.add(name);
-          targetMutation = true;
-          ledgerMutation = true;
-          basisUsed = "forced";
-          changeSummaries.push(`replace MCP ${name}`);
-          ops.push({
-            domain: "mcp",
-            action: "mcp-replace",
-            status: "change",
-            destination: `${configPath}#${name}`,
-            observed: `${provenanceLabel} entry differs from canonical spec`,
-            intended: `replace MCP "${name}" in ${configPath}`,
-            ownershipBasis: "forced",
-            reason: `explicit --force authorized replacing differing ${provenanceLabel} MCP "${name}"`,
-            targetMutation: true,
-            ledgerMutation: true,
-          });
-        } else {
-          ops.push({
-            domain: "mcp",
-            action: "conflict",
-            status: "conflict",
-            destination: `${configPath}#${name}`,
-            observed: `${provenanceLabel} entry differs from canonical spec`,
-            intended: `managed MCP "${name}" in ${configPath}`,
-            ownershipBasis: provenanceLabel,
-            reason: isLegacy
-              ? `MCP "${name}" in ${configPath} differs from canonical spec and legacy v1 provenance is unverified`
-              : `MCP "${name}" already exists in ${configPath} and differs`,
-            nextStep: "Inspect differences, re-run with --force to replace, or rename/withdraw the canonical entry",
-            targetMutation: false,
-            ledgerMutation: false,
-          });
-        }
-      }
-    }
-
-    // 2. Prune removed canonical servers that have verified v2 ownership (T-MCP-13 & T-MCP-05)
-    for (const oldName of Object.keys(prevManaged).sort()) {
-      if (servers.has(oldName)) continue;
-      const managedRec = prevManaged[oldName]!;
-      const hasExisting = Object.prototype.hasOwnProperty.call(existingMap, oldName);
-
-      if (!hasExisting) {
-        ledgerMutation = true;
-        changeSummaries.push(`drop absent removed MCP record ${oldName}`);
-        ops.push({
-          domain: "mcp",
-          action: "drop-absent-mcp",
-          status: "change",
-          destination: `${configPath}#${oldName}`,
-          observed: "absent in target config (removed canonical server still in ledger)",
-          intended: "remove stale record from ownership ledger",
-          ownershipBasis: managedRec.basis,
-          reason: `removed MCP "${oldName}" is already absent from ${configPath}`,
-          targetMutation: false,
-          ledgerMutation: true,
-        });
-        continue;
-      }
-
-      const comparableExisting = normalizeComparable(agent, existingMap[oldName]);
-      const existingDigest = sha256Hex(stableJson(comparableExisting));
-
-      if (existingDigest === managedRec.digest || opts.force) {
-        delete existingMap[oldName];
-        if (agent === "codex") codexUpdates.set(oldName, null);
-        targetMutation = true;
-        ledgerMutation = true;
-        if (existingDigest !== managedRec.digest && opts.force) basisUsed = "forced";
-        changeSummaries.push(`prune removed MCP ${oldName}`);
-        ops.push({
-          domain: "mcp",
-          action: "mcp-prune",
-          status: "change",
-          destination: `${configPath}#${oldName}`,
-          observed:
-            existingDigest === managedRec.digest
-              ? "managed entry matches recorded digest"
-              : "managed entry externally modified (overridden by --force)",
-          intended: `prune removed MCP "${oldName}" from ${configPath}`,
-          ownershipBasis: existingDigest === managedRec.digest ? managedRec.basis : "forced",
-          reason: `canonical MCP "${oldName}" was removed`,
-          targetMutation: true,
-          ledgerMutation: true,
-        });
-      } else {
-        nextAgentMcp[oldName] = managedRec;
-        ops.push({
-          domain: "mcp",
-          action: "conflict",
-          status: "conflict",
-          destination: `${configPath}#${oldName}`,
-          observed: "managed entry was externally modified since last sync",
-          intended: `prune removed MCP "${oldName}" from ${configPath}`,
-          ownershipBasis: "managed-externally-modified",
-          reason: `MCP "${oldName}" in ${configPath} was modified outside sync-agents; refusing to prune`,
-          nextStep: "Inspect local changes or re-run with --force to prune",
-          targetMutation: false,
-          ledgerMutation: false,
-        });
-      }
-    }
-
-    // 3. Handle remaining legacy v1 claims for servers removed from canonical config (T-LEG-05 & T-LEG-06)
-    for (const legacyName of [...legacySet].sort()) {
-      if (servers.has(legacyName)) continue;
-      if (Object.prototype.hasOwnProperty.call(prevManaged, legacyName)) continue;
-      const hasExisting = Object.prototype.hasOwnProperty.call(existingMap, legacyName);
-
-      if (!hasExisting) {
-        // T-LEG-05: Already absent -> ledger-only retire!
-        nextResolvedLegacySet.add(legacyName);
-        ledgerMutation = true;
-        changeSummaries.push(`retire absent legacy v1 claim ${legacyName}`);
-        ops.push({
-          domain: "mcp",
-          action: "retire-legacy-absent",
-          status: "change",
-          destination: `${configPath}#${legacyName}`,
-          observed: "absent in target config (removed canonical server in legacy v1 manifest)",
-          intended: "retire legacy v1 claim in ownership ledger",
-          ownershipBasis: "legacy-v1-unverified",
-          reason: `legacy v1 MCP "${legacyName}" is absent from both canonical hub and ${configPath}`,
-          targetMutation: false,
-          ledgerMutation: true,
-        });
-        continue;
-      }
-
-      // T-LEG-06: Removed canonical + still present in target!
-      if (disownByAgent[agent].has(legacyName)) {
-        nextResolvedLegacySet.add(legacyName);
-        ledgerMutation = true;
-        changeSummaries.push(`disown legacy v1 claim ${legacyName}`);
-        ops.push({
-          domain: "mcp",
-          action: "disown-legacy",
-          status: "change",
-          destination: `${configPath}#${legacyName}`,
-          observed: "existing personal entry with unverified legacy v1 claim (canonical removed)",
-          intended: "retire legacy v1 claim in ledger and retain personal entry unowned",
-          ownershipBasis: "legacy-v1-unverified",
-          reason: `explicit --disown-legacy ${agent}:${legacyName} authorized retiring claim without modifying ${configPath}`,
-          targetMutation: false,
-          ledgerMutation: true,
-        });
-      } else if (opts.force) {
-        delete existingMap[legacyName];
-        if (agent === "codex") codexUpdates.set(legacyName, null);
-        nextResolvedLegacySet.add(legacyName);
-        targetMutation = true;
-        ledgerMutation = true;
-        basisUsed = "forced";
-        changeSummaries.push(`prune legacy-claimed removed MCP ${legacyName}`);
-        ops.push({
-          domain: "mcp",
-          action: "mcp-prune-legacy",
-          status: "change",
-          destination: `${configPath}#${legacyName}`,
-          observed: "existing entry with unverified legacy v1 claim (canonical removed)",
-          intended: `delete "${legacyName}" from ${configPath} and retire legacy v1 claim`,
-          ownershipBasis: "forced",
-          reason: `explicit --force authorized pruning legacy-claimed MCP "${legacyName}"`,
-          targetMutation: true,
-          ledgerMutation: true,
-        });
-      } else {
-        ops.push({
-          domain: "mcp",
-          action: "conflict",
-          status: "conflict",
-          destination: `${configPath}#${legacyName}`,
-          observed: "existing entry listed only in legacy v1 .mcp-managed.json (canonical removed)",
-          intended: "verify whether to delete or retain personal entry",
-          ownershipBasis: "legacy-v1-unverified",
-          reason: `refusing to auto-prune "${legacyName}" from ${configPath}: legacy v1 provenance is unverified`,
-          nextStep: `Run --disown-legacy ${agent}:${legacyName} to keep it unowned, or --force to delete it`,
-          targetMutation: false,
-          ledgerMutation: false,
-        });
-      }
-    }
-
-    // 4. Pre-render complete target file (and verify TOML preservation) in Phase 1!
-    let renderedContent: string | undefined;
-    if (targetMutation) {
-      if (agent === "codex") {
-        renderedContent = rewriteCodexToml(originalText, codexUpdates);
-      } else {
-        const nextDoc = { ...jsonDoc, mcpServers: existingMap };
-        renderedContent = `${JSON.stringify(nextDoc, null, 2)}\n`;
-      }
-    }
-
-    targets.push({
-      agent,
-      rootDir,
-      configPath,
-      ops,
-      targetMutation,
-      ledgerMutation,
-      beforeSnapshot,
-      renderedContent,
-      targetMode,
-      nextAgentMcp,
-      nextResolvedLegacyV1: [...nextResolvedLegacySet].sort(),
-      basis: basisUsed,
-      summaryReason: changeSummaries.join("; ") || `sync ${agent} MCP config`,
-    });
+  for (const adapter of MCP_ADAPTERS) {
+    const plan = planSingleMcpTarget(
+      adapter,
+      homeDir,
+      servers,
+      state,
+      legacyV1,
+      disownByAgent[adapter.id],
+      now,
+      opts,
+    );
+    if (plan) targets.push(plan);
   }
 
   return { targets, globalOps };
@@ -1214,9 +1173,7 @@ export function applyMcpTarget(
       }
     : { kind: "none" };
 
-  // Direct state-commit path for ledger-only operations (adopt-mcp, refresh-mcp-digest,
-  // drop-absent-mcp, retire-legacy-absent, disown-legacy): verify unchanged target snapshot
-  // and generation, then commit ownership state directly without entering the target-write journal.
+  // Direct state-commit path for ledger-only operations (no target-write journal).
   if (!plan.targetMutation && plan.ledgerMutation) {
     const live = captureFileSnapshot(plan.configPath);
     if (!snapshotsEqual(live, plan.beforeSnapshot)) {
@@ -1230,12 +1187,11 @@ export function applyMcpTarget(
     return nextState;
   }
 
-  // Target-mutating MCP write: 4-step write-ahead journal protocol.
   const rendered = plan.renderedContent!;
   const owner =
     plan.beforeSnapshot.kind === "file"
       ? { uid: plan.beforeSnapshot.uid, gid: plan.beforeSnapshot.gid }
-      : predictNewFileOwner(dirname(plan.configPath));
+      : predictNewEntryOwner(dirname(plan.configPath));
 
   const afterSnapshot: TargetSnapshot = {
     kind: "file",
@@ -1267,7 +1223,6 @@ export function applyMcpTarget(
   writeJournal(journalPath, journal);
   hooks?.beforeTargetMutate?.(journal);
 
-  // Re-verify COMPLETE target snapshot (bytes, mode, uid, gid, existence) strictly BEFORE mutation.
   const live = captureFileSnapshot(plan.configPath);
   if (!snapshotsEqual(live, plan.beforeSnapshot)) {
     clearJournal(journalPath);

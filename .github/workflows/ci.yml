@@ -24,7 +24,16 @@ jobs:
       - name: Setup pinned Bun runtime
         uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
-          bun-version: "1.4.2"
+          bun-version: "1.4.5"
+
+      - name: Install devDependencies (typecheck only)
+        run: bun install --frozen-lockfile
+
+      - name: Shell syntax check
+        run: bash -n bin/sync-agents install.sh
+
+      - name: TypeScript typecheck
+        run: bun run typecheck
 
       - name: Run native Bun test suite
         run: bun test

@@ -141,6 +141,7 @@ export type SyncOptions = {
   xdgStateHome?: string;
   skillSources?: string[];
   skillOnly?: boolean;
+  mcpOnly?: boolean;
   forceSkill?: boolean;
   force?: boolean;
   dryRun?: boolean;

@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, renameSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, renameSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   atomicWriteDurable,
@@ -7,6 +7,7 @@ import {
   captureTreeSnapshot,
   fsyncDir,
   isPlainObject,
+  parseJsonFile,
   sha256Hex,
   snapshotsEqual,
 } from "./paths.ts";
@@ -14,9 +15,11 @@ import {
   ALL_AGENTS,
   type AgentId,
   type ApplyHooks,
+  type JournalOpKind,
   type LegacyManifestV1,
   type ManagedLinkRecord,
   type ManagedMcpRecord,
+  type OwnershipBasis,
   type OwnershipStateV2,
   type PendingJournalRecord,
   type RecoveryInspection,
@@ -31,6 +34,173 @@ export type StatePaths = {
   journalPath: string;
   lockPath: string;
 };
+
+const VALID_BASES = new Set<string>(["created", "adopted", "forced"]);
+const VALID_LINK_KINDS = new Set<string>(["rules", "skill"]);
+const VALID_JOURNAL_KINDS = new Set<string>([
+  "mcp-write",
+  "link-create",
+  "link-replace",
+  "link-adopt-copy",
+  "link-prune",
+  "skill-replace",
+]);
+
+function isNonEmptyString(v: unknown): v is string {
+  return typeof v === "string" && v.length > 0;
+}
+
+function isNonNegInt(v: unknown): v is number {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0;
+}
+
+function validateLinkRecord(raw: unknown, label: string): ManagedLinkRecord {
+  if (!isPlainObject(raw)) {
+    throw new Error(`${label}: expected link record object`);
+  }
+  if (!isNonEmptyString(raw.kind) || !VALID_LINK_KINDS.has(raw.kind)) {
+    throw new Error(`${label}: invalid link kind "${String(raw.kind)}"`);
+  }
+  if (!isNonEmptyString(raw.target)) {
+    throw new Error(`${label}: missing or invalid link target`);
+  }
+  if (!isNonEmptyString(raw.basis) || !VALID_BASES.has(raw.basis)) {
+    throw new Error(`${label}: invalid ownership basis "${String(raw.basis)}"`);
+  }
+  if (!isNonEmptyString(raw.updatedAt)) {
+    throw new Error(`${label}: missing or invalid updatedAt timestamp`);
+  }
+  return {
+    kind: raw.kind as "rules" | "skill",
+    target: raw.target,
+    basis: raw.basis as OwnershipBasis,
+    updatedAt: raw.updatedAt,
+  };
+}
+
+function validateMcpRecord(raw: unknown, label: string): ManagedMcpRecord {
+  if (!isPlainObject(raw)) {
+    throw new Error(`${label}: expected MCP record object`);
+  }
+  if (!isNonEmptyString(raw.configPath)) {
+    throw new Error(`${label}: missing or invalid configPath`);
+  }
+  if (!isNonEmptyString(raw.digest)) {
+    throw new Error(`${label}: missing or invalid digest`);
+  }
+  if (!isNonEmptyString(raw.basis) || !VALID_BASES.has(raw.basis)) {
+    throw new Error(`${label}: invalid ownership basis "${String(raw.basis)}"`);
+  }
+  if (!isNonEmptyString(raw.updatedAt)) {
+    throw new Error(`${label}: missing or invalid updatedAt timestamp`);
+  }
+  return {
+    configPath: raw.configPath,
+    digest: raw.digest,
+    basis: raw.basis as OwnershipBasis,
+    updatedAt: raw.updatedAt,
+  };
+}
+
+function validateSnapshot(raw: unknown, label: string): TargetSnapshot {
+  if (!isPlainObject(raw) || typeof raw.kind !== "string") {
+    throw new Error(`${label}: missing or invalid snapshot object`);
+  }
+  switch (raw.kind) {
+    case "absent":
+      return { kind: "absent" };
+    case "file":
+      if (
+        !isNonEmptyString(raw.sha256) ||
+        !isNonNegInt(raw.mode) ||
+        !isNonNegInt(raw.uid) ||
+        !isNonNegInt(raw.gid)
+      ) {
+        throw new Error(`${label}: invalid file snapshot fields`);
+      }
+      return {
+        kind: "file",
+        sha256: raw.sha256,
+        mode: raw.mode,
+        uid: raw.uid,
+        gid: raw.gid,
+      };
+    case "symlink":
+      if (!isNonEmptyString(raw.target) || !isNonNegInt(raw.uid) || !isNonNegInt(raw.gid)) {
+        throw new Error(`${label}: invalid symlink snapshot fields`);
+      }
+      return {
+        kind: "symlink",
+        target: raw.target,
+        uid: raw.uid,
+        gid: raw.gid,
+      };
+    case "tree":
+      if (
+        (raw.rootKind !== "file" && raw.rootKind !== "dir") ||
+        !isNonEmptyString(raw.equivalenceDigest)
+      ) {
+        throw new Error(`${label}: invalid tree snapshot fields`);
+      }
+      return {
+        kind: "tree",
+        rootKind: raw.rootKind,
+        equivalenceDigest: raw.equivalenceDigest,
+      };
+    default:
+      throw new Error(`${label}: unknown snapshot kind "${raw.kind}"`);
+  }
+}
+
+function validateStateDelta(raw: unknown, label: string): StateDelta {
+  if (!isPlainObject(raw) || typeof raw.kind !== "string") {
+    throw new Error(`${label}: missing or invalid stateDelta`);
+  }
+  switch (raw.kind) {
+    case "none":
+      return { kind: "none" };
+    case "link-set":
+      if (!isNonEmptyString(raw.destination)) {
+        throw new Error(`${label}: link-set missing destination`);
+      }
+      return {
+        kind: "link-set",
+        destination: raw.destination,
+        record: validateLinkRecord(raw.record, `${label}.record`),
+      };
+    case "link-delete":
+      if (!isNonEmptyString(raw.destination)) {
+        throw new Error(`${label}: link-delete missing destination`);
+      }
+      return { kind: "link-delete", destination: raw.destination };
+    case "mcp-target": {
+      if (!isNonEmptyString(raw.agent) || !ALL_AGENTS.includes(raw.agent as AgentId)) {
+        throw new Error(`${label}: mcp-target invalid agent "${String(raw.agent)}"`);
+      }
+      if (!isPlainObject(raw.nextAgentMcp)) {
+        throw new Error(`${label}: mcp-target missing nextAgentMcp object`);
+      }
+      const nextAgentMcp: Record<string, ManagedMcpRecord> = {};
+      for (const [k, v] of Object.entries(raw.nextAgentMcp)) {
+        nextAgentMcp[k] = validateMcpRecord(v, `${label}.nextAgentMcp.${k}`);
+      }
+      if (
+        !Array.isArray(raw.resolvedLegacyV1) ||
+        !raw.resolvedLegacyV1.every((x) => isNonEmptyString(x))
+      ) {
+        throw new Error(`${label}: mcp-target invalid resolvedLegacyV1 array`);
+      }
+      return {
+        kind: "mcp-target",
+        agent: raw.agent as AgentId,
+        nextAgentMcp,
+        resolvedLegacyV1: [...raw.resolvedLegacyV1],
+      };
+    }
+    default:
+      throw new Error(`${label}: unknown stateDelta kind "${raw.kind}"`);
+  }
+}
 
 export function getStatePaths(
   canonicalHubPath: string,
@@ -69,7 +239,8 @@ export function createEmptyState(canonicalHubPath: string): OwnershipStateV2 {
 }
 
 /**
- * Strictly observational state loader — never creates directories or files.
+ * Strictly observational state loader with full runtime schema validation.
+ * Never creates directories or files and never coerces missing fields to "undefined".
  */
 export function loadOwnershipState(
   statePath: string,
@@ -78,11 +249,11 @@ export function loadOwnershipState(
   if (!existsSync(statePath)) {
     return { state: createEmptyState(canonicalHubPath), existsOnDisk: false };
   }
-  const raw = JSON.parse(readFileSync(statePath, "utf8")) as unknown;
+  const raw = parseJsonFile(statePath);
   if (!isPlainObject(raw) || raw.version !== 2) {
     throw new Error(`agent-hub: invalid ownership state file (expected version 2): ${statePath}`);
   }
-  if (typeof raw.generation !== "number" || !Number.isInteger(raw.generation) || raw.generation < 0) {
+  if (!isNonNegInt(raw.generation)) {
     throw new Error(`agent-hub: invalid generation in ownership state: ${statePath}`);
   }
   if (typeof raw.hubPath !== "string" || raw.hubPath !== canonicalHubPath) {
@@ -90,19 +261,22 @@ export function loadOwnershipState(
       `agent-hub: ownership state hubPath mismatch in ${statePath} (expected ${canonicalHubPath}, found ${String(raw.hubPath)})`,
     );
   }
+  if (!isPlainObject(raw.links)) {
+    throw new Error(`agent-hub: invalid "links" map in ownership state: ${statePath}`);
+  }
+  if (!isPlainObject(raw.mcp)) {
+    throw new Error(`agent-hub: invalid "mcp" map in ownership state: ${statePath}`);
+  }
+  if (!isPlainObject(raw.resolvedLegacyV1)) {
+    throw new Error(`agent-hub: invalid "resolvedLegacyV1" map in ownership state: ${statePath}`);
+  }
 
   const links: Record<string, ManagedLinkRecord> = {};
-  if (isPlainObject(raw.links)) {
-    for (const [k, v] of Object.entries(raw.links)) {
-      if (isPlainObject(v)) {
-        links[k] = {
-          kind: v.kind as "rules" | "skill",
-          target: String(v.target),
-          basis: v.basis as "created" | "adopted" | "forced",
-          updatedAt: String(v.updatedAt),
-        };
-      }
+  for (const [k, v] of Object.entries(raw.links)) {
+    if (!isNonEmptyString(k)) {
+      throw new Error(`agent-hub: empty link key in ${statePath}`);
     }
+    links[k] = validateLinkRecord(v, `${statePath}#links[${k}]`);
   }
 
   const mcp: Record<AgentId, Record<string, ManagedMcpRecord>> = {
@@ -110,21 +284,14 @@ export function loadOwnershipState(
     claude: {},
     codex: {},
   };
-  if (isPlainObject(raw.mcp)) {
-    for (const agent of ALL_AGENTS) {
-      const agentObj = raw.mcp[agent];
-      if (isPlainObject(agentObj)) {
-        for (const [name, rec] of Object.entries(agentObj)) {
-          if (isPlainObject(rec)) {
-            mcp[agent][name] = {
-              configPath: String(rec.configPath),
-              digest: String(rec.digest),
-              basis: rec.basis as "created" | "adopted" | "forced",
-              updatedAt: String(rec.updatedAt),
-            };
-          }
-        }
-      }
+  for (const agent of ALL_AGENTS) {
+    const agentObj = raw.mcp[agent];
+    if (agentObj === undefined) continue;
+    if (!isPlainObject(agentObj)) {
+      throw new Error(`agent-hub: invalid mcp.${agent} map in ${statePath}`);
+    }
+    for (const [name, rec] of Object.entries(agentObj)) {
+      mcp[agent][name] = validateMcpRecord(rec, `${statePath}#mcp.${agent}.${name}`);
     }
   }
 
@@ -133,13 +300,13 @@ export function loadOwnershipState(
     claude: [],
     codex: [],
   };
-  if (isPlainObject(raw.resolvedLegacyV1)) {
-    for (const agent of ALL_AGENTS) {
-      const arr = raw.resolvedLegacyV1[agent];
-      if (Array.isArray(arr)) {
-        resolvedLegacyV1[agent] = arr.filter((x): x is string => typeof x === "string").sort();
-      }
+  for (const agent of ALL_AGENTS) {
+    const arr = raw.resolvedLegacyV1[agent];
+    if (arr === undefined) continue;
+    if (!Array.isArray(arr) || !arr.every((x) => isNonEmptyString(x))) {
+      throw new Error(`agent-hub: invalid resolvedLegacyV1.${agent} array in ${statePath}`);
     }
+    resolvedLegacyV1[agent] = [...arr].sort();
   }
 
   return {
@@ -167,7 +334,7 @@ export function loadLegacyV1Manifest(
   const legacyPath = join(canonicalHubPath, ".mcp-managed.json");
   if (!existsSync(legacyPath)) return null;
 
-  const raw = JSON.parse(readFileSync(legacyPath, "utf8")) as unknown;
+  const raw = parseJsonFile(legacyPath);
   if (!isPlainObject(raw) || raw.version !== 1 || !isPlainObject(raw.managed)) {
     throw new Error(`agent-hub: invalid legacy v1 manifest at ${legacyPath}`);
   }
@@ -179,10 +346,13 @@ export function loadLegacyV1Manifest(
   };
 
   const addNames = (agent: AgentId, list: unknown) => {
-    if (!Array.isArray(list)) return;
+    if (list === undefined) return;
+    if (!Array.isArray(list)) {
+      throw new Error(`agent-hub: invalid managed list for ${agent} in ${legacyPath}`);
+    }
     const resolvedSet = new Set(state.resolvedLegacyV1[agent]);
     for (const item of list) {
-      if (typeof item !== "string" || item.length === 0) continue;
+      if (!isNonEmptyString(item)) continue;
       if (Object.prototype.hasOwnProperty.call(state.mcp[agent], item)) continue;
       if (resolvedSet.has(item)) continue;
       managed[agent].add(item);
@@ -198,15 +368,100 @@ export function loadLegacyV1Manifest(
 }
 
 /**
- * Strictly observational journal loader — never creates directories or files.
+ * Strictly observational journal loader with full schema validation.
+ * Never creates directories or files and fails closed on truncated/corrupt journals.
  */
 export function loadPendingJournal(journalPath: string): PendingJournalRecord | null {
   if (!existsSync(journalPath)) return null;
-  const raw = JSON.parse(readFileSync(journalPath, "utf8")) as unknown;
-  if (!isPlainObject(raw) || raw.version !== 1 || typeof raw.opId !== "string") {
-    throw new Error(`agent-hub: corrupt pending recovery journal at ${journalPath}`);
+  const raw = parseJsonFile(journalPath);
+  if (!isPlainObject(raw) || raw.version !== 1) {
+    throw new Error(`agent-hub: corrupt pending recovery journal at ${journalPath}: expected version 1 object`);
   }
-  return raw as PendingJournalRecord;
+  if (!isNonEmptyString(raw.opId)) {
+    throw new Error(`agent-hub: corrupt pending recovery journal at ${journalPath}: missing opId`);
+  }
+  if (!isNonEmptyString(raw.hubPath)) {
+    throw new Error(`agent-hub: corrupt pending recovery journal at ${journalPath}: missing hubPath`);
+  }
+  if (!isNonNegInt(raw.expectedStateGeneration) || !isNonNegInt(raw.targetStateGeneration)) {
+    throw new Error(
+      `agent-hub: corrupt pending recovery journal at ${journalPath}: invalid state generation fields`,
+    );
+  }
+  if (!isNonEmptyString(raw.kind) || !VALID_JOURNAL_KINDS.has(raw.kind)) {
+    throw new Error(
+      `agent-hub: corrupt pending recovery journal at ${journalPath}: invalid op kind "${String(raw.kind)}"`,
+    );
+  }
+  if (!isNonEmptyString(raw.destination)) {
+    throw new Error(
+      `agent-hub: corrupt pending recovery journal at ${journalPath}: missing destination`,
+    );
+  }
+  if (!isPlainObject(raw.authorization) || !isPlainObject(raw.authorization.flags)) {
+    throw new Error(
+      `agent-hub: corrupt pending recovery journal at ${journalPath}: invalid authorization`,
+    );
+  }
+  const authBasis = raw.authorization.basis;
+  if (
+    !isNonEmptyString(authBasis) ||
+    (!VALID_BASES.has(authBasis) && authBasis !== "managed")
+  ) {
+    throw new Error(
+      `agent-hub: corrupt pending recovery journal at ${journalPath}: invalid authorization.basis`,
+    );
+  }
+  if (typeof raw.authorization.reason !== "string") {
+    throw new Error(
+      `agent-hub: corrupt pending recovery journal at ${journalPath}: invalid authorization.reason`,
+    );
+  }
+  const f = raw.authorization.flags;
+  if (
+    typeof f.adopt !== "boolean" ||
+    typeof f.force !== "boolean" ||
+    typeof f.forceSkill !== "boolean"
+  ) {
+    throw new Error(
+      `agent-hub: corrupt pending recovery journal at ${journalPath}: invalid authorization.flags`,
+    );
+  }
+
+  const before = validateSnapshot(raw.before, `${journalPath}#before`);
+  const after = validateSnapshot(raw.after, `${journalPath}#after`);
+  const stateDelta = validateStateDelta(raw.stateDelta, `${journalPath}#stateDelta`);
+
+  if (raw.backupPath !== undefined && !isNonEmptyString(raw.backupPath)) {
+    throw new Error(`agent-hub: corrupt pending recovery journal at ${journalPath}: invalid backupPath`);
+  }
+  if (raw.stagedPath !== undefined && !isNonEmptyString(raw.stagedPath)) {
+    throw new Error(`agent-hub: corrupt pending recovery journal at ${journalPath}: invalid stagedPath`);
+  }
+  if (raw.sourcePath !== undefined && !isNonEmptyString(raw.sourcePath)) {
+    throw new Error(`agent-hub: corrupt pending recovery journal at ${journalPath}: invalid sourcePath`);
+  }
+
+  return {
+    version: 1,
+    opId: raw.opId,
+    hubPath: raw.hubPath,
+    expectedStateGeneration: raw.expectedStateGeneration,
+    targetStateGeneration: raw.targetStateGeneration,
+    kind: raw.kind as JournalOpKind,
+    authorization: {
+      flags: { adopt: f.adopt, force: f.force, forceSkill: f.forceSkill },
+      basis: authBasis as OwnershipBasis | "managed",
+      reason: raw.authorization.reason,
+    },
+    destination: raw.destination,
+    before,
+    after,
+    backupPath: raw.backupPath as string | undefined,
+    stagedPath: raw.stagedPath as string | undefined,
+    sourcePath: raw.sourcePath as string | undefined,
+    stateDelta,
+  };
 }
 
 export function applyStateDelta(state: OwnershipStateV2, delta: StateDelta): OwnershipStateV2 {
@@ -249,7 +504,6 @@ export function applyStateDelta(state: OwnershipStateV2, delta: StateDelta): Own
     }
   }
 
-  // Keep link keys deterministically sorted for stable JSON output.
   const sortedLinks: Record<string, ManagedLinkRecord> = {};
   for (const k of Object.keys(next.links).sort()) {
     sortedLinks[k] = next.links[k]!;
@@ -315,7 +569,6 @@ export function inspectPendingRecovery(
   const targetGen = journal.targetStateGeneration;
   const ledgerMutates = journal.stateDelta.kind !== "none";
 
-  // Verify generation consistency invariant on the journal record itself.
   if (
     (ledgerMutates && targetGen !== expectedGen + 1) ||
     (!ledgerMutates && targetGen !== expectedGen)
@@ -331,7 +584,6 @@ export function inspectPendingRecovery(
   const liveAsBefore = captureSnapshotForExpected(journal.destination, journal.before);
   const liveAsAfter = captureSnapshotForExpected(journal.destination, journal.after);
 
-  // 1. Populated skill directory swap (ledger-neutral: targetGen === expectedGen)
   if (journal.kind === "skill-replace") {
     const backupSnap = journal.backupPath
       ? captureSnapshotForExpected(journal.backupPath, journal.before)
@@ -384,9 +636,6 @@ export function inspectPendingRecovery(
     };
   }
 
-  // 2. Copy adoption (file/dir -> symlink; ledger-mutating: targetGen === expectedGen + 1).
-  // Commitment point: once rename(dst, backupPath) succeeds, the switch to tracking the
-  // canonical source is committed, and recovery completes that authorized switch.
   if (journal.kind === "link-adopt-copy") {
     const backupSnap = journal.backupPath
       ? captureSnapshotForExpected(journal.backupPath, journal.before)
@@ -441,7 +690,6 @@ export function inspectPendingRecovery(
     };
   }
 
-  // 3. Forced removal of unmanaged disabled MCP entry (ledger-neutral: targetGen === expectedGen)
   if (journal.kind === "mcp-write" && !ledgerMutates) {
     if (gen !== expectedGen) {
       return {
@@ -475,8 +723,6 @@ export function inspectPendingRecovery(
     };
   }
 
-  // 4. Standard ledger-mutating single-target operations:
-  //    mcp-write (add/update/managed-remove), link-create, link-replace, link-prune
   if (gen >= targetGen && snapshotsEqual(liveAsAfter, journal.after)) {
     return {
       classification: "already-completed",
@@ -510,11 +756,6 @@ export function inspectPendingRecovery(
   };
 }
 
-/**
- * Phase 0: Execute recovery for a pending journal record (apply mode only).
- * Returns updated OwnershipStateV2 and a structured RecoveryReport reported
- * separately from any subsequent Phase 1 preflight or Phase 2 apply results.
- */
 export function executePendingRecovery(
   journal: PendingJournalRecord,
   journalPath: string,

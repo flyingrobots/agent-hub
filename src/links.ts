@@ -12,11 +12,13 @@ import {
   unlinkSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
+import { LINK_TARGETS } from "./adapters.ts";
 import {
   captureSymlinkOrAbsentSnapshot,
   captureTreeSnapshot,
   checkAdoptionEquivalence,
   fsyncDir,
+  predictNewEntryOwner,
   snapshotsEqual,
 } from "./paths.ts";
 import {
@@ -35,14 +37,7 @@ import type {
   TargetSnapshot,
 } from "./types.ts";
 
-export const LINK_TARGETS = [
-  { rootRel: ".codex", rulesRel: "AGENTS.md", skillsRel: "skills" },
-  { rootRel: ".claude", rulesRel: "CLAUDE.md", skillsRel: "skills" },
-  { rootRel: ".gemini", rulesRel: "GEMINI.md", skillsRel: "skills" },
-  { rootRel: ".gemini/config", rulesRel: "AGENTS.md", skillsRel: null },
-  { rootRel: ".config/opencode", rulesRel: "AGENTS.md", skillsRel: "skills" },
-  { rootRel: ".cursor", rulesRel: "AGENTS.md", skillsRel: "skills" },
-] as const;
+export { LINK_TARGETS };
 
 export type LinkActionKind =
   | "keep"
@@ -64,26 +59,6 @@ export type PlannedLinkOp = {
   beforeSnapshot: TargetSnapshot;
   srcSnapshot?: Extract<TargetSnapshot, { kind: "tree" }>;
 };
-
-function predictNewEntryOwner(parentDir: string): { uid: number; gid: number } {
-  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
-  const procGid = typeof process.getgid === "function" ? process.getgid() : 0;
-  try {
-    let cursor = parentDir;
-    while (!existsSync(cursor)) {
-      const next = dirname(cursor);
-      if (next === cursor) return { uid, gid: procGid };
-      cursor = next;
-    }
-    const st = statSync(cursor);
-    if (process.platform === "darwin" || (st.mode & 0o2000) !== 0) {
-      return { uid, gid: st.gid };
-    }
-  } catch {
-    // fallback to process gid
-  }
-  return { uid, gid: procGid };
-}
 
 function isValidReferent(dst: string, kind: "rules" | "skill"): boolean {
   try {
@@ -124,12 +99,404 @@ export function collectCanonicalSkillNames(
   return [...names].sort();
 }
 
+function planDesiredLinkOp(
+  dst: string,
+  src: string,
+  kind: "rules" | "skill",
+  stagedSrcDir: string | undefined,
+  managedRec: ManagedLinkRecord | undefined,
+  opts: { adopt: boolean; force: boolean },
+): PlannedLinkOp {
+  let lst = null;
+  try {
+    lst = lstatSync(dst);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
+  }
+
+  // T-LNK-01: Destination does not exist
+  if (!lst) {
+    return {
+      actionKind: "link-create",
+      linkKind: kind,
+      src,
+      dst,
+      basis: "created",
+      beforeSnapshot: { kind: "absent" },
+      op: {
+        domain: "link",
+        action: "link-create",
+        status: "change",
+        destination: dst,
+        observed: "absent",
+        intended: `symlink -> ${src}`,
+        ownershipBasis: "created",
+        reason: managedRec
+          ? "previously managed symlink is missing; recreating"
+          : "destination is absent; creating new managed symlink",
+        targetMutation: true,
+        ledgerMutation: true,
+      },
+    };
+  }
+
+  // Existing symlink
+  if (lst.isSymbolicLink()) {
+    const currentTarget = readlinkSync(dst);
+    const validRef = isValidReferent(dst, kind);
+    const beforeSnap = captureSymlinkOrAbsentSnapshot(dst);
+
+    if (managedRec) {
+      if (currentTarget === managedRec.target) {
+        if (currentTarget === src && validRef) {
+          return {
+            actionKind: "keep",
+            linkKind: kind,
+            src,
+            dst,
+            beforeSnapshot: beforeSnap,
+            op: {
+              domain: "link",
+              action: "keep",
+              status: "ok",
+              destination: dst,
+              observed: `symlink -> ${currentTarget} (valid ${kind})`,
+              intended: `symlink -> ${src}`,
+              ownershipBasis: managedRec.basis,
+              reason: "managed symlink matches canonical target and referent is valid",
+              targetMutation: false,
+              ledgerMutation: false,
+            },
+          };
+        }
+
+        return {
+          actionKind: "link-replace",
+          linkKind: kind,
+          src,
+          dst,
+          basis: managedRec.basis,
+          beforeSnapshot: beforeSnap,
+          op: {
+            domain: "link",
+            action: "link-replace",
+            status: "change",
+            destination: dst,
+            observed: `managed symlink -> ${currentTarget}${validRef ? "" : " (broken referent)"}`,
+            intended: `symlink -> ${src}`,
+            ownershipBasis: managedRec.basis,
+            reason: validRef
+              ? "managed symlink target updated"
+              : "managed symlink referent is broken or wrong kind",
+            targetMutation: true,
+            ledgerMutation: true,
+          },
+        };
+      }
+
+      if (opts.force) {
+        return {
+          actionKind: "link-replace",
+          linkKind: kind,
+          src,
+          dst,
+          basis: "forced",
+          beforeSnapshot: beforeSnap,
+          op: {
+            domain: "link",
+            action: "link-replace",
+            status: "change",
+            destination: dst,
+            observed: `managed symlink externally repointed to ${currentTarget} (expected ${managedRec.target})`,
+            intended: `symlink -> ${src}`,
+            ownershipBasis: "forced",
+            reason: "explicit --force authorized replacing externally modified symlink",
+            targetMutation: true,
+            ledgerMutation: true,
+          },
+        };
+      }
+
+      return {
+        actionKind: "conflict",
+        linkKind: kind,
+        src,
+        dst,
+        beforeSnapshot: beforeSnap,
+        op: {
+          domain: "link",
+          action: "conflict",
+          status: "conflict",
+          destination: dst,
+          observed: `symlink -> ${currentTarget} (ledger expected -> ${managedRec.target})`,
+          intended: `symlink -> ${src}`,
+          ownershipBasis: "managed-externally-modified",
+          reason: `managed symlink ${dst} was externally repointed to ${currentTarget}`,
+          nextStep: "Inspect target or re-run with --force to replace",
+          targetMutation: false,
+          ledgerMutation: false,
+        },
+      };
+    }
+
+    // Unmanaged symlink
+    if (currentTarget === src && validRef) {
+      if (opts.adopt || opts.force) {
+        return {
+          actionKind: "adopt-symlink",
+          linkKind: kind,
+          src,
+          dst,
+          basis: "adopted",
+          beforeSnapshot: beforeSnap,
+          op: {
+            domain: "link",
+            action: "adopt-symlink",
+            status: "change",
+            destination: dst,
+            observed: `unmanaged symlink -> ${currentTarget} (valid ${kind})`,
+            intended: `record ownership in ledger for ${dst} -> ${src}`,
+            ownershipBasis: "adopted",
+            reason: "unmanaged symlink already matches canonical target; recording ownership",
+            targetMutation: false,
+            ledgerMutation: true,
+          },
+        };
+      }
+
+      return {
+        actionKind: "conflict",
+        linkKind: kind,
+        src,
+        dst,
+        beforeSnapshot: beforeSnap,
+        op: {
+          domain: "link",
+          action: "conflict",
+          status: "conflict",
+          destination: dst,
+          observed: `unmanaged symlink -> ${currentTarget} (valid ${kind})`,
+          intended: `managed symlink -> ${src}`,
+          ownershipBasis: "unmanaged",
+          reason: `${dst} is an unmanaged symlink pointing to ${src}`,
+          nextStep: "Re-run with --adopt to record verified ownership without modifying the link",
+          targetMutation: false,
+          ledgerMutation: false,
+        },
+      };
+    }
+
+    if (opts.force) {
+      return {
+        actionKind: "link-replace",
+        linkKind: kind,
+        src,
+        dst,
+        basis: "forced",
+        beforeSnapshot: beforeSnap,
+        op: {
+          domain: "link",
+          action: "link-replace",
+          status: "change",
+          destination: dst,
+          observed: `unmanaged symlink -> ${currentTarget}${validRef ? "" : " (broken)"}`,
+          intended: `symlink -> ${src}`,
+          ownershipBasis: "forced",
+          reason: "explicit --force authorized replacing unmanaged symlink",
+          targetMutation: true,
+          ledgerMutation: true,
+        },
+      };
+    }
+
+    return {
+      actionKind: "conflict",
+      linkKind: kind,
+      src,
+      dst,
+      beforeSnapshot: beforeSnap,
+      op: {
+        domain: "link",
+        action: "conflict",
+        status: "conflict",
+        destination: dst,
+        observed: `unmanaged symlink -> ${currentTarget}${validRef ? "" : " (broken)"}`,
+        intended: `symlink -> ${src}`,
+        ownershipBasis: "unmanaged",
+        reason: validRef
+          ? `${dst} is an unmanaged symlink pointing to ${currentTarget}`
+          : `${dst} is an unmanaged broken symlink pointing to ${currentTarget}`,
+        nextStep: "Inspect or remove it manually, or re-run with --force to replace",
+        targetMutation: false,
+        ledgerMutation: false,
+      },
+    };
+  }
+
+  // Non-symlink real file or directory.
+  // Support single-pass `--adopt --skill <src>`: when canonical `src` does not exist on disk yet
+  // but is being installed from `stagedSrcDir` in Phase 2, evaluate equivalence against the exact
+  // tree that `applySkillInstall` will place at `src` (excluding root .git, root mode 0755).
+  const eqResult = existsSync(src)
+    ? checkAdoptionEquivalence(src, dst)
+    : stagedSrcDir && existsSync(stagedSrcDir)
+      ? checkAdoptionEquivalence(stagedSrcDir, dst, {
+          excludeRootGit: true,
+          forceRootDirMode: 0o755,
+        })
+      : ({ equivalent: false, reason: "canonical source does not exist on disk yet" } as const);
+
+  if (eqResult.equivalent) {
+    if (opts.adopt) {
+      return {
+        actionKind: "link-adopt-copy",
+        linkKind: kind,
+        src,
+        dst,
+        basis: "adopted",
+        beforeSnapshot: eqResult.dstSnapshot,
+        srcSnapshot: eqResult.srcSnapshot,
+        op: {
+          domain: "link",
+          action: "link-adopt-copy",
+          status: "change",
+          destination: dst,
+          observed: `unmanaged ${eqResult.dstSnapshot.rootKind} passing full adoption-equivalence contract`,
+          intended: `replace with managed symlink -> ${src}`,
+          ownershipBasis: "adopted",
+          reason: "explicit --adopt authorized replacing verified-equivalent copy with symlink",
+          targetMutation: true,
+          ledgerMutation: true,
+        },
+      };
+    }
+
+    return {
+      actionKind: "conflict",
+      linkKind: kind,
+      src,
+      dst,
+      beforeSnapshot: eqResult.dstSnapshot,
+      op: {
+        domain: "link",
+        action: "conflict",
+        status: "conflict",
+        destination: dst,
+        observed: `unmanaged ${eqResult.dstSnapshot.rootKind} (equivalent to canonical ${src})`,
+        intended: `managed symlink -> ${src}`,
+        ownershipBasis: "unmanaged",
+        reason: `${dst} exists and is not a symlink (verified equivalent to ${src})`,
+        nextStep: "Re-run with --adopt to replace with a managed symlink",
+        targetMutation: false,
+        ledgerMutation: false,
+      },
+    };
+  }
+
+  return {
+    actionKind: "conflict",
+    linkKind: kind,
+    src,
+    dst,
+    beforeSnapshot: { kind: "absent" },
+    op: {
+      domain: "link",
+      action: "conflict",
+      status: "conflict",
+      destination: dst,
+      observed: `unmanaged non-symlink (${eqResult.reason})`,
+      intended: `symlink -> ${src}`,
+      ownershipBasis: "unmanaged",
+      reason: `${dst} exists and is not equivalent to ${src}: ${eqResult.reason}`,
+      nextStep: "Inspect and merge or move manually; adoption refuses non-equivalent files/directories",
+      targetMutation: false,
+      ledgerMutation: false,
+    },
+  };
+}
+
+function planPruneLinkOp(dst: string, rec: ManagedLinkRecord): PlannedLinkOp {
+  let lst = null;
+  try {
+    lst = lstatSync(dst);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
+  }
+
+  if (!lst) {
+    return {
+      actionKind: "drop-absent-link",
+      linkKind: rec.kind,
+      dst,
+      beforeSnapshot: { kind: "absent" },
+      op: {
+        domain: "link",
+        action: "drop-absent-link",
+        status: "change",
+        destination: dst,
+        observed: "absent (stale ownership record in ledger)",
+        intended: "remove absent link record from ownership ledger",
+        ownershipBasis: rec.basis,
+        reason: "canonical source and destination symlink are both absent",
+        targetMutation: false,
+        ledgerMutation: true,
+      },
+    };
+  }
+
+  if (lst.isSymbolicLink() && readlinkSync(dst) === rec.target) {
+    const beforeSnap = captureSymlinkOrAbsentSnapshot(dst);
+    return {
+      actionKind: "link-prune",
+      linkKind: rec.kind,
+      dst,
+      basis: rec.basis,
+      beforeSnapshot: beforeSnap,
+      op: {
+        domain: "link",
+        action: "link-prune",
+        status: "change",
+        destination: dst,
+        observed: `managed symlink -> ${rec.target}`,
+        intended: "remove stale managed symlink",
+        ownershipBasis: rec.basis,
+        reason: "canonical source was removed and destination matches recorded managed target",
+        targetMutation: true,
+        ledgerMutation: true,
+      },
+    };
+  }
+
+  const observedDesc = lst.isSymbolicLink()
+    ? `symlink -> ${readlinkSync(dst)} (expected ${rec.target})`
+    : "non-symlink file/directory";
+  return {
+    actionKind: "conflict",
+    linkKind: rec.kind,
+    dst,
+    beforeSnapshot: { kind: "absent" },
+    op: {
+      domain: "link",
+      action: "conflict",
+      status: "conflict",
+      destination: dst,
+      observed: observedDesc,
+      intended: "prune removed managed symlink",
+      ownershipBasis: "managed-externally-modified",
+      reason: `refusing to prune ${dst}: destination no longer matches recorded managed symlink (${rec.target})`,
+      nextStep: "Inspect destination and remove it manually if no longer needed",
+      targetMutation: false,
+      ledgerMutation: false,
+    },
+  };
+}
+
 export function planLinkSync(
   canonicalHubPath: string,
   homeDir: string,
   state: OwnershipStateV2,
   plannedSkillNames: string[],
-  opts: { adopt: boolean; force: boolean },
+  opts: { adopt: boolean; force: boolean; plannedSkillSources?: Map<string, string> },
 ): PlannedLinkOp[] {
   const plans: PlannedLinkOp[] = [];
   const canonicalRules = join(canonicalHubPath, "AGENTS.md");
@@ -140,7 +507,7 @@ export function planLinkSync(
     (existsSync(canonicalSkills) && statSync(canonicalSkills).isDirectory()) ||
     plannedSkillNames.length > 0;
 
-  const desired = new Map<string, { src: string; kind: "rules" | "skill" }>();
+  const desired = new Map<string, { src: string; kind: "rules" | "skill"; skillName?: string }>();
 
   for (const target of LINK_TARGETS) {
     const rootDir = join(homeDir, target.rootRel);
@@ -157,410 +524,25 @@ export function planLinkSync(
         desired.set(join(rootDir, target.skillsRel, skillName), {
           src: join(canonicalSkills, skillName),
           kind: "skill",
+          skillName,
         });
       }
     }
   }
 
   for (const dst of [...desired.keys()].sort()) {
-    const { src, kind } = desired.get(dst)!;
-    const managedRec = state.links[dst];
-
-    let lst = null;
-    try {
-      lst = lstatSync(dst);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
-    }
-
-    // T-LNK-01: Destination does not exist
-    if (!lst) {
-      plans.push({
-        actionKind: "link-create",
-        linkKind: kind,
-        src,
-        dst,
-        basis: "created",
-        beforeSnapshot: { kind: "absent" },
-        op: {
-          domain: "link",
-          action: "link-create",
-          status: "change",
-          destination: dst,
-          observed: "absent",
-          intended: `symlink -> ${src}`,
-          ownershipBasis: "created",
-          reason: managedRec
-            ? "previously managed symlink is missing; recreating"
-            : "destination is absent; creating new managed symlink",
-          targetMutation: true,
-          ledgerMutation: true,
-        },
-      });
-      continue;
-    }
-
-    // Destination is a symlink
-    if (lst.isSymbolicLink()) {
-      const currentTarget = readlinkSync(dst);
-      const validRef = isValidReferent(dst, kind);
-      const beforeSnap = captureSymlinkOrAbsentSnapshot(dst);
-
-      if (managedRec) {
-        if (currentTarget === managedRec.target) {
-          if (currentTarget === src && validRef) {
-            // T-LNK-02: In sync, zero churn
-            plans.push({
-              actionKind: "keep",
-              linkKind: kind,
-              src,
-              dst,
-              beforeSnapshot: beforeSnap,
-              op: {
-                domain: "link",
-                action: "keep",
-                status: "ok",
-                destination: dst,
-                observed: `symlink -> ${currentTarget} (valid ${kind})`,
-                intended: `symlink -> ${src}`,
-                ownershipBasis: managedRec.basis,
-                reason: "managed symlink matches canonical target and referent is valid",
-                targetMutation: false,
-                ledgerMutation: false,
-              },
-            });
-            continue;
-          }
-
-          // Managed symlink still matches recorded target, but canonical path changed or referent is broken
-          plans.push({
-            actionKind: "link-replace",
-            linkKind: kind,
-            src,
-            dst,
-            basis: managedRec.basis,
-            beforeSnapshot: beforeSnap,
-            op: {
-              domain: "link",
-              action: "link-replace",
-              status: "change",
-              destination: dst,
-              observed: `managed symlink -> ${currentTarget}${validRef ? "" : " (broken referent)"}`,
-              intended: `symlink -> ${src}`,
-              ownershipBasis: managedRec.basis,
-              reason: validRef
-                ? "managed symlink target updated"
-                : "managed symlink referent is broken or wrong kind",
-              targetMutation: true,
-              ledgerMutation: true,
-            },
-          });
-          continue;
-        }
-
-        // T-LNK-03: Managed symlink was externally repointed!
-        if (opts.force) {
-          plans.push({
-            actionKind: "link-replace",
-            linkKind: kind,
-            src,
-            dst,
-            basis: "forced",
-            beforeSnapshot: beforeSnap,
-            op: {
-              domain: "link",
-              action: "link-replace",
-              status: "change",
-              destination: dst,
-              observed: `managed symlink externally repointed to ${currentTarget} (expected ${managedRec.target})`,
-              intended: `symlink -> ${src}`,
-              ownershipBasis: "forced",
-              reason: "explicit --force authorized replacing externally modified symlink",
-              targetMutation: true,
-              ledgerMutation: true,
-            },
-          });
-        } else {
-          plans.push({
-            actionKind: "conflict",
-            linkKind: kind,
-            src,
-            dst,
-            beforeSnapshot: beforeSnap,
-            op: {
-              domain: "link",
-              action: "conflict",
-              status: "conflict",
-              destination: dst,
-              observed: `symlink -> ${currentTarget} (ledger expected -> ${managedRec.target})`,
-              intended: `symlink -> ${src}`,
-              ownershipBasis: "managed-externally-modified",
-              reason: `managed symlink ${dst} was externally repointed to ${currentTarget}`,
-              nextStep: "Inspect target or re-run with --force to replace",
-              targetMutation: false,
-              ledgerMutation: false,
-            },
-          });
-        }
-        continue;
-      }
-
-      // Unmanaged symlink (not in state.links)
-      if (currentTarget === src && validRef) {
-        // T-LNK-04: Unmanaged identical symlink -> ledger-only adoption
-        if (opts.adopt || opts.force) {
-          plans.push({
-            actionKind: "adopt-symlink",
-            linkKind: kind,
-            src,
-            dst,
-            basis: "adopted",
-            beforeSnapshot: beforeSnap,
-            op: {
-              domain: "link",
-              action: "adopt-symlink",
-              status: "change",
-              destination: dst,
-              observed: `unmanaged symlink -> ${currentTarget} (valid ${kind})`,
-              intended: `record ownership in ledger for ${dst} -> ${src}`,
-              ownershipBasis: "adopted",
-              reason: "unmanaged symlink already matches canonical target; recording ownership",
-              targetMutation: false,
-              ledgerMutation: true,
-            },
-          });
-        } else {
-          plans.push({
-            actionKind: "conflict",
-            linkKind: kind,
-            src,
-            dst,
-            beforeSnapshot: beforeSnap,
-            op: {
-              domain: "link",
-              action: "conflict",
-              status: "conflict",
-              destination: dst,
-              observed: `unmanaged symlink -> ${currentTarget} (valid ${kind})`,
-              intended: `managed symlink -> ${src}`,
-              ownershipBasis: "unmanaged",
-              reason: `${dst} is an unmanaged symlink pointing to ${src}`,
-              nextStep: "Re-run with --adopt to record verified ownership without modifying the link",
-              targetMutation: false,
-              ledgerMutation: false,
-            },
-          });
-        }
-        continue;
-      }
-
-      // T-LNK-05: Unmanaged differing or broken symlink
-      if (opts.force) {
-        plans.push({
-          actionKind: "link-replace",
-          linkKind: kind,
-          src,
-          dst,
-          basis: "forced",
-          beforeSnapshot: beforeSnap,
-          op: {
-            domain: "link",
-            action: "link-replace",
-            status: "change",
-            destination: dst,
-            observed: `unmanaged symlink -> ${currentTarget}${validRef ? "" : " (broken)"}`,
-            intended: `symlink -> ${src}`,
-            ownershipBasis: "forced",
-            reason: "explicit --force authorized replacing unmanaged symlink",
-            targetMutation: true,
-            ledgerMutation: true,
-          },
-        });
-      } else {
-        plans.push({
-          actionKind: "conflict",
-          linkKind: kind,
-          src,
-          dst,
-          beforeSnapshot: beforeSnap,
-          op: {
-            domain: "link",
-            action: "conflict",
-            status: "conflict",
-            destination: dst,
-            observed: `unmanaged symlink -> ${currentTarget}${validRef ? "" : " (broken)"}`,
-            intended: `symlink -> ${src}`,
-            ownershipBasis: "unmanaged",
-            reason: validRef
-              ? `${dst} is an unmanaged symlink pointing to ${currentTarget}`
-              : `${dst} is an unmanaged broken symlink pointing to ${currentTarget}`,
-            nextStep: "Inspect or remove it manually, or re-run with --force to replace",
-            targetMutation: false,
-            ledgerMutation: false,
-          },
-        });
-      }
-      continue;
-    }
-
-    // T-LNK-06 / T-LNK-07: Non-symlink real file or directory
-    const eqResult = existsSync(src)
-      ? checkAdoptionEquivalence(src, dst)
-      : ({ equivalent: false, reason: "canonical source does not exist on disk yet" } as const);
-
-    if (eqResult.equivalent) {
-      if (opts.adopt) {
-        plans.push({
-          actionKind: "link-adopt-copy",
-          linkKind: kind,
-          src,
-          dst,
-          basis: "adopted",
-          beforeSnapshot: eqResult.dstSnapshot,
-          srcSnapshot: eqResult.srcSnapshot,
-          op: {
-            domain: "link",
-            action: "link-adopt-copy",
-            status: "change",
-            destination: dst,
-            observed: `unmanaged ${eqResult.dstSnapshot.rootKind} passing full adoption-equivalence contract`,
-            intended: `replace with managed symlink -> ${src}`,
-            ownershipBasis: "adopted",
-            reason: "explicit --adopt authorized replacing verified-equivalent copy with symlink",
-            targetMutation: true,
-            ledgerMutation: true,
-          },
-        });
-      } else {
-        plans.push({
-          actionKind: "conflict",
-          linkKind: kind,
-          src,
-          dst,
-          beforeSnapshot: eqResult.dstSnapshot,
-          op: {
-            domain: "link",
-            action: "conflict",
-            status: "conflict",
-            destination: dst,
-            observed: `unmanaged ${eqResult.dstSnapshot.rootKind} (equivalent to canonical ${src})`,
-            intended: `managed symlink -> ${src}`,
-            ownershipBasis: "unmanaged",
-            reason: `${dst} exists and is not a symlink (verified equivalent to ${src})`,
-            nextStep: "Re-run with --adopt to replace with a managed symlink",
-            targetMutation: false,
-            ledgerMutation: false,
-          },
-        });
-      }
-    } else {
-      // T-LNK-07: Fails adoption-equivalence contract — refused even under --adopt and --force!
-      plans.push({
-        actionKind: "conflict",
-        linkKind: kind,
-        src,
-        dst,
-        beforeSnapshot: { kind: "absent" },
-        op: {
-          domain: "link",
-          action: "conflict",
-          status: "conflict",
-          destination: dst,
-          observed: `unmanaged non-symlink (${eqResult.reason})`,
-          intended: `symlink -> ${src}`,
-          ownershipBasis: "unmanaged",
-          reason: `${dst} exists and is not equivalent to ${src}: ${eqResult.reason}`,
-          nextStep: "Inspect and merge or move manually; adoption refuses non-equivalent files/directories",
-          targetMutation: false,
-          ledgerMutation: false,
-        },
-      });
-    }
+    const entry = desired.get(dst)!;
+    const stagedSrcDir =
+      entry.skillName !== undefined ? opts.plannedSkillSources?.get(entry.skillName) : undefined;
+    plans.push(
+      planDesiredLinkOp(dst, entry.src, entry.kind, stagedSrcDir, state.links[dst], opts),
+    );
   }
 
-  // Pruning: iterate ONLY over verified v2 state.links records (never scan skills/ by prefix!).
+  // Prune ONLY verified v2 state.links records (never scan skills/ by path prefix).
   for (const dst of Object.keys(state.links).sort()) {
     if (desired.has(dst)) continue;
-    const rec = state.links[dst]!;
-
-    let lst = null;
-    try {
-      lst = lstatSync(dst);
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException)?.code !== "ENOENT") throw err;
-    }
-
-    // T-LNK-09: Managed symlink already absent -> ledger-only cleanup
-    if (!lst) {
-      plans.push({
-        actionKind: "drop-absent-link",
-        linkKind: rec.kind,
-        dst,
-        beforeSnapshot: { kind: "absent" },
-        op: {
-          domain: "link",
-          action: "drop-absent-link",
-          status: "change",
-          destination: dst,
-          observed: "absent (stale ownership record in ledger)",
-          intended: "remove absent link record from ownership ledger",
-          ownershipBasis: rec.basis,
-          reason: "canonical source and destination symlink are both absent",
-          targetMutation: false,
-          ledgerMutation: true,
-        },
-      });
-      continue;
-    }
-
-    // T-LNK-08: Still our exact managed symlink -> safe to prune
-    if (lst.isSymbolicLink() && readlinkSync(dst) === rec.target) {
-      const beforeSnap = captureSymlinkOrAbsentSnapshot(dst);
-      plans.push({
-        actionKind: "link-prune",
-        linkKind: rec.kind,
-        dst,
-        basis: rec.basis,
-        beforeSnapshot: beforeSnap,
-        op: {
-          domain: "link",
-          action: "link-prune",
-          status: "change",
-          destination: dst,
-          observed: `managed symlink -> ${rec.target}`,
-          intended: "remove stale managed symlink",
-          ownershipBasis: rec.basis,
-          reason: "canonical source was removed and destination matches recorded managed target",
-          targetMutation: true,
-          ledgerMutation: true,
-        },
-      });
-      continue;
-    }
-
-    // T-LNK-10: User replaced destination with different symlink or real file/dir -> preserve!
-    const observedDesc = lst.isSymbolicLink()
-      ? `symlink -> ${readlinkSync(dst)} (expected ${rec.target})`
-      : "non-symlink file/directory";
-    plans.push({
-      actionKind: "conflict",
-      linkKind: rec.kind,
-      dst,
-      beforeSnapshot: { kind: "absent" },
-      op: {
-        domain: "link",
-        action: "conflict",
-        status: "conflict",
-        destination: dst,
-        observed: observedDesc,
-        intended: "prune removed managed symlink",
-        ownershipBasis: "managed-externally-modified",
-        reason: `refusing to prune ${dst}: destination no longer matches recorded managed symlink (${rec.target})`,
-        nextStep: "Inspect destination and remove it manually if no longer needed",
-        targetMutation: false,
-        ledgerMutation: false,
-      },
-    });
+    plans.push(planPruneLinkOp(dst, state.links[dst]!));
   }
 
   return plans;
@@ -640,7 +622,6 @@ export function applyLinkOp(
     return nextState;
   }
 
-  // Target-mutating link operations follow the 4-step write-ahead journal protocol.
   const opId = `link-${Date.now()}-${randomBytes(4).toString("hex")}`;
   const parentDir = dirname(plan.dst);
   const owner = predictNewEntryOwner(parentDir);
@@ -700,8 +681,6 @@ export function applyLinkOp(
   };
 
   if (plan.actionKind === "link-adopt-copy") {
-    // Commitment point: once rename(dst, backupPath) succeeds, the switch to tracking
-    // the canonical source is committed, and Phase 0 recovery completes it.
     const backupPath = join(parentDir, `.agent-hub-adopt-${opId}`);
     const journal: PendingJournalRecord = {
       version: 1,
@@ -758,7 +737,6 @@ export function applyLinkOp(
     return nextState;
   }
 
-  // link-create or link-replace
   const journal: PendingJournalRecord = {
     version: 1,
     opId,

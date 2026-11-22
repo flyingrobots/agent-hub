@@ -31,7 +31,11 @@ import {
   saveOwnershipState,
   writeJournal,
 } from "../src/state.ts";
-import type { OwnershipStateV2, PendingJournalRecord } from "../src/types.ts";
+import type {
+  OwnershipStateV2,
+  PendingJournalRecord,
+  RecoveryClassification,
+} from "../src/types.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 const tempRoots: string[] = [];
@@ -547,7 +551,7 @@ describe("write-ahead recovery, locking, and snapshot freshness", () => {
     const cases: Array<{
       name: string;
       setup: (sb: ReturnType<typeof makeSandbox>, paths: ReturnType<typeof getStatePaths>) => {
-        expectedClassification: string;
+        expectedClassification: RecoveryClassification;
         expectExitCode: number;
         assertAfterFirstRun: (
           sb: ReturnType<typeof makeSandbox>,

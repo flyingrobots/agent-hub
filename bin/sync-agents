@@ -168,13 +168,19 @@ while [[ "$i" -lt "${#ARGS[@]}" ]]; do
       PRINT_DIR=1
       ;;
     --dir)
-      if [[ $((i + 1)) -lt "${#ARGS[@]}" ]]; then
-        i=$((i + 1))
-        CLI_AGENTS_DIR="${ARGS[$i]}"
+      if [[ $((i + 1)) -ge "${#ARGS[@]}" ]]; then
+        echo "sync-agents: --dir requires a path argument" >&2
+        exit 2
       fi
+      i=$((i + 1))
+      CLI_AGENTS_DIR="${ARGS[$i]}"
       ;;
     --dir=*)
       CLI_AGENTS_DIR="${arg#--dir=}"
+      if [[ -z "$CLI_AGENTS_DIR" ]]; then
+        echo "sync-agents: --dir requires a non-empty path argument" >&2
+        exit 2
+      fi
       ;;
   esac
   i=$((i + 1))

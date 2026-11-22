@@ -40,11 +40,54 @@ Options:
 EOF
 }
 
+require_arg() {
+  local opt="$1"
+  local remaining="$2"
+  if [[ "$remaining" -lt 2 ]]; then
+    echo "install.sh: $opt requires an argument" >&2
+    usage >&2
+    exit 2
+  fi
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --prefix)          INSTALL_DIR="$2"; shift ;;
-    --bin-dir)         BIN_DIR="$2"; shift ;;
-    --agents-dir)      CONFIG_AGENTS_DIR="$2"; shift ;;
+    --prefix)
+      require_arg "--prefix" "$#"
+      INSTALL_DIR="$2"
+      shift
+      ;;
+    --prefix=*)
+      INSTALL_DIR="${1#--prefix=}"
+      if [[ -z "$INSTALL_DIR" ]]; then
+        echo "install.sh: --prefix requires a non-empty argument" >&2
+        exit 2
+      fi
+      ;;
+    --bin-dir)
+      require_arg "--bin-dir" "$#"
+      BIN_DIR="$2"
+      shift
+      ;;
+    --bin-dir=*)
+      BIN_DIR="${1#--bin-dir=}"
+      if [[ -z "$BIN_DIR" ]]; then
+        echo "install.sh: --bin-dir requires a non-empty argument" >&2
+        exit 2
+      fi
+      ;;
+    --agents-dir)
+      require_arg "--agents-dir" "$#"
+      CONFIG_AGENTS_DIR="$2"
+      shift
+      ;;
+    --agents-dir=*)
+      CONFIG_AGENTS_DIR="${1#--agents-dir=}"
+      if [[ -z "$CONFIG_AGENTS_DIR" ]]; then
+        echo "install.sh: --agents-dir requires a non-empty argument" >&2
+        exit 2
+      fi
+      ;;
     --no-skill)        INSTALL_SKILL=0 ;;
     --no-sync)         NO_SYNC=1 ;;
     --force-skill)     FORCE_SKILL=1 ;;
@@ -138,7 +181,6 @@ is_verified_baseline_v0_runtime() {
   local dir="$1"
   [[ -f "$dir/bin/sync-agents" && -f "$dir/src/mcp-sync.ts" && -f "$dir/skills/agent-hub/SKILL.md" ]] || return 1
 
-  # Must contain zero unexpected files or symlinks.
   local file_count
   file_count="$(find "$dir" \( -type f -o -type l \) | wc -l | tr -d '[:space:]')"
   [[ "$file_count" == "3" ]] || return 1
@@ -157,6 +199,39 @@ paths_overlap() {
   [[ "$a" == "$b" || "$a" == "$b/"* || "$b" == "$a/"* ]]
 }
 
+# Single-syscall atomic directory swap (macOS renamex_np RENAME_SWAP / Linux renameat2 RENAME_EXCHANGE)
+# so $INSTALL_DIR is never absent during upgrade. Returns non-zero if unsupported so caller can fall back.
+try_atomic_dir_exchange() {
+  local a="$1"
+  local b="$2"
+  command -v bun >/dev/null 2>&1 || return 1
+  bun -e '
+    import { dlopen, FFIType, ptr } from "bun:ffi";
+    const [a, b] = process.argv.slice(1);
+    const ab = Buffer.from(`${a}\0`);
+    const bb = Buffer.from(`${b}\0`);
+    if (process.platform === "darwin") {
+      const lib = dlopen("libSystem.B.dylib", {
+        renamex_np: { args: [FFIType.cstring, FFIType.cstring, FFIType.u32], returns: FFIType.i32 },
+      });
+      const rc = lib.symbols.renamex_np(ptr(ab), ptr(bb), 0x00000002);
+      process.exit(rc === 0 ? 0 : 1);
+    } else if (process.platform === "linux") {
+      const AT_FDCWD = -100;
+      const RENAME_EXCHANGE = 2;
+      const lib = dlopen("libc.so.6", {
+        renameat2: {
+          args: [FFIType.i32, FFIType.cstring, FFIType.i32, FFIType.cstring, FFIType.u32],
+          returns: FFIType.i32,
+        },
+      });
+      const rc = lib.symbols.renameat2(AT_FDCWD, ptr(ab), AT_FDCWD, ptr(bb), RENAME_EXCHANGE);
+      process.exit(rc === 0 ? 0 : 1);
+    }
+    process.exit(1);
+  ' "$a" "$b" >/dev/null 2>&1
+}
+
 INSTALL_DIR="$(canonicalize_path "$INSTALL_DIR")"
 BIN_DIR="$(canonicalize_path "$BIN_DIR")"
 CANON_HOME="$(canonicalize_path "$HOME")"
@@ -167,7 +242,6 @@ else
   HUB_DIR="$("$REPO_DIR/bin/sync-agents" --print-dir)"
 fi
 
-# Runtime-prefix safety checks: never target /, $HOME, or overlap the hub directory.
 if [[ "$INSTALL_DIR" == "/" || "$INSTALL_DIR" == "$CANON_HOME" ]]; then
   echo "install.sh: refusing unsafe --prefix: $INSTALL_DIR" >&2
   exit 1
@@ -178,7 +252,6 @@ if paths_overlap "$INSTALL_DIR" "$HUB_DIR"; then
   exit 1
 fi
 
-# Check existing --prefix ownership before mutating anything.
 PREFIX_STATUS="absent"
 if [[ -L "$INSTALL_DIR" || -f "$INSTALL_DIR" ]]; then
   echo "install.sh: refusing to replace non-directory at --prefix: $INSTALL_DIR" >&2
@@ -198,16 +271,21 @@ elif [[ -d "$INSTALL_DIR" ]]; then
   fi
 fi
 
-# Check existing <bin-dir>/sync-agents shim authority before mutating anything.
+# Check existing <bin-dir>/sync-agents shim authority, resolving relative symlinks
+# against dirname "$SHIM_PATH" (NEVER $PWD).
 SHIM_PATH="$BIN_DIR/sync-agents"
 if [[ -e "$SHIM_PATH" || -L "$SHIM_PATH" ]]; then
   SHIM_ALLOWED=0
   if [[ -L "$SHIM_PATH" ]]; then
     SHIM_TARGET="$(readlink "$SHIM_PATH")"
-    if [[ "$SHIM_TARGET" == "$INSTALL_DIR/bin/sync-agents" ]]; then
+    case "$SHIM_TARGET" in
+      /*) SHIM_RESOLVED="$(canonicalize_path "$SHIM_TARGET")" ;;
+      *)  SHIM_RESOLVED="$(canonicalize_path "$(dirname "$SHIM_PATH")/$SHIM_TARGET")" ;;
+    esac
+    if [[ "$SHIM_RESOLVED" == "$INSTALL_DIR/bin/sync-agents" ]]; then
       SHIM_ALLOWED=1
     else
-      SHIM_TARGET_DIR="$(dirname "$(dirname "$SHIM_TARGET")")"
+      SHIM_TARGET_DIR="$(dirname "$(dirname "$SHIM_RESOLVED")")"
       if [[ -d "$SHIM_TARGET_DIR" ]] && { is_verified_runtime_marker "$SHIM_TARGET_DIR" || is_verified_baseline_v0_runtime "$SHIM_TARGET_DIR"; }; then
         SHIM_ALLOWED=1
       fi
@@ -223,10 +301,17 @@ PARENT_DIR="$(dirname "$INSTALL_DIR")"
 mkdir -p "$PARENT_DIR" "$BIN_DIR"
 
 STAGE_DIR="$(mktemp -d "$PARENT_DIR/.agent-hub-stage.XXXXXX")"
-OLD_BACKUP=""
+QUARANTINE_DIR=""
+TMP_SHIM=""
 cleanup() {
+  if [[ -n "${TMP_SHIM:-}" && -L "$TMP_SHIM" ]]; then
+    rm -f "$TMP_SHIM"
+  fi
   if [[ -n "${STAGE_DIR:-}" && -d "$STAGE_DIR" ]]; then
     rm -rf "$STAGE_DIR"
+  fi
+  if [[ -n "${QUARANTINE_DIR:-}" && -d "$QUARANTINE_DIR" ]]; then
+    rm -rf "$QUARANTINE_DIR"
   fi
 }
 trap cleanup EXIT
@@ -250,33 +335,49 @@ chmod 755 "$STAGE_DIR" "$STAGE_DIR/bin/sync-agents" "$STAGE_DIR/src/cli.ts" "$ST
 
 if [[ "$PREFIX_STATUS" == "backup-replace" ]]; then
   PRESERVED_BACKUP="${INSTALL_DIR}.backup-$(date -u +"%Y%m%dT%H%M%SZ")"
-  mv "$INSTALL_DIR" "$PRESERVED_BACKUP"
-  if ! mv "$STAGE_DIR" "$INSTALL_DIR"; then
-    mv "$PRESERVED_BACKUP" "$INSTALL_DIR" || true
-    exit 1
+  if try_atomic_dir_exchange "$STAGE_DIR" "$INSTALL_DIR"; then
+    mv "$STAGE_DIR" "$PRESERVED_BACKUP"
+    STAGE_DIR=""
+  else
+    mv "$INSTALL_DIR" "$PRESERVED_BACKUP"
+    if ! mv "$STAGE_DIR" "$INSTALL_DIR"; then
+      mv "$PRESERVED_BACKUP" "$INSTALL_DIR" || true
+      exit 1
+    fi
+    STAGE_DIR=""
   fi
-  STAGE_DIR=""
   echo "[install] moved previous prefix -> $PRESERVED_BACKUP"
 elif [[ "$PREFIX_STATUS" != "absent" ]]; then
   if [[ "$PREFIX_STATUS" == "verified-baseline-v0" ]]; then
     echo "[install] upgrading verified baseline runtime at $INSTALL_DIR"
   fi
-  OLD_BACKUP="$(mktemp -d "$PARENT_DIR/.agent-hub-old.XXXXXX")"
-  rmdir "$OLD_BACKUP"
-  mv "$INSTALL_DIR" "$OLD_BACKUP"
-  if ! mv "$STAGE_DIR" "$INSTALL_DIR"; then
-    mv "$OLD_BACKUP" "$INSTALL_DIR" || true
-    exit 1
+  if try_atomic_dir_exchange "$STAGE_DIR" "$INSTALL_DIR"; then
+    # STAGE_DIR now holds the previous runtime; cleanup removes it cleanly.
+    rm -rf "$STAGE_DIR"
+    STAGE_DIR=""
+  else
+    # Safe quarantine swap without mktemp/rmdir TOCTOU: move old dir INSIDE 0700 mktemp dir.
+    QUARANTINE_DIR="$(mktemp -d "$PARENT_DIR/.agent-hub-old.XXXXXX")"
+    mv "$INSTALL_DIR" "$QUARANTINE_DIR/prev"
+    if ! mv "$STAGE_DIR" "$INSTALL_DIR"; then
+      mv "$QUARANTINE_DIR/prev" "$INSTALL_DIR" || true
+      exit 1
+    fi
+    STAGE_DIR=""
+    rm -rf "$QUARANTINE_DIR"
+    QUARANTINE_DIR=""
   fi
-  STAGE_DIR=""
-  rm -rf "$OLD_BACKUP"
-  OLD_BACKUP=""
 else
   mv "$STAGE_DIR" "$INSTALL_DIR"
   STAGE_DIR=""
 fi
 
-ln -sfn "$INSTALL_DIR/bin/sync-agents" "$SHIM_PATH"
+# Atomic symlink replacement for <bin-dir>/sync-agents.
+TMP_SHIM="$BIN_DIR/.sync-agents-shim.$$.$RANDOM"
+ln -s "$INSTALL_DIR/bin/sync-agents" "$TMP_SHIM"
+mv -f "$TMP_SHIM" "$SHIM_PATH"
+TMP_SHIM=""
+
 echo "[install] agent-hub -> $INSTALL_DIR"
 echo "[install] symlink   -> $SHIM_PATH"
 

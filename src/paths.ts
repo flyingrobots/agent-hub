@@ -18,7 +18,10 @@ import {
   writeSync,
 } from "node:fs";
 import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import { readEntryMetadata, type EntryMetadataResult } from "./metadata.ts";
 import type { TargetSnapshot } from "./types.ts";
+
+export { readEntryMetadata, type EntryMetadataResult };
 
 export function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -39,6 +42,19 @@ export function sha256Hex(data: string | Uint8Array): string {
   return createHash("sha256").update(data).digest("hex");
 }
 
+/**
+ * Parse a JSON file with the offending file path included in SyntaxError diagnostics.
+ */
+export function parseJsonFile(filePath: string): unknown {
+  const raw = readFileSync(filePath, "utf8");
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`${filePath}: invalid JSON: ${msg}`);
+  }
+}
+
 export function expandTilde(rawPath: string, homeDir: string): string {
   if (rawPath === "~") return homeDir;
   if (rawPath.startsWith("~/")) return join(homeDir, rawPath.slice(2));
@@ -54,8 +70,6 @@ export function canonicalizeHubPath(rawPath: string, homeDir: string, cwd: strin
   const expanded = expandTilde(rawPath, homeDir);
   const abs = isAbsolute(expanded) ? normalize(expanded) : resolve(cwd, expanded);
 
-  // Walk upward until an existing ancestor is found, resolve it physically,
-  // then re-append the non-existent tail segments.
   const tail: string[] = [];
   let cursor = abs;
   while (true) {
@@ -72,6 +86,30 @@ export function canonicalizeHubPath(rawPath: string, homeDir: string, cwd: strin
     if (base.length > 0) tail.push(base);
     cursor = parent;
   }
+}
+
+/**
+ * Predict the uid/gid a newly created file or symlink will receive inside `parentDir`,
+ * accounting for BSD/macOS and setgid-directory GID inheritance.
+ */
+export function predictNewEntryOwner(parentDir: string): { uid: number; gid: number } {
+  const uid = typeof process.getuid === "function" ? process.getuid() : 0;
+  const procGid = typeof process.getgid === "function" ? process.getgid() : 0;
+  try {
+    let cursor = parentDir;
+    while (!existsSync(cursor)) {
+      const next = dirname(cursor);
+      if (next === cursor) return { uid, gid: procGid };
+      cursor = next;
+    }
+    const st = statSync(cursor);
+    if (process.platform === "darwin" || (st.mode & 0o2000) !== 0) {
+      return { uid, gid: st.gid };
+    }
+  } catch {
+    // fallback to process gid
+  }
+  return { uid, gid: procGid };
 }
 
 /**
@@ -185,7 +223,6 @@ export function captureFileSnapshot(filePath: string): TargetSnapshot {
     throw err;
   }
   if (!st.isFile()) {
-    // Capture non-regular objects cleanly so callers detect mismatches.
     if (st.isSymbolicLink()) {
       return {
         kind: "symlink",
@@ -282,156 +319,6 @@ export function captureTreeSnapshot(targetPath: string): TargetSnapshot {
   };
 }
 
-export type EntryMetadataResult =
-  | {
-      ok: true;
-      xattrs: Record<string, string>; // attrName -> lowercase hex raw bytes
-      acls: string[];
-      xattrVerified: boolean;
-      aclVerified: boolean;
-    }
-  | { ok: false; reason: string };
-
-let cachedLinuxTools: { getfattr: string | null; getfacl: string | null } | null = null;
-
-function findLinuxTools(): { getfattr: string | null; getfacl: string | null } {
-  if (cachedLinuxTools) return cachedLinuxTools;
-  const which = (name: string): string | null => {
-    const res = Bun.spawnSync(["which", name], { stdout: "pipe", stderr: "pipe" });
-    if (res.exitCode !== 0) return null;
-    const out = res.stdout.toString().trim();
-    return out.length > 0 ? out : null;
-  };
-  cachedLinuxTools = {
-    getfattr: which("getfattr"),
-    getfacl: which("getfacl"),
-  };
-  return cachedLinuxTools;
-}
-
-/**
- * Inspect extended attribute names AND raw byte values (plus ACL lines) without
- * dereferencing symlinks.
- *
- * - On macOS: uses `/usr/bin/xattr -s` + `/usr/bin/xattr -p -x -s <name>` for exact
- *   raw hex values, and `/bin/ls -lde` for ACL rule lines. Fails closed on error.
- * - On Linux: uses `getfattr -h -d -m - --encoding=hex` and `getfacl` when installed;
- *   when absent, records xattrVerified/aclVerified = false (disclosed in docs).
- */
-export function readEntryMetadata(entryPath: string, isSymlink: boolean): EntryMetadataResult {
-  if (process.platform === "darwin") {
-    const listRes = Bun.spawnSync(["/usr/bin/xattr", "-s", entryPath], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    if (listRes.exitCode !== 0) {
-      return {
-        ok: false,
-        reason: `failed to list xattrs for ${entryPath}: ${listRes.stderr.toString().trim()}`,
-      };
-    }
-    const names = listRes.stdout
-      .toString("utf8")
-      .split(/\r?\n/)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 0)
-      .sort();
-
-    const xattrs: Record<string, string> = {};
-    for (const name of names) {
-      const valRes = Bun.spawnSync(["/usr/bin/xattr", "-p", "-x", "-s", name, entryPath], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      if (valRes.exitCode !== 0) {
-        return {
-          ok: false,
-          reason: `failed to read xattr "${name}" on ${entryPath}: ${valRes.stderr.toString().trim()}`,
-        };
-      }
-      xattrs[name] = valRes.stdout.toString("utf8").replace(/\s+/g, "").toLowerCase();
-    }
-
-    const aclRes = Bun.spawnSync(["/bin/ls", "-lde", entryPath], {
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    if (aclRes.exitCode !== 0) {
-      return {
-        ok: false,
-        reason: `failed to read ACLs for ${entryPath}: ${aclRes.stderr.toString().trim()}`,
-      };
-    }
-    const aclLines = aclRes.stdout
-      .toString("utf8")
-      .split(/\r?\n/)
-      .slice(1)
-      .map((l) => l.trim())
-      .filter((l) => /^\d+:\s+/.test(l));
-
-    return { ok: true, xattrs, acls: aclLines, xattrVerified: true, aclVerified: true };
-  }
-
-  if (process.platform === "linux") {
-    const tools = findLinuxTools();
-    const xattrs: Record<string, string> = {};
-    let xattrVerified = false;
-    if (tools.getfattr) {
-      const res = Bun.spawnSync(
-        [tools.getfattr, "-h", "-d", "-m", "-", "--encoding=hex", entryPath],
-        { stdout: "pipe", stderr: "pipe" },
-      );
-      if (res.exitCode !== 0) {
-        return {
-          ok: false,
-          reason: `failed to read xattrs for ${entryPath}: ${res.stderr.toString().trim()}`,
-        };
-      }
-      const pairs: Array<[string, string]> = [];
-      for (const line of res.stdout.toString("utf8").split(/\r?\n/)) {
-        const trimmed = line.trim();
-        if (!trimmed || trimmed.startsWith("#")) continue;
-        const eq = trimmed.indexOf("=");
-        if (eq > 0) {
-          const k = trimmed.slice(0, eq);
-          let v = trimmed.slice(eq + 1);
-          if (v.startsWith("0x")) v = v.slice(2);
-          pairs.push([k, v.toLowerCase()]);
-        } else {
-          pairs.push([trimmed, ""]);
-        }
-      }
-      pairs.sort(([a], [b]) => a.localeCompare(b));
-      for (const [k, v] of pairs) xattrs[k] = v;
-      xattrVerified = true;
-    }
-
-    const acls: string[] = [];
-    let aclVerified = false;
-    if (tools.getfacl && !isSymlink) {
-      const res = Bun.spawnSync([tools.getfacl, "-p", "--omit-header", "--numeric", entryPath], {
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      if (res.exitCode !== 0) {
-        return {
-          ok: false,
-          reason: `failed to read ACLs for ${entryPath}: ${res.stderr.toString().trim()}`,
-        };
-      }
-      for (const line of res.stdout.toString("utf8").split(/\r?\n/)) {
-        const trimmed = line.trim();
-        if (trimmed && !trimmed.startsWith("#")) acls.push(trimmed);
-      }
-      aclVerified = true;
-    }
-
-    return { ok: true, xattrs, acls, xattrVerified, aclVerified };
-  }
-
-  return { ok: true, xattrs: {}, acls: [], xattrVerified: false, aclVerified: false };
-}
-
 export type TreeEntryRecord = {
   relPath: string;
   kind: "file" | "dir" | "symlink";
@@ -461,11 +348,11 @@ export type EquivalenceRecordResult =
  * - file kinds (refusing FIFOs, sockets, device nodes)
  * - regular file bytes, full mode & 0o7777, uid, gid, hardlink status
  * - symlink targets and escaping-relative-symlink detection
- * - extended attribute names + raw hex values and ACL rule lines
+ * - extended attribute names + raw hex values and ACL lines (via native FFI)
  */
 export function computeEquivalenceRecord(
   rootPath: string,
-  opts?: { excludeRootGit?: boolean },
+  opts?: { excludeRootGit?: boolean; forceRootDirMode?: number },
 ): EquivalenceRecordResult {
   let rootStat;
   try {
@@ -543,11 +430,15 @@ export function computeEquivalenceRecord(
       return null;
     }
 
-    // Directory
+    const effectiveMode =
+      relPath === "" && opts?.forceRootDirMode !== undefined
+        ? opts.forceRootDirMode & 0o7777
+        : st.mode & 0o7777;
+
     entries.push({
       relPath,
       kind: "dir",
-      mode: st.mode & 0o7777,
+      mode: effectiveMode,
       uid: st.uid,
       gid: st.gid,
       hardlinked: false,
@@ -588,8 +479,12 @@ export type AdoptionEquivalenceResult =
  * (including .git), file kind, bytes, mode & 0o7777, uid/gid, hardlinks,
  * escaping relative symlinks, xattr names/raw values, or ACL lines.
  */
-export function checkAdoptionEquivalence(src: string, dst: string): AdoptionEquivalenceResult {
-  const srcRec = computeEquivalenceRecord(src);
+export function checkAdoptionEquivalence(
+  src: string,
+  dst: string,
+  srcOpts?: { excludeRootGit?: boolean; forceRootDirMode?: number },
+): AdoptionEquivalenceResult {
+  const srcRec = computeEquivalenceRecord(src, srcOpts);
   if (!srcRec.ok) {
     return { equivalent: false, reason: `canonical source check failed: ${srcRec.reason}` };
   }

@@ -1,6 +1,7 @@
 /**
  * TOML 1.0 lexical scanner, surgical [mcp_servers.<name>] span rewriter,
- * unsupported-representation refusal, and mandatory semantic preservation check.
+ * unsupported-representation refusal, CRLF preservation, and mandatory
+ * semantic preservation verification.
  */
 import { isPlainObject, stableJson } from "./paths.ts";
 
@@ -43,8 +44,92 @@ function skipInlineWs(src: string, pos: number): number {
 }
 
 /**
+ * Decode a TOML 1.0/1.1 basic double-quoted string (including quotes), supporting
+ * \b, \t, \n, \f, \r, \", \\, \e, \xHH, \uXXXX, and \UXXXXXXXX scalar escapes.
+ */
+export function decodeTomlBasicString(raw: string): string | null {
+  if (raw.length < 2 || raw[0] !== '"' || raw[raw.length - 1] !== '"') return null;
+  let out = "";
+  let i = 1;
+  const end = raw.length - 1;
+
+  while (i < end) {
+    const ch = raw[i]!;
+    if (ch !== "\\") {
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (i + 1 >= end) return null;
+    const esc = raw[i + 1]!;
+    switch (esc) {
+      case "b":
+        out += "\b";
+        i += 2;
+        break;
+      case "t":
+        out += "\t";
+        i += 2;
+        break;
+      case "n":
+        out += "\n";
+        i += 2;
+        break;
+      case "f":
+        out += "\f";
+        i += 2;
+        break;
+      case "r":
+        out += "\r";
+        i += 2;
+        break;
+      case "e":
+        out += "\u001b";
+        i += 2;
+        break;
+      case '"':
+        out += '"';
+        i += 2;
+        break;
+      case "\\":
+        out += "\\";
+        i += 2;
+        break;
+      case "x": {
+        const hex = raw.slice(i + 2, i + 4);
+        if (!/^[0-9A-Fa-f]{2}$/.test(hex)) return null;
+        out += String.fromCodePoint(parseInt(hex, 16));
+        i += 4;
+        break;
+      }
+      case "u": {
+        const hex = raw.slice(i + 2, i + 6);
+        if (!/^[0-9A-Fa-f]{4}$/.test(hex)) return null;
+        const cp = parseInt(hex, 16);
+        if (cp >= 0xd800 && cp <= 0xdfff) return null;
+        out += String.fromCodePoint(cp);
+        i += 6;
+        break;
+      }
+      case "U": {
+        const hex = raw.slice(i + 2, i + 10);
+        if (!/^[0-9A-Fa-f]{8}$/.test(hex)) return null;
+        const cp = parseInt(hex, 16);
+        if (cp > 0x10ffff || (cp >= 0xd800 && cp <= 0xdfff)) return null;
+        out += String.fromCodePoint(cp);
+        i += 10;
+        break;
+      }
+      default:
+        return null;
+    }
+  }
+  return out;
+}
+
+/**
  * Parse a dotted key path (bare keys, basic double-quoted keys, literal single-quoted keys)
- * starting at `pos`, stopping at `stopChar` (']' or '=').
+ * starting at `pos`, stopping at `stopChars` (']' or '=').
  */
 function parseKeyPath(
   src: string,
@@ -57,7 +142,6 @@ function parseKeyPath(
   while (i < src.length) {
     const ch = src[i]!;
     if (ch === '"') {
-      // Basic quoted key
       let j = i + 1;
       let escaped = false;
       while (j < src.length) {
@@ -77,15 +161,11 @@ function parseKeyPath(
         j += 1;
       }
       if (j >= src.length || src[j] !== '"') return null;
-      const raw = src.slice(i, j + 1);
-      try {
-        keys.push(JSON.parse(raw) as string);
-      } catch {
-        return null;
-      }
+      const decoded = decodeTomlBasicString(src.slice(i, j + 1));
+      if (decoded === null) return null;
+      keys.push(decoded);
       i = j + 1;
     } else if (ch === "'") {
-      // Literal single-quoted key
       let j = i + 1;
       while (j < src.length && src[j] !== "'" && src[j] !== "\n" && src[j] !== "\r") {
         j += 1;
@@ -135,7 +215,6 @@ export function scanTomlDocument(src: string): TomlScanResult {
   while (i < src.length) {
     const ch = src[i]!;
 
-    // Handle newlines
     if (ch === "\n") {
       i += 1;
       lineStartOffset = i;
@@ -150,20 +229,17 @@ export function scanTomlDocument(src: string): TomlScanResult {
       continue;
     }
 
-    // Leading indentation before anything on the line
     if (atLineStart && (ch === " " || ch === "\t")) {
       i += 1;
       continue;
     }
 
-    // Comment to end of line
     if (ch === "#") {
       while (i < src.length && src[i] !== "\n" && src[i] !== "\r") i += 1;
       atLineStart = false;
       continue;
     }
 
-    // Top-level table header or array-of-tables header
     if (atLineStart && depth === 0 && ch === "[") {
       const isArrayTable = i + 1 < src.length && src[i + 1] === "[";
       const headerStart = isArrayTable ? i + 2 : i + 1;
@@ -219,8 +295,6 @@ export function scanTomlDocument(src: string): TomlScanResult {
       continue;
     }
 
-    // Track key=value assignments at line start when depth === 0 (for detecting
-    // unsupported root mcp_servers = ... or [mcp_servers] inline/dotted entries)
     if (atLineStart && depth === 0) {
       const keyParsed = parseKeyPath(src, i, "=");
       if (keyParsed && keyParsed.keys.length > 0 && src[keyParsed.endPos] === "=") {
@@ -243,7 +317,6 @@ export function scanTomlDocument(src: string): TomlScanResult {
 
     atLineStart = false;
 
-    // Multiline basic string """..."""
     if (ch === '"' && src.slice(i, i + 3) === '"""') {
       i += 3;
       let escaped = false;
@@ -260,7 +333,6 @@ export function scanTomlDocument(src: string): TomlScanResult {
           continue;
         }
         if (c === '"' && src.slice(i, i + 3) === '"""') {
-          // TOML 1.0 allows 1 or 2 additional quotes immediately before closing """
           let run = 0;
           while (i + run < src.length && src[i + run] === '"') run += 1;
           if (run >= 3 && run <= 5) {
@@ -278,7 +350,6 @@ export function scanTomlDocument(src: string): TomlScanResult {
       continue;
     }
 
-    // Multiline literal string '''...'''
     if (ch === "'" && src.slice(i, i + 3) === "'''") {
       i += 3;
       while (i < src.length) {
@@ -300,7 +371,6 @@ export function scanTomlDocument(src: string): TomlScanResult {
       continue;
     }
 
-    // Single-line basic string "..."
     if (ch === '"') {
       i += 1;
       let escaped = false;
@@ -326,7 +396,6 @@ export function scanTomlDocument(src: string): TomlScanResult {
       continue;
     }
 
-    // Single-line literal string '...'
     if (ch === "'") {
       i += 1;
       while (i < src.length && src[i] !== "'" && src[i] !== "\n" && src[i] !== "\r") {
@@ -336,7 +405,6 @@ export function scanTomlDocument(src: string): TomlScanResult {
       continue;
     }
 
-    // Array / inline-table nesting
     if (ch === "[" || ch === "{") {
       depth += 1;
       i += 1;
@@ -369,7 +437,11 @@ export function normalizeCodexComparable(entry: unknown): Record<string, unknown
   return copy;
 }
 
-export function renderCodexSection(name: string, entry: Record<string, unknown>): string {
+export function renderCodexSection(
+  name: string,
+  entry: Record<string, unknown>,
+  eol = "\n",
+): string {
   const key = formatTomlKey(name);
   const lines: string[] = [`[mcp_servers.${key}]`];
   if (typeof entry.command === "string") {
@@ -399,7 +471,7 @@ export function renderCodexSection(name: string, entry: Record<string, unknown>)
       lines.push(`${formatTomlKey(k)} = ${JSON.stringify(v)}`);
     }
   }
-  return lines.join("\n");
+  return lines.join(eol);
 }
 
 export function tomlDeepEqual(a: unknown, b: unknown): boolean {
@@ -431,12 +503,6 @@ export function tomlDeepEqual(a: unknown, b: unknown): boolean {
   return false;
 }
 
-/**
- * Mandatory semantic preservation invariant:
- * After excluding the explicitly authorized MCP changes in `updates`,
- * every unrelated top-level key and every unmodified mcp_servers.<name> entry
- * in the parsed TOML document MUST remain deeply identical.
- */
 export function verifyTomlPreservation(
   original: string,
   rewritten: string,
@@ -452,7 +518,6 @@ export function verifyTomlPreservation(
     );
   }
 
-  // 1. All top-level keys other than mcp_servers must be identical.
   const allTopKeys = new Set([...Object.keys(origDoc), ...Object.keys(newDoc)]);
   for (const k of allTopKeys) {
     if (k === "mcp_servers") continue;
@@ -465,7 +530,6 @@ export function verifyTomlPreservation(
     }
   }
 
-  // 2. Inside mcp_servers: unmodified keys must match exactly; updated keys must match intent.
   const origMcp: Record<string, unknown> = isPlainObject(origDoc.mcp_servers)
     ? (origDoc.mcp_servers as Record<string, unknown>)
     : {};
@@ -525,23 +589,17 @@ export function verifyTomlPreservation(
   }
 }
 
-/**
- * Surgically rewrite Codex config.toml for the specified `updates` map
- * (serverName -> desired entry or null for removal), refusing unsupported
- * representations and verifying full semantic preservation before returning.
- */
 export function rewriteCodexToml(
   original: string,
   updates: Map<string, Record<string, unknown> | null>,
 ): string {
-  // Parse original upfront to catch malformed TOML before scanning.
   if (original.trim()) {
     Bun.TOML.parse(original);
   }
 
+  const eol = /\r\n/.test(original) ? "\r\n" : "\n";
   const scan = scanTomlDocument(original);
 
-  // Refuse unsupported representations that cannot be safely excised by section span.
   for (const keyPath of scan.rootAssignments) {
     if (keyPath[0] === "mcp_servers") {
       throw new TomlUnsupportedError(
@@ -564,8 +622,6 @@ export function rewriteCodexToml(
     }
   }
 
-  // Collect exact character spans to excise: any [mcp_servers.<name>] or [mcp_servers.<name>.*]
-  // where <name> is in `updates`.
   const spansToRemove: Array<{ start: number; end: number }> = [];
   for (const sec of scan.sections) {
     if (
@@ -578,7 +634,6 @@ export function rewriteCodexToml(
   }
   spansToRemove.sort((a, b) => a.start - b.start);
 
-  // Build remaining document preserving everything outside excised spans byte-for-byte.
   let remaining = "";
   let cursor = 0;
   for (const span of spansToRemove) {
@@ -591,7 +646,6 @@ export function rewriteCodexToml(
     remaining += original.slice(cursor);
   }
 
-  // Trim trailing blank lines cleanly without altering internal content/strings.
   remaining = remaining.replace(/(?:\r?\n[ \t]*)+$/, "");
 
   const additions = [...updates.entries()]
@@ -601,10 +655,10 @@ export function rewriteCodexToml(
   const chunks: string[] = [];
   if (remaining.length > 0) chunks.push(remaining);
   for (const [name, entry] of additions) {
-    chunks.push(renderCodexSection(name, entry!));
+    chunks.push(renderCodexSection(name, entry!, eol));
   }
 
-  const rewritten = chunks.length > 0 ? `${chunks.join("\n\n")}\n` : "";
+  const rewritten = chunks.length > 0 ? `${chunks.join(`${eol}${eol}`)}${eol}` : "";
 
   verifyTomlPreservation(original, rewritten, updates);
   return rewritten;

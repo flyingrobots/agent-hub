@@ -1,11 +1,17 @@
 #!/usr/bin/env bun
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { applyLinkOp, planLinkSync, type PlannedLinkOp } from "./links.ts";
-import { acquireApplyLock, LockBusyError, releaseApplyLock, type ApplyLockHandle } from "./lock.ts";
+import {
+  acquireApplyLock,
+  LockBusyError,
+  LockSystemError,
+  releaseApplyLock,
+  type ApplyLockHandle,
+} from "./lock.ts";
 import { applyMcpTarget, planMcpSync, type PlannedMcpTarget } from "./mcp.ts";
-import { canonicalizeHubPath } from "./paths.ts";
+import { canonicalizeHubPath, isPlainObject, parseJsonFile } from "./paths.ts";
 import {
   applySkillInstall,
   cleanupStagedTempDirs,
@@ -24,6 +30,7 @@ import {
   ALL_AGENTS,
   type AgentId,
   type ApplyHooks,
+  type OwnershipStateV2,
   type PlannedOp,
   type RecoveryReport,
   type SyncOptions,
@@ -67,8 +74,8 @@ function readConfigAgentsDir(homeDir: string, xdgConfigHome?: string): string | 
   const cfgPath = join(cfgBase, "agent-hub", "config.json");
   if (!existsSync(cfgPath)) return null;
   try {
-    const parsed = JSON.parse(readFileSync(cfgPath, "utf8")) as { agentsDir?: unknown };
-    if (typeof parsed.agentsDir === "string" && parsed.agentsDir.length > 0) {
+    const parsed = parseJsonFile(cfgPath);
+    if (isPlainObject(parsed) && typeof parsed.agentsDir === "string" && parsed.agentsDir.length > 0) {
       return parsed.agentsDir;
     }
   } catch {
@@ -112,6 +119,88 @@ function formatOpSummary(prefix: string, op: PlannedOp): string {
   return `[${prefix}]${ledgerTag} ${op.action} ${op.destination} — ${op.reason}`;
 }
 
+type BuiltSyncPlan = {
+  stagedSkills: StagedSkillPlan;
+  linkPlans: PlannedLinkOp[];
+  mcpTargets: PlannedMcpTarget[];
+  allOps: PlannedOp[];
+  changeOps: PlannedOp[];
+  conflicts: PlannedOp[];
+};
+
+/**
+ * Unified Phase 1 builder shared by BOTH read-only modes (--check, --dry-run, --explain)
+ * and apply mode (eliminating duplicate planning orchestration).
+ */
+function buildSyncPlan(
+  canonicalHubPath: string,
+  homeDir: string,
+  cwd: string,
+  state: OwnershipStateV2,
+  opts: {
+    skillSources: string[];
+    skillOnly: boolean;
+    mcpOnly: boolean;
+    force: boolean;
+    forceSkill: boolean;
+    adopt: boolean;
+    disownLegacy: Array<{ agent: AgentId; name: string }>;
+  },
+): BuiltSyncPlan {
+  const legacyV1 = loadLegacyV1Manifest(canonicalHubPath, state);
+  const stagedSkills: StagedSkillPlan =
+    !opts.mcpOnly && opts.skillSources.length > 0
+      ? planSkillInstalls(opts.skillSources, canonicalHubPath, {
+          force: opts.force,
+          forceSkill: opts.forceSkill,
+          cwd,
+        })
+      : {
+          installs: [],
+          plannedSkillNames: [],
+          plannedSkillSources: new Map(),
+          tempDirs: [],
+        };
+
+  try {
+    const linkPlans: PlannedLinkOp[] =
+      opts.skillOnly || opts.mcpOnly
+        ? []
+        : planLinkSync(canonicalHubPath, homeDir, state, stagedSkills.plannedSkillNames, {
+            adopt: opts.adopt,
+            force: opts.force,
+            plannedSkillSources: stagedSkills.plannedSkillSources,
+          });
+
+    const mcpPlan = opts.skillOnly
+      ? { targets: [] as PlannedMcpTarget[], globalOps: [] as PlannedOp[] }
+      : planMcpSync(canonicalHubPath, homeDir, state, legacyV1, {
+          adopt: opts.adopt,
+          force: opts.force,
+          disownLegacy: opts.disownLegacy,
+        });
+
+    const allOps: PlannedOp[] = [
+      ...stagedSkills.installs.map((s) => s.op),
+      ...linkPlans.map((l) => l.op),
+      ...mcpPlan.globalOps,
+      ...mcpPlan.targets.flatMap((t) => t.ops),
+    ];
+
+    return {
+      stagedSkills,
+      linkPlans,
+      mcpTargets: mcpPlan.targets,
+      allOps,
+      changeOps: allOps.filter((op) => op.status === "change"),
+      conflicts: allOps.filter((op) => op.status === "conflict" || op.status === "error"),
+    };
+  } catch (err) {
+    cleanupStagedTempDirs(stagedSkills.tempDirs);
+    throw err;
+  }
+}
+
 export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult {
   const stdout: string[] = [];
   const stderr: string[] = [];
@@ -122,6 +211,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
   const xdgStateHome = options.xdgStateHome ?? process.env.XDG_STATE_HOME;
   const skillSources = options.skillSources ?? [];
   const skillOnly = Boolean(options.skillOnly);
+  const mcpOnly = Boolean(options.mcpOnly);
   const forceSkill = Boolean(options.forceSkill);
   const force = Boolean(options.force);
   const checkOnly = Boolean(options.checkOnly);
@@ -129,13 +219,14 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
   const dryRun = Boolean(options.dryRun || checkOnly || explain);
   const adopt = Boolean(options.adopt);
   const disownLegacy = options.disownLegacy ?? [];
+  const cmdLabel = mcpOnly ? "mcp-sync" : "sync-agents";
 
   if (checkOnly && skillSources.length > 0) {
-    stderr.push("sync-agents: --check cannot be combined with --skill");
+    stderr.push(`${cmdLabel}: --check cannot be combined with --skill`);
     return { exitCode: 2, stdout, stderr };
   }
   if (checkOnly && disownLegacy.length > 0) {
-    stderr.push("sync-agents: --check cannot be combined with --disown-legacy");
+    stderr.push(`${cmdLabel}: --check cannot be combined with --disown-legacy`);
     return { exitCode: 2, stdout, stderr };
   }
 
@@ -148,7 +239,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
   });
 
   if (!existsSync(canonicalHubPath) || !statSync(canonicalHubPath).isDirectory()) {
-    stderr.push(`sync-agents: canonical hub directory not found: ${canonicalHubPath}`);
+    stderr.push(`${cmdLabel}: canonical hub directory not found: ${canonicalHubPath}`);
     return { exitCode: 1, stdout, stderr };
   }
 
@@ -163,7 +254,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       state = loadOwnershipState(paths.statePath, canonicalHubPath).state;
       pendingJournal = loadPendingJournal(paths.journalPath);
     } catch (err) {
-      stderr.push(`sync-agents: ${err instanceof Error ? err.message : String(err)}`);
+      stderr.push(`${cmdLabel}: ${err instanceof Error ? err.message : String(err)}`);
       return { exitCode: 1, stdout, stderr };
     }
 
@@ -188,89 +279,69 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       stdout.push(`[plan] [pending-recovery] ${inspection.classification}: ${inspection.reason}`);
       if (checkOnly) {
         stderr.push(
-          `sync-agents: pending recovery detected (${inspection.classification}); run sync-agents to reconcile.`,
+          `${cmdLabel}: pending recovery detected (${inspection.classification}); run sync-agents to reconcile.`,
         );
         return { exitCode: 1, stdout, stderr };
       }
-      stdout.push("sync-agents: run without --dry-run to complete recovery before planning fresh sync.");
+      stdout.push(`${cmdLabel}: run without --dry-run to complete recovery before planning fresh sync.`);
       return { exitCode: 0, stdout, stderr };
     }
 
-    let stagedSkills: StagedSkillPlan = { installs: [], plannedSkillNames: [], tempDirs: [] };
+    let plan: BuiltSyncPlan | null = null;
     try {
-      const legacyV1 = loadLegacyV1Manifest(canonicalHubPath, state);
-      if (skillSources.length > 0) {
-        stagedSkills = planSkillInstalls(skillSources, canonicalHubPath, { force, forceSkill });
-      }
-      const linkPlans: PlannedLinkOp[] = skillOnly
-        ? []
-        : planLinkSync(canonicalHubPath, homeDir, state, stagedSkills.plannedSkillNames, {
-            adopt,
-            force,
-          });
-      const mcpPlan = skillOnly
-        ? { targets: [] as PlannedMcpTarget[], globalOps: [] as PlannedOp[] }
-        : planMcpSync(canonicalHubPath, homeDir, state, legacyV1, {
-            adopt,
-            force,
-            disownLegacy,
-          });
+      plan = buildSyncPlan(canonicalHubPath, homeDir, cwd, state, {
+        skillSources,
+        skillOnly,
+        mcpOnly,
+        force,
+        forceSkill,
+        adopt,
+        disownLegacy,
+      });
 
-      const allOps: PlannedOp[] = [
-        ...stagedSkills.installs.map((s) => s.op),
-        ...linkPlans.map((l) => l.op),
-        ...mcpPlan.globalOps,
-        ...mcpPlan.targets.flatMap((t) => t.ops),
-      ];
-
-      let changeCount = 0;
-      let conflictCount = 0;
-
-      for (const op of allOps) {
+      for (const op of plan.allOps) {
         if (explain) {
           stdout.push(...formatExplainBlock(op));
         }
-        if (op.status === "change") {
-          changeCount += 1;
-          if (!explain) stdout.push(formatOpSummary("plan", op));
+        if (op.status === "change" && !explain) {
+          stdout.push(formatOpSummary("plan", op));
         } else if (op.status === "conflict" || op.status === "error") {
-          conflictCount += 1;
           const next = op.nextStep ? ` (${op.nextStep})` : "";
           stderr.push(`[conflict] ${op.reason}${next}`);
         }
       }
 
-      if (conflictCount > 0) {
-        stderr.push(`sync-agents: ${conflictCount} conflict(s) found; refusing to overwrite.`);
+      if (plan.conflicts.length > 0) {
+        stderr.push(`${cmdLabel}: ${plan.conflicts.length} conflict(s) found; refusing to overwrite.`);
         return { exitCode: 1, stdout, stderr };
       }
-      if (checkOnly && changeCount > 0) {
-        stderr.push(`sync-agents: out of sync (${changeCount} change(s) needed).`);
+      if (checkOnly && plan.changeOps.length > 0) {
+        stderr.push(`${cmdLabel}: out of sync (${plan.changeOps.length} change(s) needed).`);
         return { exitCode: 1, stdout, stderr };
       }
-      if (changeCount === 0 && !explain) {
-        stdout.push("sync-agents: everything is in sync.");
+      if (plan.changeOps.length === 0 && !explain) {
+        stdout.push(`${cmdLabel}: everything is in sync.`);
       }
       return { exitCode: 0, stdout, stderr };
     } catch (err) {
-      stderr.push(`sync-agents: ${err instanceof Error ? err.message : String(err)}`);
+      stderr.push(`${cmdLabel}: ${err instanceof Error ? err.message : String(err)}`);
       return { exitCode: 1, stdout, stderr };
     } finally {
-      cleanupStagedTempDirs(stagedSkills.tempDirs);
+      if (plan) cleanupStagedTempDirs(plan.stagedSkills.tempDirs);
     }
   }
 
   // ---- APPLY MODE ----
   let lockHandle: ApplyLockHandle | null = null;
-  let stagedSkills: StagedSkillPlan = { installs: [], plannedSkillNames: [], tempDirs: [] };
+  let plan: BuiltSyncPlan | null = null;
   let recoveryReport: RecoveryReport = { hadPending: false, resolved: true, actions: [] };
 
   try {
     try {
       lockHandle = acquireApplyLock(paths.lockPath, canonicalHubPath);
     } catch (err) {
-      if (err instanceof LockBusyError) {
-        stderr.push(`sync-agents: ${err.message}`);
+      if (err instanceof LockBusyError || err instanceof LockSystemError) {
+        stderr.push(`${cmdLabel}: ${err.message}`);
         return { exitCode: 1, stdout, stderr };
       }
       throw err;
@@ -300,53 +371,36 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
     }
 
     // ---- PHASE 1: READ-ONLY PREFLIGHT & PLAN ----
-    const legacyV1 = loadLegacyV1Manifest(canonicalHubPath, state);
-    if (skillSources.length > 0) {
-      stagedSkills = planSkillInstalls(skillSources, canonicalHubPath, { force, forceSkill });
-    }
-    const linkPlans: PlannedLinkOp[] = skillOnly
-      ? []
-      : planLinkSync(canonicalHubPath, homeDir, state, stagedSkills.plannedSkillNames, {
-          adopt,
-          force,
-        });
-    const mcpPlan = skillOnly
-      ? { targets: [] as PlannedMcpTarget[], globalOps: [] as PlannedOp[] }
-      : planMcpSync(canonicalHubPath, homeDir, state, legacyV1, {
-          adopt,
-          force,
-          disownLegacy,
-        });
+    plan = buildSyncPlan(canonicalHubPath, homeDir, cwd, state, {
+      skillSources,
+      skillOnly,
+      mcpOnly,
+      force,
+      forceSkill,
+      adopt,
+      disownLegacy,
+    });
 
-    const allOps: PlannedOp[] = [
-      ...stagedSkills.installs.map((s) => s.op),
-      ...linkPlans.map((l) => l.op),
-      ...mcpPlan.globalOps,
-      ...mcpPlan.targets.flatMap((t) => t.ops),
-    ];
-
-    const conflicts = allOps.filter((op) => op.status === "conflict" || op.status === "error");
-    if (conflicts.length > 0) {
-      for (const c of conflicts) {
+    if (plan.conflicts.length > 0) {
+      for (const c of plan.conflicts) {
         const next = c.nextStep ? ` (${c.nextStep})` : "";
         stderr.push(`[conflict] ${c.reason}${next}`);
       }
       if (recoveryReport.hadPending) {
         stderr.push(
-          `sync-agents: Phase 0 recovery completed above; preflight found ${conflicts.length} conflict(s), so no new Phase 2 target or ledger changes were applied.`,
+          `${cmdLabel}: Phase 0 recovery completed above; preflight found ${plan.conflicts.length} conflict(s), so no new Phase 2 target or ledger changes were applied.`,
         );
       } else {
-        stderr.push(`sync-agents: ${conflicts.length} conflict(s) found; refusing to overwrite.`);
+        stderr.push(`${cmdLabel}: ${plan.conflicts.length} conflict(s) found; refusing to overwrite.`);
       }
       return { exitCode: 1, stdout, stderr, recovery: recoveryReport };
     }
 
-    const changeOps = allOps.filter((op) => op.status === "change");
-    if (changeOps.length === 0) {
+    if (plan.changeOps.length === 0) {
       if (recoveryReport.hadPending) {
-        stdout.push("sync-agents: Phase 0 recovery completed; everything is now in sync.");
+        stdout.push(`${cmdLabel}: Phase 0 recovery completed; everything is now in sync.`);
       } else {
-        stdout.push("sync-agents: everything is in sync.");
+        stdout.push(`${cmdLabel}: everything is in sync.`);
       }
       return { exitCode: 0, stdout, stderr, recovery: recoveryReport };
     }
@@ -358,7 +412,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
     const committed: string[] = [];
     const remainingWork: Array<{ label: string; run: () => void }> = [];
 
-    for (const sk of stagedSkills.installs) {
+    for (const sk of plan.stagedSkills.installs) {
       if (sk.op.status !== "change") continue;
       remainingWork.push({
         label: `${sk.op.action} ${sk.dstDir}`,
@@ -369,7 +423,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       });
     }
 
-    for (const lp of linkPlans) {
+    for (const lp of plan.linkPlans) {
       if (lp.op.status !== "change") continue;
       remainingWork.push({
         label: `${lp.op.action} ${lp.dst}`,
@@ -388,7 +442,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       });
     }
 
-    for (const mt of mcpPlan.targets) {
+    for (const mt of plan.mcpTargets) {
       if (!mt.targetMutation && !mt.ledgerMutation) continue;
       remainingWork.push({
         label: `mcp ${mt.agent} (${mt.configPath})`,
@@ -420,7 +474,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
         const msg = err instanceof Error ? err.message : String(err);
         const pendingAfter = remainingWork.slice(idx + 1).map((w) => w.label);
         const hasPendingJournal = existsSync(paths.journalPath);
-        stderr.push(`sync-agents: apply failed during "${work.label}": ${msg}`);
+        stderr.push(`${cmdLabel}: apply failed during "${work.label}": ${msg}`);
         if (committed.length > 0) {
           stderr.push(`  committed: ${committed.join(", ")}`);
         }
@@ -441,14 +495,14 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
     const msg = err instanceof Error ? err.message : String(err);
     if (recoveryReport.hadPending) {
       stderr.push(
-        `sync-agents: Phase 0 recovery completed above; preflight failed (${msg}), so no new Phase 2 target or ledger changes were applied.`,
+        `${cmdLabel}: Phase 0 recovery completed above; preflight failed (${msg}), so no new Phase 2 target or ledger changes were applied.`,
       );
     } else {
-      stderr.push(`sync-agents: ${msg}`);
+      stderr.push(`${cmdLabel}: ${msg}`);
     }
     return { exitCode: 1, stdout, stderr, recovery: recoveryReport };
   } finally {
-    cleanupStagedTempDirs(stagedSkills.tempDirs);
+    if (plan) cleanupStagedTempDirs(plan.stagedSkills.tempDirs);
     releaseApplyLock(lockHandle);
   }
 }
@@ -471,12 +525,16 @@ export function parseCliArgs(argv: string[]): {
       if (i + 1 >= argv.length) throw new Error("--dir requires a path argument");
       options.hubDir = argv[++i]!;
     } else if (arg.startsWith("--dir=")) {
-      options.hubDir = arg.slice("--dir=".length);
+      const val = arg.slice("--dir=".length);
+      if (val.length === 0) throw new Error("--dir requires a non-empty path argument");
+      options.hubDir = val;
     } else if (arg === "--skill") {
       if (i + 1 >= argv.length) throw new Error("--skill requires a source argument");
       options.skillSources!.push(argv[++i]!);
     } else if (arg.startsWith("--skill=")) {
-      options.skillSources!.push(arg.slice("--skill=".length));
+      const val = arg.slice("--skill=".length);
+      if (val.length === 0) throw new Error("--skill requires a non-empty source argument");
+      options.skillSources!.push(val);
     } else if (arg === "--skill-only") {
       options.skillOnly = true;
     } else if (arg === "--force-skill") {
