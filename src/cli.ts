@@ -65,23 +65,53 @@ Options:
                                    modifying the target config (requires canonical server removed)
       --explain                    Print observed state, intended state, ownership basis, reason,
                                    and next step for each object without modifying disk
+      --targets <csv>              Restrict sync/check to specific target(s):
+                                   antigravity, claude, codex, cursor, opencode
+                                   (untargeted adapters are never pruned)
       --print-dir                  Print the canonical resolved hub directory and exit
   -h, --help                       Show this help`;
 
-function readConfigAgentsDir(homeDir: string, xdgConfigHome?: string): string | null {
+type HubUserConfig = {
+  agentsDir?: string;
+  disabledTargets: AgentId[];
+};
+
+function readUserConfig(homeDir: string, xdgConfigHome?: string): HubUserConfig {
   const cfgBase =
     xdgConfigHome && xdgConfigHome.length > 0 ? xdgConfigHome : join(homeDir, ".config");
   const cfgPath = join(cfgBase, "agent-hub", "config.json");
-  if (!existsSync(cfgPath)) return null;
-  try {
-    const parsed = parseJsonFile(cfgPath);
-    if (isPlainObject(parsed) && typeof parsed.agentsDir === "string" && parsed.agentsDir.length > 0) {
-      return parsed.agentsDir;
-    }
-  } catch {
-    // ignore malformed config in fallback lookup
+  if (!existsSync(cfgPath)) return { disabledTargets: [] };
+  const parsed = parseJsonFile(cfgPath);
+  if (!isPlainObject(parsed)) {
+    throw new Error(`${cfgPath}: config.json must contain a JSON object`);
   }
-  return null;
+  const agentsDir =
+    typeof parsed.agentsDir === "string" && parsed.agentsDir.length > 0
+      ? parsed.agentsDir
+      : undefined;
+  const disabledTargets: AgentId[] = [];
+  if (parsed.disabledTargets !== undefined) {
+    if (!Array.isArray(parsed.disabledTargets)) {
+      throw new Error(`${cfgPath}: "disabledTargets" must be an array of target names`);
+    }
+    for (const item of parsed.disabledTargets) {
+      if (typeof item !== "string" || !ALL_AGENTS.includes(item as AgentId)) {
+        throw new Error(
+          `${cfgPath}: unknown target "${String(item)}" in disabledTargets (expected one of: ${ALL_AGENTS.join(", ")})`,
+        );
+      }
+      disabledTargets.push(item as AgentId);
+    }
+  }
+  return { agentsDir, disabledTargets };
+}
+
+function readConfigAgentsDir(homeDir: string, xdgConfigHome?: string): string | null {
+  try {
+    return readUserConfig(homeDir, xdgConfigHome).agentsDir ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function resolveCanonicalHubDir(opts: {
@@ -144,6 +174,7 @@ function buildSyncPlan(
     force: boolean;
     forceSkill: boolean;
     adopt: boolean;
+    activeTargets: ReadonlySet<AgentId>;
     disownLegacy: Array<{ agent: AgentId; name: string }>;
   },
 ): BuiltSyncPlan {
@@ -169,6 +200,7 @@ function buildSyncPlan(
         : planLinkSync(canonicalHubPath, homeDir, state, stagedSkills.plannedSkillNames, {
             adopt: opts.adopt,
             force: opts.force,
+            activeTargets: opts.activeTargets,
             plannedSkillSources: stagedSkills.plannedSkillSources,
           });
 
@@ -177,6 +209,7 @@ function buildSyncPlan(
       : planMcpSync(canonicalHubPath, homeDir, state, legacyV1, {
           adopt: opts.adopt,
           force: opts.force,
+          activeTargets: opts.activeTargets,
           disownLegacy: opts.disownLegacy,
         });
 
@@ -228,6 +261,20 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
   if (checkOnly && disownLegacy.length > 0) {
     stderr.push(`${cmdLabel}: --check cannot be combined with --disown-legacy`);
     return { exitCode: 2, stdout, stderr };
+  }
+
+  let activeTargets: ReadonlySet<AgentId>;
+  try {
+    const userCfg = readUserConfig(homeDir, xdgConfigHome);
+    if (options.targets && options.targets.length > 0) {
+      activeTargets = new Set(options.targets);
+    } else {
+      const disabled = new Set(userCfg.disabledTargets);
+      activeTargets = new Set(ALL_AGENTS.filter((a) => !disabled.has(a)));
+    }
+  } catch (err) {
+    stderr.push(`${cmdLabel}: ${err instanceof Error ? err.message : String(err)}`);
+    return { exitCode: 1, stdout, stderr };
   }
 
   const canonicalHubPath = resolveCanonicalHubDir({
@@ -296,6 +343,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
         force,
         forceSkill,
         adopt,
+        activeTargets,
         disownLegacy,
       });
 
@@ -378,6 +426,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       force,
       forceSkill,
       adopt,
+      activeTargets,
       disownLegacy,
     });
 
@@ -549,6 +598,13 @@ export function parseCliArgs(argv: string[]): {
       options.adopt = true;
     } else if (arg === "--explain") {
       options.explain = true;
+    } else if (arg === "--targets") {
+      if (i + 1 >= argv.length) {
+        throw new Error("--targets requires a comma-separated list of targets");
+      }
+      options.targets = parseTargetsArg(argv[++i]!);
+    } else if (arg.startsWith("--targets=")) {
+      options.targets = parseTargetsArg(arg.slice("--targets=".length));
     } else if (arg === "--disown-legacy") {
       if (i + 1 >= argv.length) {
         throw new Error("--disown-legacy requires an <agent>:<name> argument");
@@ -566,6 +622,28 @@ export function parseCliArgs(argv: string[]): {
   }
 
   return { options, printDir, showHelp };
+}
+
+function parseTargetsArg(raw: string): AgentId[] {
+  const parts = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (parts.length === 0) {
+    throw new Error(
+      `--targets requires at least one target (expected one or more of: ${ALL_AGENTS.join(", ")})`,
+    );
+  }
+  const out: AgentId[] = [];
+  for (const p of parts) {
+    if (!ALL_AGENTS.includes(p as AgentId)) {
+      throw new Error(
+        `unknown target "${p}" in --targets (expected one of: ${ALL_AGENTS.join(", ")})`,
+      );
+    }
+    if (!out.includes(p as AgentId)) out.push(p as AgentId);
+  }
+  return out;
 }
 
 function parseDisownArg(raw: string): { agent: AgentId; name: string } {

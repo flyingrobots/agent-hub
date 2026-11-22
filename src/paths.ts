@@ -55,6 +55,24 @@ export function parseJsonFile(filePath: string): unknown {
   }
 }
 
+/**
+ * Parse a target agent JSON config file strictly via JSON.parse (never scanning raw
+ * text for `//`, which false-positives on https:// URLs). On SyntaxError, explicitly
+ * notes that JSONC comments and trailing commas are unsupported until a comment-preserving
+ * editor is added.
+ */
+export function parseStrictJsonTargetFile(filePath: string): unknown {
+  const raw = readFileSync(filePath, "utf8");
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `${filePath}: invalid JSON (${msg}). Strict JSON is required; JSONC comments and trailing commas are unsupported until a comment-preserving editor is added`,
+    );
+  }
+}
+
 export function expandTilde(rawPath: string, homeDir: string): string {
   if (rawPath === "~") return homeDir;
   if (rawPath.startsWith("~/")) return join(homeDir, rawPath.slice(2));

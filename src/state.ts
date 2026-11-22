@@ -219,22 +219,26 @@ export function getStatePaths(
   };
 }
 
+function makeEmptyAgentMcpMap(): Record<AgentId, Record<string, ManagedMcpRecord>> {
+  const map = {} as Record<AgentId, Record<string, ManagedMcpRecord>>;
+  for (const agent of ALL_AGENTS) map[agent] = {};
+  return map;
+}
+
+function makeEmptyResolvedLegacyMap(): Record<AgentId, string[]> {
+  const map = {} as Record<AgentId, string[]>;
+  for (const agent of ALL_AGENTS) map[agent] = [];
+  return map;
+}
+
 export function createEmptyState(canonicalHubPath: string): OwnershipStateV2 {
   return {
     version: 2,
     generation: 0,
     hubPath: canonicalHubPath,
     links: {},
-    mcp: {
-      antigravity: {},
-      claude: {},
-      codex: {},
-    },
-    resolvedLegacyV1: {
-      antigravity: [],
-      claude: [],
-      codex: [],
-    },
+    mcp: makeEmptyAgentMcpMap(),
+    resolvedLegacyV1: makeEmptyResolvedLegacyMap(),
   };
 }
 
@@ -279,11 +283,7 @@ export function loadOwnershipState(
     links[k] = validateLinkRecord(v, `${statePath}#links[${k}]`);
   }
 
-  const mcp: Record<AgentId, Record<string, ManagedMcpRecord>> = {
-    antigravity: {},
-    claude: {},
-    codex: {},
-  };
+  const mcp = makeEmptyAgentMcpMap();
   for (const agent of ALL_AGENTS) {
     const agentObj = raw.mcp[agent];
     if (agentObj === undefined) continue;
@@ -295,11 +295,7 @@ export function loadOwnershipState(
     }
   }
 
-  const resolvedLegacyV1: Record<AgentId, string[]> = {
-    antigravity: [],
-    claude: [],
-    codex: [],
-  };
+  const resolvedLegacyV1 = makeEmptyResolvedLegacyMap();
   for (const agent of ALL_AGENTS) {
     const arr = raw.resolvedLegacyV1[agent];
     if (arr === undefined) continue;
@@ -339,11 +335,8 @@ export function loadLegacyV1Manifest(
     throw new Error(`agent-hub: invalid legacy v1 manifest at ${legacyPath}`);
   }
 
-  const managed: Record<AgentId, Set<string>> = {
-    antigravity: new Set(),
-    claude: new Set(),
-    codex: new Set(),
-  };
+  const managed = {} as Record<AgentId, Set<string>>;
+  for (const agent of ALL_AGENTS) managed[agent] = new Set();
 
   const addNames = (agent: AgentId, list: unknown) => {
     if (list === undefined) return;
@@ -467,21 +460,20 @@ export function loadPendingJournal(journalPath: string): PendingJournalRecord | 
 export function applyStateDelta(state: OwnershipStateV2, delta: StateDelta): OwnershipStateV2 {
   if (delta.kind === "none") return state;
 
+  const nextMcp = makeEmptyAgentMcpMap();
+  const nextResolvedLegacyV1 = makeEmptyResolvedLegacyMap();
+  for (const agent of ALL_AGENTS) {
+    nextMcp[agent] = { ...state.mcp[agent] };
+    nextResolvedLegacyV1[agent] = [...state.resolvedLegacyV1[agent]];
+  }
+
   const next: OwnershipStateV2 = {
     version: 2,
     generation: state.generation + 1,
     hubPath: state.hubPath,
     links: { ...state.links },
-    mcp: {
-      antigravity: { ...state.mcp.antigravity },
-      claude: { ...state.mcp.claude },
-      codex: { ...state.mcp.codex },
-    },
-    resolvedLegacyV1: {
-      antigravity: [...state.resolvedLegacyV1.antigravity],
-      claude: [...state.resolvedLegacyV1.claude],
-      codex: [...state.resolvedLegacyV1.codex],
-    },
+    mcp: nextMcp,
+    resolvedLegacyV1: nextResolvedLegacyV1,
   };
 
   switch (delta.kind) {

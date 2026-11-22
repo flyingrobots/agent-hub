@@ -7,7 +7,7 @@
 import { parseCliArgs, runSync } from "./cli.ts";
 
 const MCP_USAGE =
-  "Usage: mcp-sync.ts [--dir <path>] [--dry-run|-n] [--check] [--adopt] [--force] [--explain] [--disown-legacy <agent>:<name>]";
+  "Usage: mcp-sync.ts [--dir <path>] [--targets <csv>] [--dry-run|-n] [--check] [--adopt] [--force] [--explain] [--disown-legacy <agent>:<name>]";
 
 let parsed;
 try {

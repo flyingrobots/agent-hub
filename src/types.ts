@@ -1,5 +1,11 @@
-export type AgentId = "antigravity" | "claude" | "codex";
-export const ALL_AGENTS: readonly AgentId[] = ["antigravity", "claude", "codex"];
+export type AgentId = "antigravity" | "claude" | "codex" | "cursor" | "opencode";
+export const ALL_AGENTS: readonly AgentId[] = [
+  "antigravity",
+  "claude",
+  "codex",
+  "cursor",
+  "opencode",
+];
 
 export type McpTransport = "stdio" | "http" | "sse";
 
@@ -148,6 +154,7 @@ export type SyncOptions = {
   checkOnly?: boolean;
   adopt?: boolean;
   explain?: boolean;
+  targets?: AgentId[];
   disownLegacy?: Array<{ agent: AgentId; name: string }>;
 };
 

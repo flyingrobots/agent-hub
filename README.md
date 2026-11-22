@@ -13,9 +13,10 @@ Keep your personal `~/.agents/` directory in its own private git repo while inst
 | **Claude Code** | `~/.claude/CLAUDE.md` | `~/.claude/skills/<name>` | `~/.claude.json` (`mcpServers`) | Supports `stdio`, `http` (streamable HTTP), `sse` |
 | **Codex** | `~/.codex/AGENTS.md` | `~/.codex/skills/<name>` | `~/.codex/config.toml` (`[mcp_servers.*]`) | Supports `stdio`, `http` (streamable HTTP); rejects active `sse` |
 | **Antigravity** | `~/.gemini/GEMINI.md`, `~/.gemini/config/AGENTS.md` | `~/.gemini/skills/<name>` | `~/.gemini/config/mcp_config.json` (`mcpServers`) | Override key: `antigravity`. Supports `stdio`, `http` (`serverUrl`); rejects active `sse` |
-| **OpenCode** | `~/.config/opencode/AGENTS.md` | `~/.config/opencode/skills/<name>` | — | Rules + per-skill symlinks only |
-| **Cursor** | `~/.cursor/AGENTS.md` *(unverified / experimental)* | `~/.cursor/skills/<name>` | — | Cursor docs describe project `AGENTS.md` and settings-based User Rules; global `~/.cursor/AGENTS.md` effect is unverified |
-| **Gemini CLI** | — | — | **Not supported** | Gemini CLI uses `~/.gemini/settings.json` (`url` = SSE, `httpUrl` = streamable HTTP) and is not currently targeted |
+| **Cursor** | `~/.cursor/AGENTS.md` *(unverified / experimental)* | `~/.cursor/skills/<name>` | `~/.cursor/mcp.json` (`mcpServers`) | Supports `stdio`, `http`, `sse`. Global Cursor rules are settings-configured; `~/.cursor/AGENTS.md` effect is unverified |
+| **OpenCode** | `~/.config/opencode/AGENTS.md` | `~/.config/opencode/skills/<name>` | `~/.config/opencode/opencode.json` (`mcp`) | Supports `stdio` (`type: "local"`), `http`/`sse` (`type: "remote"`). Strict JSON only — `.jsonc` files with comments are refused until a comment-preserving editor is added |
+
+> **Strict JSON / JSONC notice:** All JSON MCP adapters (`antigravity`, `claude`, `cursor`, `opencode`) parse target configs strictly via `JSON.parse` and refuse to create a competing `.json` file if a `.jsonc` sibling exists (e.g., `opencode.jsonc`). Commented JSONC files are unsupported until a comment-preserving editor is added.
 
 > **Important:** Structural synchronization verifies filesystem links, serialized JSON/TOML, and ownership state — it does not prove that a downstream agent application loaded and honored the configuration at runtime.
 
@@ -121,6 +122,12 @@ Rules:
 ```bash
 # Sync instructions, skills, and MCP configs
 sync-agents
+
+# Restrict sync/check to specific target(s) (untargeted adapters are never pruned)
+sync-agents --targets claude,codex
+
+# Opt out of specific targets permanently in ~/.config/agent-hub/config.json:
+# { "agentsDir": "~/.agents", "disabledTargets": ["cursor", "opencode"] }
 
 # Inspect observed state, intended state, ownership basis, and reasons (read-only)
 sync-agents --explain

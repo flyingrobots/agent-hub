@@ -13,6 +13,7 @@ import {
   captureFileSnapshot,
   isPlainObject,
   parseJsonFile,
+  parseStrictJsonTargetFile,
   predictNewEntryOwner,
   sha256Hex,
   snapshotsEqual,
@@ -382,11 +383,8 @@ function validateDisownRequests(
   servers: CompiledServerMap,
 ): { disownByAgent: Record<AgentId, Set<string>>; globalOps: PlannedOp[] } {
   const globalOps: PlannedOp[] = [];
-  const disownByAgent: Record<AgentId, Set<string>> = {
-    antigravity: new Set(),
-    claude: new Set(),
-    codex: new Set(),
-  };
+  const disownByAgent = {} as Record<AgentId, Set<string>>;
+  for (const agent of ALL_AGENTS) disownByAgent[agent] = new Set();
 
   for (const req of disownLegacy) {
     const inLegacy = legacyV1?.managed[req.agent].has(req.name) ?? false;
@@ -1002,6 +1000,15 @@ function planSingleMcpTarget(
     throw new Error(`mcp-sync: expected regular file at ${configPath}`);
   }
   const targetMode = beforeSnapshot.kind === "file" ? beforeSnapshot.mode : adapter.defaultMode;
+  const rootKey = adapter.rootKey ?? "mcpServers";
+
+  // Universal JSONC sibling guard across all JSON adapters: refuse to silently create
+  // a competing .json file when a .jsonc file already exists (e.g. opencode.jsonc).
+  if (adapter.format === "json" && beforeSnapshot.kind === "absent" && existsSync(`${configPath}c`)) {
+    throw new Error(
+      `mcp-sync: ${configPath}c exists: JSONC files with comments are unsupported until a comment-preserving editor is added; refusing to create a separate ${configPath}`,
+    );
+  }
 
   let originalText = "";
   let jsonDoc: Record<string, unknown> = {};
@@ -1022,23 +1029,24 @@ function planSingleMcpTarget(
         ? { ...(parsed.mcp_servers as Record<string, unknown>) }
         : {};
     } else {
-      const parsed = parseJsonFile(configPath);
+      const parsed = parseStrictJsonTargetFile(configPath);
       if (!isPlainObject(parsed)) {
         throw new Error(`mcp-sync: ${configPath} must contain a JSON object`);
       }
-      // Fail closed on corrupt mcpServers (null, array, primitive) instead of silently clobbering!
-      if (parsed.mcpServers !== undefined && !isPlainObject(parsed.mcpServers)) {
-        const foundType = Array.isArray(parsed.mcpServers)
+      // Fail closed on corrupt root map (null, array, primitive) instead of silently clobbering!
+      const rawMap = parsed[rootKey];
+      if (rawMap !== undefined && !isPlainObject(rawMap)) {
+        const foundType = Array.isArray(rawMap)
           ? "array"
-          : parsed.mcpServers === null
+          : rawMap === null
             ? "null"
-            : typeof parsed.mcpServers;
+            : typeof rawMap;
         throw new Error(
-          `mcp-sync: ${configPath}: "mcpServers" must be a JSON object (found ${foundType}); refusing to overwrite`,
+          `mcp-sync: ${configPath}: "${rootKey}" must be a JSON object (found ${foundType}); refusing to overwrite`,
         );
       }
       jsonDoc = parsed;
-      existingMap = isPlainObject(jsonDoc.mcpServers) ? { ...jsonDoc.mcpServers } : {};
+      existingMap = isPlainObject(rawMap) ? { ...rawMap } : {};
     }
   }
 
@@ -1096,7 +1104,7 @@ function planSingleMcpTarget(
     if (adapter.format === "toml") {
       renderedContent = rewriteCodexToml(originalText, ctx.codexUpdates);
     } else {
-      const nextDoc = { ...jsonDoc, mcpServers: ctx.existingMap };
+      const nextDoc = { ...jsonDoc, [rootKey]: ctx.existingMap };
       renderedContent = `${JSON.stringify(nextDoc, null, 2)}\n`;
     }
   }
@@ -1126,6 +1134,7 @@ export function planMcpSync(
   opts: {
     adopt: boolean;
     force: boolean;
+    activeTargets?: ReadonlySet<AgentId>;
     disownLegacy: Array<{ agent: AgentId; name: string }>;
   },
 ): { targets: PlannedMcpTarget[]; globalOps: PlannedOp[] } {
@@ -1135,6 +1144,7 @@ export function planMcpSync(
 
   const targets: PlannedMcpTarget[] = [];
   for (const adapter of MCP_ADAPTERS) {
+    if (opts.activeTargets && !opts.activeTargets.has(adapter.id)) continue;
     const plan = planSingleMcpTarget(
       adapter,
       homeDir,

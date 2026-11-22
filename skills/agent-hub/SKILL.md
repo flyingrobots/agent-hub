@@ -16,7 +16,7 @@ Run `sync-agents --print-dir` to confirm the canonical resolved hub path.
 1. **Always edit inside the canonical hub (`~/.agents/`)** — never edit per-agent synced targets directly:
    - Instructions symlinks: `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, `~/.gemini/config/AGENTS.md`, `~/.config/opencode/AGENTS.md`, `~/.cursor/AGENTS.md` *(unverified)*
    - Per-skill symlinks: `~/.claude/skills/<name>`, `~/.codex/skills/<name>`, `~/.gemini/skills/<name>`, `~/.config/opencode/skills/<name>`, `~/.cursor/skills/<name>`
-   - Compiled MCP entries: `~/.gemini/config/mcp_config.json` (`antigravity`), `mcpServers` in `~/.claude.json` (`claude`), `[mcp_servers.*]` in `~/.codex/config.toml` (`codex`)
+   - Compiled MCP entries: `~/.gemini/config/mcp_config.json` (`antigravity`), `mcpServers` in `~/.claude.json` (`claude`), `[mcp_servers.*]` in `~/.codex/config.toml` (`codex`), `mcpServers` in `~/.cursor/mcp.json` (`cursor`), `mcp` in `~/.config/opencode/opencode.json` (`opencode`)
 2. **Always finish with `sync-agents` and verify with `sync-agents --check`.**
 
 ---
@@ -100,10 +100,12 @@ Adapter transport support:
 - `claude`: `stdio`, `http`, `sse`
 - `codex`: `stdio`, `http` (rejects active `sse` unless disabled or overridden)
 - `antigravity`: `stdio`, `http` (`serverUrl`) (rejects active `sse` unless disabled or overridden)
+- `cursor`: `stdio`, `http`, `sse`
+- `opencode`: `stdio` (`type: "local"`), `http`, `sse` (`type: "remote"`)
 
 > **Tip:** Prefer absolute paths for `"command"` so GUI and non-login shells resolve binaries reliably.
 
-**Per-agent overrides** (`antigravity`, `claude`, `codex`) apply in precedence order:
+**Per-agent overrides** (`antigravity`, `claude`, `codex`, `cursor`, `opencode`) apply in precedence order:
 1. Base `mcp` in `<hub>/mcp/<name>/mcp.json`
 2. Inline `"overrides": { "<agent>": { ... } }` in `<hub>/mcp/<name>/mcp.json`
 3. Dedicated `<hub>/mcp/<name>/<agent>/mcp.json`
@@ -139,6 +141,7 @@ Edit `<hub>/AGENTS.md` directly. Run `sync-agents --check` to confirm all manage
 | --- | --- |
 | `sync-agents` | Recover any pending journal (Phase 0), preflight-plan (Phase 1), and apply (Phase 2) |
 | `sync-agents --dir <path>` | Target a different canonical hub directory (normalized to real absolute path) |
+| `sync-agents --targets <csv>` | Restrict sync/check to specific adapter(s) (`antigravity`, `claude`, `codex`, `cursor`, `opencode`); untargeted adapters are never pruned |
 | `sync-agents --explain` | Show observed state, intended state, ownership basis, reason, and next step (read-only) |
 | `sync-agents --dry-run` (`-n`) | Show `[plan]` actions without modifying final destinations, state, journals, or locks |
 | `sync-agents --check` | Exit `0` iff targets, ownership ledger, and recovery state all require zero work |
