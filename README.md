@@ -1,38 +1,62 @@
 # agent-hub
 
-Manage global instructions (`AGENTS.md`), skills (`skills/`), and MCP server definitions (`mcp/`) in **one canonical directory** (default `~/.agents/`) and synchronize them cleanly across local AI coding agents:
+Maintain global instructions (`AGENTS.md`), skills (`skills/`), and MCP server definitions (`mcp/`) in **one canonical directory** (default `~/.agents/`) and project them predictably into each local AI coding agent's configuration.
 
-- **Claude Code** (`~/.claude/CLAUDE.md`, `~/.claude/skills/<name>`, `~/.claude.json` `mcpServers`)
-- **Codex** (`~/.codex/AGENTS.md`, `~/.codex/skills/<name>`, `~/.codex/config.toml` `[mcp_servers.*]`)
-- **Antigravity / Gemini** (`~/.gemini/GEMINI.md`, `~/.gemini/config/AGENTS.md`, `~/.gemini/skills/<name>`, `~/.gemini/config/mcp_config.json`)
-- **OpenCode & Cursor** (rules + skills symlinks when installed)
-
-Keep your personal `~/.agents/` directory in its own private dotfiles repo while installing `agent-hub` cleanly into `~/.agent-hub/` (isolated from your git checkout).
+Keep your personal `~/.agents/` directory in its own private git repo while installing the `agent-hub` runtime cleanly into `~/.agent-hub/` (decoupled from your source checkout) and storing machine-local ownership state under XDG state (`~/.local/state/agent-hub/`).
 
 ---
 
-## Quick Start
+## Supported Targets & Status
+
+| Target | Rules | Skills | MCP Config | Notes |
+| --- | --- | --- | --- | --- |
+| **Claude Code** | `~/.claude/CLAUDE.md` | `~/.claude/skills/<name>` | `~/.claude.json` (`mcpServers`) | Supports `stdio`, `http` (streamable HTTP), `sse` |
+| **Codex** | `~/.codex/AGENTS.md` | `~/.codex/skills/<name>` | `~/.codex/config.toml` (`[mcp_servers.*]`) | Supports `stdio`, `http` (streamable HTTP); rejects active `sse` |
+| **Antigravity** | `~/.gemini/GEMINI.md`, `~/.gemini/config/AGENTS.md` | `~/.gemini/skills/<name>` | `~/.gemini/config/mcp_config.json` (`mcpServers`) | Override key: `antigravity`. Supports `stdio`, `http` (`serverUrl`); rejects active `sse` |
+| **OpenCode** | `~/.config/opencode/AGENTS.md` | `~/.config/opencode/skills/<name>` | — | Rules + per-skill symlinks only |
+| **Cursor** | `~/.cursor/AGENTS.md` *(unverified / experimental)* | `~/.cursor/skills/<name>` | — | Cursor docs describe project `AGENTS.md` and settings-based User Rules; global `~/.cursor/AGENTS.md` effect is unverified |
+| **Gemini CLI** | — | — | **Not supported** | Gemini CLI uses `~/.gemini/settings.json` (`url` = SSE, `httpUrl` = streamable HTTP) and is not currently targeted |
+
+> **Important:** Structural synchronization verifies filesystem links, serialized JSON/TOML, and ownership state — it does not prove that a downstream agent application loaded and honored the configuration at runtime.
+
+---
+
+## Prerequisites & First-Use Setup
+
+### Prerequisites
+
+- **Bun** (required upfront for `sync-agents`; tested on Bun `1.4.2`; `--help` and `--print-dir` work without Bun)
+- **Git**, **`unzip`**, **`tar`** (required when installing skills from git URLs, `.bundle`, `.zip`/`.skill`, or tarballs)
+- Supported platforms: **macOS** and **Linux** (uses OS advisory `flock(2)` for cooperating writer exclusion)
+
+### 1. Create your canonical hub (first time)
+
+```bash
+mkdir -p ~/.agents/skills ~/.agents/mcp
+printf '# Global Agent Instructions\n' > ~/.agents/AGENTS.md
+```
+
+### 2. Install the `agent-hub` runtime
 
 ```bash
 git clone https://github.com/flyingrobots/agent-hub.git
 cd agent-hub
 ./install.sh
+export PATH="$HOME/.local/bin:$PATH"   # add to ~/.zshrc or ~/.bashrc
 ```
 
-`install.sh` copies the runtime to `~/.agent-hub/`, symlinks `~/.local/bin/sync-agents`, and installs the bundled `agent-hub` meta-skill into your hub directory if it already exists.
+What `./install.sh` does (and does **not** do):
+- Copies the runtime into `~/.agent-hub/` with an `.agent-hub-runtime` marker and symlinks `~/.local/bin/sync-agents`.
+- **Never supplies global `--force`**. If `~/.agents/skills/agent-hub` already exists and differs from the bundled copy, it is **preserved** and a conflict is reported. Pass `./install.sh --force-skill` to replace *only* the bundled `agent-hub` skill (never authorizing MCP or symlink replacement), or `--no-skill` / `--no-sync` to skip skill installation or target sync.
+- **Prefix & shim guards**: Refuses to replace `/`, `$HOME`, any prefix overlapping your hub directory, any populated `--prefix` lacking a valid `.agent-hub-runtime` marker (or verified baseline checksums), or an unrecognized file at `~/.local/bin/sync-agents` unless explicitly overridden (`--replace-runtime`, which moves the previous prefix aside as a backup, or `--replace-bin`).
 
-### Configure Your Hub Directory
+### 3. Configure your hub directory
 
-`sync-agents` resolves the hub directory in precedence order:
+`sync-agents` resolves and canonicalizes the hub path to a real absolute path in precedence order:
 
 1. `--dir <path>` CLI flag
 2. `$AGENTS_DIR` environment variable
-3. `~/.config/agent-hub/config.json`:
-   ```json
-   {
-     "agentsDir": "~/.agents"
-   }
-   ```
+3. `${XDG_CONFIG_HOME:-$HOME/.config}/agent-hub/config.json` (`"agentsDir"`)
 4. Default: `~/.agents`
 
 ---
@@ -40,7 +64,7 @@ cd agent-hub
 ## Canonical Hub Layout
 
 ```text
-~/.agents/                      # Your personal config (great as a private git repo)
+~/.agents/                      # Your personal config (private git repo; no machine state stored here)
 ├── AGENTS.md                   # Shared global instructions
 ├── skills/
 │   └── <skill-name>/
@@ -48,26 +72,47 @@ cd agent-hub
 └── mcp/
     └── <server-name>/
         ├── mcp.json            # Canonical MCP server spec (+ optional inline overrides)
-        └── <agent>/mcp.json    # Optional per-agent override (gemini | claude | codex)
+        └── <agent>/mcp.json    # Optional per-agent override (antigravity | claude | codex)
 ```
 
-### Canonical `mcp.json` Format
+### Canonical `mcp.json` Format & Transport Semantics
 
 ```json
 {
   "mcp": {
+    "transport": "stdio",
     "command": "/opt/homebrew/bin/shadcn",
     "args": ["mcp"]
   },
   "overrides": {
     "codex": {
-      "disabled": false
+      "env": { "MODE": "codex" }
     }
   }
 }
 ```
 
-Supported fields: `command`, `args`, `env`, `url`, `headers`, `disabled`.
+Remote server example (SSE enabled for Claude, omitted for adapters that do not support SSE):
+
+```json
+{
+  "mcp": {
+    "transport": "sse",
+    "url": "https://example.com/mcp/sse",
+    "headers": { "Authorization": "Bearer ${TOKEN}" }
+  },
+  "overrides": {
+    "antigravity": { "disabled": true },
+    "codex": { "disabled": true }
+  }
+}
+```
+
+Rules:
+- **Explicit transport**: `command` infers `"transport": "stdio"` if omitted. A remote `url` **must** explicitly set `"transport": "http"` (streamable HTTP) or `"transport": "sse"`.
+- **Disabled-first precedence**: `"disabled": true` is evaluated *before* active transport validation and omits the server uniformly from that adapter (`antigravity`, `claude`, or `codex`).
+- **Transport-family switching**: Overriding a remote base with a `stdio` override (or vice versa) cleanly clears opposite-family inherited fields (`url`/`headers` vs `command`/`args`/`env`).
+- **Override precedence**: base `mcp.json` -> inline `overrides.<agent>` -> `<agent>/mcp.json`. Legacy `gemini` override keys/directories fail with a migration message pointing to `antigravity`.
 
 ---
 
@@ -77,30 +122,56 @@ Supported fields: `command`, `args`, `env`, `url`, `headers`, `disabled`.
 # Sync instructions, skills, and MCP configs
 sync-agents
 
-# Install a skill from a Git URL, local directory, .bundle, .zip/.skill, or tarball
-sync-agents --skill https://github.com/meodai/skill.color-expert.git
+# Inspect observed state, intended state, ownership basis, and reasons (read-only)
+sync-agents --explain
 
-# Update an already-installed skill
-sync-agents --force --skill https://github.com/meodai/skill.color-expert.git
-
-# Preview changes without modifying disk
+# Preview planned changes (leaves final hub, targets, state, journals, and locks untouched)
 sync-agents --dry-run
 
-# Verify everything is in sync (exits 1 on drift or conflicts)
+# Verify targets, ownership ledger, and recovery state are completely clean (exits 1 on any drift)
 sync-agents --check
 
-# Adopt identical existing files/MCP entries as managed
+# Install a skill from a directory, Git URL, .bundle, .zip/.skill, or tarball
+sync-agents --skill https://github.com/owner/repo.git
+
+# Update an already-installed skill ONLY (never forces MCP or symlink replacement)
+sync-agents --force-skill --skill https://github.com/owner/repo.git
+
+# Adopt unmanaged identical symlinks, MCP entries, or strictly equivalent files/dirs
 sync-agents --adopt
+
+# Retire an unverified legacy v1 .mcp-managed.json claim while retaining a personal entry
+sync-agents --disown-legacy claude:personal-server
 ```
+
+> **Dry-run note:** `--dry-run`, `--check`, and `--explain` never modify final destinations, ownership state, journals, or lock files. When `--dry-run` is combined with `--skill <git-url|archive>`, the source is unpacked into a temporary directory under `$TMPDIR` to inspect `SKILL.md` and cleaned up on exit.
 
 ---
 
-## Safety Properties
+## Safety, Ownership & Recovery Model
 
-- **Per-skill symlinks only** — never replaces an entire `skills/` directory, preserving tool-owned directories like `~/.codex/skills/.system`, `~/.claude/skills/synced`, and `~/.claude/skills/.trash`.
-- **Surgical MCP edits** — updates only managed entries in `~/.claude.json` and `~/.codex/config.toml`, preserving all unrelated sections and existing file permissions (such as `0600`).
-- **Fail-closed on conflicts** — refuses to overwrite unmanaged files or differing configs unless `--adopt` (when byte-identical) or `--force` is explicitly passed.
-- **Safe pruning** — removes stale symlinks and deleted MCP servers only when they were previously managed by `sync-agents`.
+### Explicit Ownership Ledger (XDG State)
+
+Machine-local ownership records live under `${XDG_STATE_HOME:-$HOME/.local/state}/agent-hub/` (never inside your git-tracked `~/.agents/`):
+- `state-<hub-hash>.json` — v2 ownership ledger with monotonic `generation`, tracking every managed symlink (`target`, `basis`) and managed MCP entry (`configPath`, content `digest`, `basis`).
+- `journal-<hub-hash>.json` — active write-ahead recovery journal present only while a target mutation is in flight.
+- `apply.lock` — persistent inode locked via OS-held advisory `flock(2)` during `apply` (never unlinked; released automatically by the kernel on process exit or `SIGKILL`).
+
+Key safety guarantees:
+- **No inferred ownership**: A symlink's existence, a hub path prefix, or a disabled canonical MCP entry never grants ownership. Unmanaged entries are preserved and reported as conflicts.
+- **Strict adoption-equivalence contract (`--adopt`)**: Replacing a non-symlink file or directory with a symlink requires exact equality across **all** entries (including `.git`, dotfiles, and empty directories), object kinds (refusing FIFOs, sockets, and device nodes), file bytes, full permission/special mode bits (`mode & 0o7777`), `uid`/`gid`, hardlink guard (`nlink === 1`), literal symlink targets (refusing escaping relative symlinks), and extended attributes (names **and raw byte values**) + ACLs on macOS (and on Linux when `getfattr`/`getfacl` are installed; when absent on Linux, xattrs/ACLs are outside host verification). Explicitly non-preserved properties under `--adopt`: file timestamps (`atime`/`mtime`/`ctime`/`birthtime`) and inode/dirent identity.
+- **TOML-aware Codex editing + semantic guard**: Codex `config.toml` edits use a TOML 1.0 lexical scanner (preserving multiline strings, comments, and unrelated tables), refuse unsupported inline/dotted `mcp_servers` representations before writing, and verify deep semantic equality of every unrelated parsed value before touching disk.
+- **Preflight & freshness verification**: Phase 1 validates everything before Phase 2 starts. A preflight conflict causes no new Phase 2 target or ledger changes (any Phase 0 recovery performed earlier in the run is reported separately). Immediately before each Phase 2 mutation, the live snapshot (contents, mode, uid/gid, or full tree equivalence digest) is re-verified against the planned snapshot; drifted targets are preserved and the stale write is refused.
+- **Write-ahead recovery & durability scope**: Every target mutation writes a recovery journal before modifying the target and clears it only after the corresponding ledger update completes. On restart, Phase 0 reconciles interrupted operations (including target-written/state-unsaved and mid-swap directory replacements) or stops safely preserving evidence if the target changed ambiguously. **Scope:** Intended recovery guarantees cover **process interruption and ordinary I/O failures**; machine crash / power-loss durability is unverified and outside this guarantee.
+- **Concurrency scope**: Cooperating `sync-agents` writers (even across different hubs) are serialized by `flock(2)`. Against non-cooperating external agent applications, snapshot verification prevents applying stale plans, while POSIX check-then-rename still leaves an open window against simultaneous external writes.
+
+### Migrating from Legacy v1 `.mcp-managed.json`
+
+Existing `<hub>/.mcp-managed.json` (v1) manifests are treated conservatively as **unverified provenance**:
+1. **Identical existing entries**: Run `sync-agents --adopt` once to record verified v2 ownership in XDG state without rewriting configs.
+2. **Absent targets** (disabled or removed): Automatically retired into v2 state on the next ordinary `sync-agents` run (reported as ledger-only drift by `--check` until applied).
+3. **Retaining a personal entry without ownership**: Withdraw or rename the conflicting canonical `<hub>/mcp/<name>` directory (note: this affects all adapters), then run `sync-agents --disown-legacy <agent>:<name>` to retire the legacy claim without touching your target config.
+4. **Replacing or deleting**: Pass `--force` explicitly after inspecting the conflict.
 
 ---
 
@@ -110,7 +181,7 @@ sync-agents --adopt
 bun test
 ```
 
-When you are ready to promote changes from your dev checkout to `~/.agent-hub/`:
+Promote reviewed changes from your dev checkout to `~/.agent-hub/`:
 
 ```bash
 ./install.sh

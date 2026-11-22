@@ -1,31 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# sync-agents — Synchronize global agent instructions, skills, and MCP server
-# definitions from a canonical hub directory (default ~/.agents/) to local AI
-# coding agents (Claude Code, Codex, Antigravity/Gemini, OpenCode, Cursor).
+# sync-agents — Thin CLI wrapper around agent-hub's unified TypeScript
+# plan/check/apply engine (src/cli.ts).
 #
 # Hub directory resolution order:
 #   1. --dir <path>
 #   2. $AGENTS_DIR environment variable
 #   3. ${XDG_CONFIG_HOME:-$HOME/.config}/agent-hub/config.json ("agentsDir")
 #   4. $HOME/.agents
-#
-# Canonical hub layout:
-#   <hub>/AGENTS.md            -> global instructions file
-#   <hub>/skills/<name>/       -> skill directories (must contain SKILL.md)
-#   <hub>/mcp/<name>/mcp.json  -> canonical MCP server specs (+ optional overrides)
-#
-# Safety properties:
-# - Never replaces an entire target skills/ directory (preserves tool-owned
-#   entries such as ~/.codex/skills/.system and ~/.claude/skills/synced).
-# - Never overwrites a real target file/dir unless --adopt is passed AND its
-#   contents are byte-identical to the canonical copy.
-# - Never overwrites an existing canonical skill on --skill unless --force is
-#   passed (or it is already byte-identical).
-# - Only prunes symlinks that point into <hub>/skills/ and whose target no
-#   longer exists.
-# - Only syncs tool roots that already exist on this machine.
 
 resolve_script_path() {
   local p="$1"
@@ -47,16 +30,67 @@ resolve_script_path() {
 SCRIPT_REAL="$(resolve_script_path "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname "$SCRIPT_REAL")"
 INSTALL_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
+CLI_SCRIPT="$INSTALL_ROOT/src/cli.ts"
 
-# Locate mcp-sync.ts relative to this installation (supports both installed
-# ~/.agent-hub/ and dev checkout layouts).
-if [[ -f "$INSTALL_ROOT/src/mcp-sync.ts" ]]; then
-  MCP_SYNC_SCRIPT="$INSTALL_ROOT/src/mcp-sync.ts"
-elif [[ -f "$SCRIPT_DIR/mcp-sync.ts" ]]; then
-  MCP_SYNC_SCRIPT="$SCRIPT_DIR/mcp-sync.ts"
-else
-  MCP_SYNC_SCRIPT=""
-fi
+expand_tilde() {
+  local p="$1"
+  case "$p" in
+    "~")   printf '%s\n' "$HOME" ;;
+    "~/"*) printf '%s/%s\n' "$HOME" "${p:2}" ;;
+    *)     printf '%s\n' "$p" ;;
+  esac
+}
+
+canonicalize_path() {
+  local raw="$1"
+  local p
+  p="$(expand_tilde "$raw")"
+  case "$p" in
+    /*) ;;
+    *)  p="$PWD/$p" ;;
+  esac
+
+  # Normalize /./ and trailing slashes while resolving the deepest existing ancestor physically.
+  local tail=()
+  local cursor="$p"
+  while true; do
+    if [[ -e "$cursor" ]]; then
+      local real_base
+      if [[ -d "$cursor" ]]; then
+        real_base="$(cd -P "$cursor" && pwd)"
+      else
+        real_base="$(cd -P "$(dirname "$cursor")" && pwd)/$(basename "$cursor")"
+      fi
+      local out="$real_base"
+      local idx=$(( ${#tail[@]} - 1 ))
+      while [[ "$idx" -ge 0 ]]; do
+        if [[ "$out" == "/" ]]; then
+          out="/${tail[$idx]}"
+        else
+          out="$out/${tail[$idx]}"
+        fi
+        idx=$((idx - 1))
+      done
+      if [[ "$out" != "/" ]]; then
+        out="${out%/}"
+      fi
+      printf '%s\n' "$out"
+      return 0
+    fi
+    local parent
+    parent="$(dirname "$cursor")"
+    if [[ "$parent" == "$cursor" ]]; then
+      printf '%s\n' "$p"
+      return 0
+    fi
+    local base
+    base="$(basename "$cursor")"
+    if [[ "$base" != "." && -n "$base" ]]; then
+      tail+=("$base")
+    fi
+    cursor="$parent"
+  done
+}
 
 read_config_agents_dir() {
   local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/agent-hub/config.json"
@@ -83,23 +117,6 @@ except Exception:
   fi
 }
 
-expand_tilde() {
-  local p="$1"
-  case "$p" in
-    "~")   printf '%s\n' "$HOME" ;;
-    "~/"*) printf '%s/%s\n' "$HOME" "${p:2}" ;;
-    *)     printf '%s\n' "$p" ;;
-  esac
-}
-
-CLI_AGENTS_DIR=""
-DRY_RUN=0
-CHECK_ONLY=0
-ADOPT=0
-FORCE=0
-PRINT_DIR=0
-SKILL_SOURCES=()
-
 usage() {
   cat <<'EOF'
 Usage: sync-agents [OPTIONS]
@@ -108,485 +125,92 @@ Install skills into your canonical hub directory (default ~/.agents/) and sync
 AGENTS.md, skills/, and mcp/ configs across local AI coding agents.
 
 Options:
-      --dir <path>    Override hub directory (default: $AGENTS_DIR, then
-                      ~/.config/agent-hub/config.json "agentsDir", then ~/.agents)
-      --skill <src>   Install a skill from a directory, git repo URL,
-                      .bundle (git bundle), .zip/.skill, or tarball into
-                      <hub>/skills/<name>, then sync all agents (repeatable)
-  -f, --force         Allow --skill to overwrite an existing skill (and allow
-                      MCP sync to overwrite differing unmanaged entries)
-  -n, --dry-run       Print planned changes without modifying the filesystem
-      --check         Verify symlinks and MCP configs are in sync; exit 1 on drift
-      --adopt         Replace non-symlink targets / unmanaged MCP entries if identical
-      --print-dir     Print the resolved hub directory and exit
-  -h, --help          Show this help
+      --dir <path>                 Override hub directory (default: $AGENTS_DIR, then
+                                   ~/.config/agent-hub/config.json "agentsDir", then ~/.agents)
+      --skill <src>                Install a skill from a directory, git repo URL,
+                                   .bundle, .zip/.skill, or tarball into <hub>/skills/<name>,
+                                   then sync installed agents (repeatable)
+      --skill-only                 Install --skill source(s) into <hub>/skills/ without syncing
+                                   agent targets
+      --force-skill                Allow --skill to replace differing canonical skill(s) ONLY
+                                   (never authorizes MCP or symlink replacement)
+  -f, --force                      Allow replacing differing canonical skills, unmanaged/modified
+                                   symlinks, and differing/disabled unmanaged MCP entries
+  -n, --dry-run                    Print planned changes without modifying final destinations,
+                                   ownership state, journals, or locks
+      --check                      Verify symlinks, MCP configs, ownership ledger, and pending
+                                   recovery are clean; exit 1 on any drift, conflict, or pending work
+      --adopt                      Adopt unmanaged identical symlinks, MCP entries, or strictly
+                                   equivalent files/directories into verified v2 ownership
+      --disown-legacy <agent>:<name>
+                                   Retire an unverified legacy v1 .mcp-managed.json claim without
+                                   modifying the target config (requires canonical server removed)
+      --explain                    Print observed state, intended state, ownership basis, reason,
+                                   and next step for each object without modifying disk
+      --print-dir                  Print the canonical resolved hub directory and exit
+  -h, --help                       Show this help
 EOF
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
+# Handle --help and --print-dir without requiring Bun.
+CLI_AGENTS_DIR=""
+PRINT_DIR=0
+SHOW_HELP=0
+ARGS=("$@")
+i=0
+while [[ "$i" -lt "${#ARGS[@]}" ]]; do
+  arg="${ARGS[$i]}"
+  case "$arg" in
+    -h|--help)
+      SHOW_HELP=1
+      ;;
+    --print-dir)
+      PRINT_DIR=1
+      ;;
     --dir)
-      if [[ $# -lt 2 ]]; then
-        echo "sync-agents: --dir requires a path argument" >&2
-        exit 2
+      if [[ $((i + 1)) -lt "${#ARGS[@]}" ]]; then
+        i=$((i + 1))
+        CLI_AGENTS_DIR="${ARGS[$i]}"
       fi
-      CLI_AGENTS_DIR="$2"
-      shift
       ;;
     --dir=*)
-      CLI_AGENTS_DIR="${1#--dir=}"
+      CLI_AGENTS_DIR="${arg#--dir=}"
       ;;
-    --skill)
-      if [[ $# -lt 2 ]]; then
-        echo "sync-agents: --skill requires a source argument" >&2
-        exit 2
-      fi
-      SKILL_SOURCES+=("$2")
-      shift
-      ;;
-    --skill=*)
-      SKILL_SOURCES+=("${1#--skill=}")
-      ;;
-    -f|--force)   FORCE=1 ;;
-    -n|--dry-run) DRY_RUN=1 ;;
-    --check)      CHECK_ONLY=1; DRY_RUN=1 ;;
-    --adopt)      ADOPT=1 ;;
-    --print-dir)  PRINT_DIR=1 ;;
-    -h|--help)    usage; exit 0 ;;
-    *)            echo "sync-agents: unknown option: $1" >&2; usage >&2; exit 2 ;;
   esac
-  shift
+  i=$((i + 1))
 done
 
-if [[ -n "$CLI_AGENTS_DIR" ]]; then
-  AGENTS_DIR="$(expand_tilde "$CLI_AGENTS_DIR")"
-elif [[ -n "${AGENTS_DIR:-}" ]]; then
-  AGENTS_DIR="$(expand_tilde "$AGENTS_DIR")"
-else
-  CFG_DIR="$(read_config_agents_dir)"
-  if [[ -n "$CFG_DIR" ]]; then
-    AGENTS_DIR="$(expand_tilde "$CFG_DIR")"
-  else
-    AGENTS_DIR="$HOME/.agents"
-  fi
-fi
-
-# Strip trailing slash unless root.
-if [[ "$AGENTS_DIR" != "/" ]]; then
-  AGENTS_DIR="${AGENTS_DIR%/}"
-fi
-
-if [[ "$PRINT_DIR" -eq 1 ]]; then
-  printf '%s\n' "$AGENTS_DIR"
+if [[ "$SHOW_HELP" -eq 1 ]]; then
+  usage
   exit 0
 fi
 
-CANONICAL_RULES="$AGENTS_DIR/AGENTS.md"
-CANONICAL_SKILLS="$AGENTS_DIR/skills"
+if [[ "$PRINT_DIR" -eq 1 ]]; then
+  if [[ -n "$CLI_AGENTS_DIR" ]]; then
+    RAW_DIR="$CLI_AGENTS_DIR"
+  elif [[ -n "${AGENTS_DIR:-}" ]]; then
+    RAW_DIR="$AGENTS_DIR"
+  else
+    CFG_DIR="$(read_config_agents_dir)"
+    if [[ -n "$CFG_DIR" ]]; then
+      RAW_DIR="$CFG_DIR"
+    else
+      RAW_DIR="$HOME/.agents"
+    fi
+  fi
+  canonicalize_path "$RAW_DIR"
+  exit 0
+fi
 
-if [[ ! -d "$AGENTS_DIR" ]]; then
-  echo "sync-agents: canonical hub directory not found: $AGENTS_DIR" >&2
+# Upfront Bun prerequisite check before any sync work.
+if ! command -v bun >/dev/null 2>&1; then
+  echo "sync-agents: bun is required to run sync-agents (install from https://bun.sh)" >&2
   exit 1
 fi
 
-if [[ "$CHECK_ONLY" -eq 1 && "${#SKILL_SOURCES[@]}" -gt 0 ]]; then
-  echo "sync-agents: --check cannot be combined with --skill" >&2
-  exit 2
-fi
-
-# Targets are "<root_dir>|<rules_relpath>|<skills_relpath>".
-# A target is synced only if <root_dir> already exists.
-TARGETS=(
-  "$HOME/.codex|AGENTS.md|skills"
-  "$HOME/.claude|CLAUDE.md|skills"
-  "$HOME/.gemini|GEMINI.md|skills"
-  "$HOME/.gemini/config|AGENTS.md|"
-  "$HOME/.config/opencode|AGENTS.md|skills"
-  "$HOME/.cursor|AGENTS.md|skills"
-)
-
-DRIFT=0
-CONFLICTS=0
-TEMP_DIRS=()
-PLANNED_SKILLS=()
-
-cleanup() {
-  if [[ "${#TEMP_DIRS[@]}" -gt 0 ]]; then
-    local d
-    for d in "${TEMP_DIRS[@]}"; do
-      if [[ -n "$d" && -d "$d" ]]; then
-        rm -rf "$d"
-      fi
-    done
-  fi
-}
-trap cleanup EXIT
-
-note_change() {
-  DRIFT=$((DRIFT + 1))
-  if [[ "$DRY_RUN" -eq 1 ]]; then
-    printf '[plan] %s\n' "$1"
-  else
-    printf '[sync] %s\n' "$1"
-  fi
-}
-
-note_conflict() {
-  CONFLICTS=$((CONFLICTS + 1))
-  printf '[conflict] %s\n' "$1" >&2
-}
-
-is_identical() {
-  local src="$1"
-  local dst="$2"
-  if [[ -f "$src" && -f "$dst" ]]; then
-    cmp -s "$src" "$dst"
-  elif [[ -d "$src" && -d "$dst" ]]; then
-    diff -rq -x '.git' "$src" "$dst" >/dev/null 2>&1
-  else
-    return 1
-  fi
-}
-
-# Extract `name:` from YAML frontmatter of SKILL.md, if present.
-extract_skill_name() {
-  local skill_md="$1"
-  awk '
-    NR == 1 && /^---[[:space:]]*$/ { in_fm = 1; next }
-    in_fm && /^---[[:space:]]*$/ { exit }
-    in_fm && /^name:[[:space:]]*/ {
-      val = $0
-      sub(/^name:[[:space:]]*/, "", val)
-      sub(/[[:space:]]*$/, "", val)
-      gsub(/^["'\'']|["'\'']$/, "", val)
-      print val
-      exit
-    }
-  ' "$skill_md"
-}
-
-validate_skill_name() {
-  local name="$1"
-  [[ -n "$name" ]] && [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
-}
-
-install_skill_dir() {
-  local src_dir="$1"
-  local fallback_name="$2"
-  local skill_md="$src_dir/SKILL.md"
-
-  if [[ ! -f "$skill_md" ]]; then
-    echo "sync-agents: missing SKILL.md in $src_dir" >&2
-    exit 1
-  fi
-
-  local name
-  name="$(extract_skill_name "$skill_md")"
-  if [[ -z "$name" ]]; then
-    name="$fallback_name"
-  fi
-
-  if ! validate_skill_name "$name"; then
-    echo "sync-agents: invalid skill name '$name' from $src_dir" >&2
-    exit 1
-  fi
-
-  local dst_dir="$CANONICAL_SKILLS/$name"
-  PLANNED_SKILLS+=("$name")
-
-  if [[ -d "$dst_dir" ]]; then
-    if is_identical "$src_dir" "$dst_dir"; then
-      printf '[keep] skill %s is already up to date in %s\n' "$name" "$dst_dir"
-      return 0
-    fi
-    if [[ "$FORCE" -ne 1 ]]; then
-      note_conflict "skill '$name' already exists at $dst_dir and differs (re-run with --force to replace)"
-      return 0
-    fi
-    note_change "replace skill $name -> $dst_dir"
-  elif [[ -e "$dst_dir" || -L "$dst_dir" ]]; then
-    note_conflict "$dst_dir exists and is not a directory"
-    return 0
-  else
-    note_change "install skill $name -> $dst_dir"
-  fi
-
-  if [[ "$DRY_RUN" -eq 0 ]]; then
-    mkdir -p "$CANONICAL_SKILLS"
-    local stage_dir
-    stage_dir="$(mktemp -d "$CANONICAL_SKILLS/.staging-${name}.XXXXXX")"
-    TEMP_DIRS+=("$stage_dir")
-    # Copy everything except .git metadata.
-    (cd "$src_dir" && tar --exclude='.git' -cf - .) | (cd "$stage_dir" && tar -xf -)
-    chmod 755 "$stage_dir"
-    rm -rf "$dst_dir"
-    mv "$stage_dir" "$dst_dir"
-  fi
-}
-
-install_from_tree() {
-  local tree_root="$1"
-  local fallback_name="$2"
-
-  if [[ -f "$tree_root/SKILL.md" ]]; then
-    install_skill_dir "$tree_root" "$fallback_name"
-    return 0
-  fi
-
-  # Support archives/repos that bundle skills under skills/<name>/SKILL.md.
-  if [[ -d "$tree_root/skills" ]]; then
-    local found=0
-    local entry
-    for entry in "$tree_root/skills"/*; do
-      if [[ -d "$entry" && -f "$entry/SKILL.md" ]]; then
-        install_skill_dir "$entry" "$(basename "$entry")"
-        found=1
-      fi
-    done
-    if [[ "$found" -eq 1 ]]; then
-      return 0
-    fi
-  fi
-
-  # Support archives with a single top-level wrapper directory.
-  local subdirs=()
-  local entry
-  for entry in "$tree_root"/*; do
-    [[ -e "$entry" ]] || continue
-    [[ "$(basename "$entry")" == "__MACOSX" ]] && continue
-    subdirs+=("$entry")
-  done
-  if [[ "${#subdirs[@]}" -eq 1 && -d "${subdirs[0]}" ]]; then
-    install_from_tree "${subdirs[0]}" "$(basename "${subdirs[0]}")"
-    return 0
-  fi
-
-  echo "sync-agents: no SKILL.md found in $tree_root" >&2
-  exit 1
-}
-
-is_git_url() {
-  case "$1" in
-    https://*|http://*|ssh://*|git://*|git@*:*) return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-install_skill_source() {
-  local source_path="$1"
-
-  if is_git_url "$source_path"; then
-    local trimmed="${source_path%/}"
-    local base
-    base="$(basename "$trimmed")"
-    local fallback="${base%.git}"
-    local unpack_dir
-    unpack_dir="$(mktemp -d "${TMPDIR:-/tmp}/sync-agents.XXXXXX")"
-    TEMP_DIRS+=("$unpack_dir")
-
-    git clone --depth 1 --quiet "$source_path" "$unpack_dir/repo"
-    rm -rf "$unpack_dir/repo/.git"
-    install_from_tree "$unpack_dir/repo" "$fallback"
-    return 0
-  fi
-
-  if [[ ! -e "$source_path" ]]; then
-    echo "sync-agents: skill source not found: $source_path" >&2
-    exit 1
-  fi
-
-  if [[ -d "$source_path" ]]; then
-    install_from_tree "$source_path" "$(basename "$source_path")"
-    return 0
-  fi
-
-  local base
-  base="$(basename "$source_path")"
-  local fallback="${base%%.*}"
-  local unpack_dir
-  unpack_dir="$(mktemp -d "${TMPDIR:-/tmp}/sync-agents.XXXXXX")"
-  TEMP_DIRS+=("$unpack_dir")
-
-  # Detect git bundles first (even without .bundle suffix).
-  if git bundle list-heads "$source_path" >/dev/null 2>&1; then
-    git clone --quiet "$source_path" "$unpack_dir/repo"
-    rm -rf "$unpack_dir/repo/.git"
-    install_from_tree "$unpack_dir/repo" "$fallback"
-    return 0
-  fi
-
-  case "$source_path" in
-    *.zip|*.skill)
-      unzip -q "$source_path" -d "$unpack_dir"
-      install_from_tree "$unpack_dir" "$fallback"
-      ;;
-    *.tar|*.tar.gz|*.tgz|*.tar.bz2|*.tbz2|*.tar.xz|*.txz)
-      tar -xf "$source_path" -C "$unpack_dir"
-      install_from_tree "$unpack_dir" "$fallback"
-      ;;
-    *)
-      echo "sync-agents: unsupported skill format: $source_path (expected directory, git repo URL, git .bundle, .zip/.skill, or tarball)" >&2
-      exit 1
-      ;;
-  esac
-}
-
-sync_link() {
-  local src="$1"
-  local dst="$2"
-  local dst_dir
-  dst_dir="$(dirname "$dst")"
-
-  if [[ -L "$dst" ]]; then
-    local current
-    current="$(readlink "$dst")"
-    if [[ "$current" == "$src" ]]; then
-      return 0
-    fi
-    note_change "relink $dst -> $src (was -> $current)"
-    if [[ "$DRY_RUN" -eq 0 ]]; then
-      ln -sfn "$src" "$dst"
-    fi
-    return 0
-  fi
-
-  if [[ -e "$dst" ]]; then
-    if [[ "$ADOPT" -eq 1 ]] && is_identical "$src" "$dst"; then
-      note_change "adopt identical $dst -> $src"
-      if [[ "$DRY_RUN" -eq 0 ]]; then
-        rm -rf "$dst"
-        ln -s "$src" "$dst"
-      fi
-      return 0
-    fi
-    note_conflict "$dst exists and is not a symlink (inspect or diff against $src; use --adopt if identical)"
-    return 0
-  fi
-
-  note_change "link $dst -> $src"
-  if [[ "$DRY_RUN" -eq 0 ]]; then
-    mkdir -p "$dst_dir"
-    ln -s "$src" "$dst"
-  fi
-}
-
-prune_stale_skill_links() {
-  local target_skills_dir="$1"
-  [[ -d "$target_skills_dir" ]] || return 0
-
-  local entry
-  for entry in "$target_skills_dir"/*; do
-    [[ -L "$entry" ]] || continue
-    local target
-    target="$(readlink "$entry")"
-    case "$target" in
-      "$CANONICAL_SKILLS"/*)
-        if [[ ! -d "$target" ]]; then
-          note_change "prune stale symlink $entry (was -> $target)"
-          if [[ "$DRY_RUN" -eq 0 ]]; then
-            rm -f "$entry"
-          fi
-        fi
-        ;;
-    esac
-  done
-}
-
-# Step 1: Install any skills requested via --skill.
-if [[ "${#SKILL_SOURCES[@]}" -gt 0 ]]; then
-  for src in "${SKILL_SOURCES[@]}"; do
-    install_skill_source "$src"
-  done
-fi
-
-# Step 2: Collect canonical skills (subdirectories containing SKILL.md, plus any
-# newly planned skills during --dry-run so planned symlinks are shown too).
-SKILLS=()
-if [[ -d "$CANONICAL_SKILLS" ]]; then
-  for skill_path in "$CANONICAL_SKILLS"/*; do
-    [[ -d "$skill_path" ]] || continue
-    [[ -f "$skill_path/SKILL.md" ]] || continue
-    SKILLS+=("$(basename "$skill_path")")
-  done
-fi
-if [[ "$DRY_RUN" -eq 1 && "${#PLANNED_SKILLS[@]}" -gt 0 ]]; then
-  for planned in "${PLANNED_SKILLS[@]}"; do
-    local_seen=0
-    if [[ "${#SKILLS[@]}" -gt 0 ]]; then
-      for existing in "${SKILLS[@]}"; do
-        if [[ "$existing" == "$planned" ]]; then
-          local_seen=1
-          break
-        fi
-      done
-    fi
-    if [[ "$local_seen" -eq 0 ]]; then
-      SKILLS+=("$planned")
-    fi
-  done
-fi
-
-# Step 3: Sync instructions and per-skill symlinks into every installed agent root.
-for spec in "${TARGETS[@]}"; do
-  IFS='|' read -r root_dir rules_rel skills_rel <<< "$spec"
-  [[ -d "$root_dir" ]] || continue
-
-  if [[ -n "$rules_rel" && -f "$CANONICAL_RULES" ]]; then
-    sync_link "$CANONICAL_RULES" "$root_dir/$rules_rel"
-  fi
-
-  if [[ -n "$skills_rel" && -d "$CANONICAL_SKILLS" ]]; then
-    target_skills_dir="$root_dir/$skills_rel"
-    if [[ "${#SKILLS[@]}" -gt 0 ]]; then
-      for skill_name in "${SKILLS[@]}"; do
-        sync_link "$CANONICAL_SKILLS/$skill_name" "$target_skills_dir/$skill_name"
-      done
-    fi
-    prune_stale_skill_links "$target_skills_dir"
-  fi
-done
-
-# Step 4: Compile canonical <hub>/mcp/<name>/mcp.json into each agent's native MCP config.
-MCP_CHANGED=0
-if [[ -n "$MCP_SYNC_SCRIPT" && -f "$MCP_SYNC_SCRIPT" && -d "$AGENTS_DIR/mcp" ]]; then
-  if ! command -v bun >/dev/null 2>&1; then
-    echo "sync-agents: bun is required to run $MCP_SYNC_SCRIPT" >&2
-    exit 1
-  fi
-  MCP_ARGS=()
-  if [[ "$CHECK_ONLY" -eq 1 ]]; then
-    MCP_ARGS+=("--check")
-  elif [[ "$DRY_RUN" -eq 1 ]]; then
-    MCP_ARGS+=("--dry-run")
-  fi
-  if [[ "$ADOPT" -eq 1 ]]; then MCP_ARGS+=("--adopt"); fi
-  if [[ "$FORCE" -eq 1 ]]; then MCP_ARGS+=("--force"); fi
-
-  mcp_status=0
-  if [[ "${#MCP_ARGS[@]}" -gt 0 ]]; then
-    mcp_out="$(AGENTS_DIR="$AGENTS_DIR" bun "$MCP_SYNC_SCRIPT" "${MCP_ARGS[@]}")" || mcp_status=$?
-  else
-    mcp_out="$(AGENTS_DIR="$AGENTS_DIR" bun "$MCP_SYNC_SCRIPT")" || mcp_status=$?
-  fi
-  if [[ -n "$mcp_out" ]]; then
-    printf '%s\n' "$mcp_out"
-    MCP_CHANGED=1
-  fi
-  if [[ "$mcp_status" -ne 0 ]]; then
-    exit "$mcp_status"
-  fi
-fi
-
-if [[ "$CONFLICTS" -gt 0 ]]; then
-  echo "sync-agents: $CONFLICTS conflict(s) found; refusing to overwrite." >&2
+if [[ ! -f "$CLI_SCRIPT" ]]; then
+  echo "sync-agents: engine script not found at $CLI_SCRIPT" >&2
   exit 1
 fi
 
-if [[ "$CHECK_ONLY" -eq 1 && "$DRIFT" -gt 0 ]]; then
-  echo "sync-agents: out of sync ($DRIFT change(s) needed)." >&2
-  exit 1
-fi
-
-if [[ "$DRIFT" -eq 0 && "$MCP_CHANGED" -eq 0 ]]; then
-  echo "sync-agents: everything is in sync."
-fi
+exec bun "$CLI_SCRIPT" "$@"

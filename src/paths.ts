@@ -1,0 +1,702 @@
+import { createHash } from "node:crypto";
+import {
+  chmodSync,
+  closeSync,
+  constants as fsConstants,
+  existsSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readlinkSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from "node:fs";
+import { dirname, isAbsolute, join, normalize, relative, resolve, sep } from "node:path";
+import type { TargetSnapshot } from "./types.ts";
+
+export function isPlainObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+export function stableJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(stableJson).join(",")}]`;
+  }
+  if (isPlainObject(value)) {
+    const keys = Object.keys(value).sort();
+    return `{${keys.map((k) => `${JSON.stringify(k)}:${stableJson(value[k])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+export function sha256Hex(data: string | Uint8Array): string {
+  return createHash("sha256").update(data).digest("hex");
+}
+
+export function expandTilde(rawPath: string, homeDir: string): string {
+  if (rawPath === "~") return homeDir;
+  if (rawPath.startsWith("~/")) return join(homeDir, rawPath.slice(2));
+  return rawPath;
+}
+
+/**
+ * Normalize a hub path (expanding ~, resolving relative paths against cwd, and
+ * resolving the deepest existing ancestor via realpathSync) so relative paths
+ * and macOS /tmp vs /private/tmp always produce one canonical absolute path.
+ */
+export function canonicalizeHubPath(rawPath: string, homeDir: string, cwd: string): string {
+  const expanded = expandTilde(rawPath, homeDir);
+  const abs = isAbsolute(expanded) ? normalize(expanded) : resolve(cwd, expanded);
+
+  // Walk upward until an existing ancestor is found, resolve it physically,
+  // then re-append the non-existent tail segments.
+  const tail: string[] = [];
+  let cursor = abs;
+  while (true) {
+    if (existsSync(cursor)) {
+      const realBase = realpathSync(cursor);
+      const joined = tail.length > 0 ? join(realBase, ...tail.reverse()) : realBase;
+      return joined.length > 1 && joined.endsWith(sep) ? joined.slice(0, -1) : joined;
+    }
+    const parent = dirname(cursor);
+    if (parent === cursor) {
+      return abs.length > 1 && abs.endsWith(sep) ? abs.slice(0, -1) : abs;
+    }
+    const base = cursor.slice(parent.length === 1 ? 1 : parent.length + 1);
+    if (base.length > 0) tail.push(base);
+    cursor = parent;
+  }
+}
+
+/**
+ * Best-effort POSIX directory fsync. Propagates real I/O errors while ignoring
+ * EINVAL/EROFS/EBADF on filesystems that do not support directory fsync.
+ */
+export function fsyncDir(dirPath: string): void {
+  let fd: number | null = null;
+  try {
+    fd = openSync(dirPath, fsConstants.O_RDONLY);
+    fsyncSync(fd);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === "EINVAL" || code === "EROFS" || code === "EPERM" || code === "EBADF") {
+      return;
+    }
+    throw err;
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // ignore
+      }
+    }
+  }
+}
+
+/**
+ * Atomic file replacement using temp file + chmod + fsync + rename + fsyncDir.
+ */
+export function atomicWriteDurable(
+  filePath: string,
+  content: string | Uint8Array,
+  fallbackMode = 0o644,
+  explicitMode?: number,
+): void {
+  const dir = dirname(filePath);
+  mkdirSync(dir, { recursive: true });
+  const mode =
+    explicitMode !== undefined
+      ? explicitMode & 0o7777
+      : existsSync(filePath)
+        ? statSync(filePath).mode & 0o7777
+        : fallbackMode & 0o7777;
+
+  const tmpPath = join(
+    dir,
+    `.sync-agents-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2, 8)}.tmp`,
+  );
+
+  let fd: number | null = null;
+  try {
+    fd = openSync(tmpPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, mode);
+    const buf = typeof content === "string" ? Buffer.from(content, "utf8") : Buffer.from(content);
+    let offset = 0;
+    while (offset < buf.length) {
+      offset += writeSync(fd, buf, offset, buf.length - offset);
+    }
+    fsyncSync(fd);
+    closeSync(fd);
+    fd = null;
+    chmodSync(tmpPath, mode);
+    renameSync(tmpPath, filePath);
+    fsyncDir(dir);
+  } catch (err) {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // ignore
+      }
+    }
+    try {
+      if (existsSync(tmpPath)) unlinkSync(tmpPath);
+    } catch {
+      // ignore cleanup error
+    }
+    throw err;
+  }
+}
+
+export function snapshotsEqual(a: TargetSnapshot, b: TargetSnapshot): boolean {
+  if (a.kind !== b.kind) return false;
+  switch (a.kind) {
+    case "absent":
+      return true;
+    case "file": {
+      const bf = b as Extract<TargetSnapshot, { kind: "file" }>;
+      return a.sha256 === bf.sha256 && a.mode === bf.mode && a.uid === bf.uid && a.gid === bf.gid;
+    }
+    case "symlink": {
+      const bs = b as Extract<TargetSnapshot, { kind: "symlink" }>;
+      return a.target === bs.target && a.uid === bs.uid && a.gid === bs.gid;
+    }
+    case "tree": {
+      const bt = b as Extract<TargetSnapshot, { kind: "tree" }>;
+      return a.rootKind === bt.rootKind && a.equivalenceDigest === bt.equivalenceDigest;
+    }
+  }
+}
+
+export function captureFileSnapshot(filePath: string): TargetSnapshot {
+  let st;
+  try {
+    st = lstatSync(filePath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return { kind: "absent" };
+    }
+    throw err;
+  }
+  if (!st.isFile()) {
+    // Capture non-regular objects cleanly so callers detect mismatches.
+    if (st.isSymbolicLink()) {
+      return {
+        kind: "symlink",
+        target: readlinkSync(filePath),
+        uid: st.uid,
+        gid: st.gid,
+      };
+    }
+    const tree = computeEquivalenceRecord(filePath);
+    if (!tree.ok) {
+      throw new Error(`cannot snapshot ${filePath}: ${tree.reason}`);
+    }
+    return {
+      kind: "tree",
+      rootKind: tree.rootKind,
+      equivalenceDigest: tree.digest,
+    };
+  }
+  const bytes = readFileSync(filePath);
+  return {
+    kind: "file",
+    sha256: sha256Hex(bytes),
+    mode: st.mode & 0o7777,
+    uid: st.uid,
+    gid: st.gid,
+  };
+}
+
+export function captureSymlinkOrAbsentSnapshot(destPath: string): TargetSnapshot {
+  let st;
+  try {
+    st = lstatSync(destPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return { kind: "absent" };
+    }
+    throw err;
+  }
+  if (st.isSymbolicLink()) {
+    return {
+      kind: "symlink",
+      target: readlinkSync(destPath),
+      uid: st.uid,
+      gid: st.gid,
+    };
+  }
+  if (st.isFile()) {
+    const bytes = readFileSync(destPath);
+    return {
+      kind: "file",
+      sha256: sha256Hex(bytes),
+      mode: st.mode & 0o7777,
+      uid: st.uid,
+      gid: st.gid,
+    };
+  }
+  const tree = computeEquivalenceRecord(destPath);
+  if (!tree.ok) {
+    return { kind: "tree", rootKind: "dir", equivalenceDigest: `unreadable:${tree.reason}` };
+  }
+  return {
+    kind: "tree",
+    rootKind: tree.rootKind,
+    equivalenceDigest: tree.digest,
+  };
+}
+
+export function captureTreeSnapshot(targetPath: string): TargetSnapshot {
+  let st;
+  try {
+    st = lstatSync(targetPath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return { kind: "absent" };
+    }
+    throw err;
+  }
+  if (st.isSymbolicLink()) {
+    return {
+      kind: "symlink",
+      target: readlinkSync(targetPath),
+      uid: st.uid,
+      gid: st.gid,
+    };
+  }
+  const rec = computeEquivalenceRecord(targetPath);
+  if (!rec.ok) {
+    throw new Error(`cannot snapshot tree ${targetPath}: ${rec.reason}`);
+  }
+  return {
+    kind: "tree",
+    rootKind: rec.rootKind,
+    equivalenceDigest: rec.digest,
+  };
+}
+
+export type EntryMetadataResult =
+  | {
+      ok: true;
+      xattrs: Record<string, string>; // attrName -> lowercase hex raw bytes
+      acls: string[];
+      xattrVerified: boolean;
+      aclVerified: boolean;
+    }
+  | { ok: false; reason: string };
+
+let cachedLinuxTools: { getfattr: string | null; getfacl: string | null } | null = null;
+
+function findLinuxTools(): { getfattr: string | null; getfacl: string | null } {
+  if (cachedLinuxTools) return cachedLinuxTools;
+  const which = (name: string): string | null => {
+    const res = Bun.spawnSync(["which", name], { stdout: "pipe", stderr: "pipe" });
+    if (res.exitCode !== 0) return null;
+    const out = res.stdout.toString().trim();
+    return out.length > 0 ? out : null;
+  };
+  cachedLinuxTools = {
+    getfattr: which("getfattr"),
+    getfacl: which("getfacl"),
+  };
+  return cachedLinuxTools;
+}
+
+/**
+ * Inspect extended attribute names AND raw byte values (plus ACL lines) without
+ * dereferencing symlinks.
+ *
+ * - On macOS: uses `/usr/bin/xattr -s` + `/usr/bin/xattr -p -x -s <name>` for exact
+ *   raw hex values, and `/bin/ls -lde` for ACL rule lines. Fails closed on error.
+ * - On Linux: uses `getfattr -h -d -m - --encoding=hex` and `getfacl` when installed;
+ *   when absent, records xattrVerified/aclVerified = false (disclosed in docs).
+ */
+export function readEntryMetadata(entryPath: string, isSymlink: boolean): EntryMetadataResult {
+  if (process.platform === "darwin") {
+    const listRes = Bun.spawnSync(["/usr/bin/xattr", "-s", entryPath], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (listRes.exitCode !== 0) {
+      return {
+        ok: false,
+        reason: `failed to list xattrs for ${entryPath}: ${listRes.stderr.toString().trim()}`,
+      };
+    }
+    const names = listRes.stdout
+      .toString("utf8")
+      .split(/\r?\n/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0)
+      .sort();
+
+    const xattrs: Record<string, string> = {};
+    for (const name of names) {
+      const valRes = Bun.spawnSync(["/usr/bin/xattr", "-p", "-x", "-s", name, entryPath], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (valRes.exitCode !== 0) {
+        return {
+          ok: false,
+          reason: `failed to read xattr "${name}" on ${entryPath}: ${valRes.stderr.toString().trim()}`,
+        };
+      }
+      xattrs[name] = valRes.stdout.toString("utf8").replace(/\s+/g, "").toLowerCase();
+    }
+
+    const aclRes = Bun.spawnSync(["/bin/ls", "-lde", entryPath], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    if (aclRes.exitCode !== 0) {
+      return {
+        ok: false,
+        reason: `failed to read ACLs for ${entryPath}: ${aclRes.stderr.toString().trim()}`,
+      };
+    }
+    const aclLines = aclRes.stdout
+      .toString("utf8")
+      .split(/\r?\n/)
+      .slice(1)
+      .map((l) => l.trim())
+      .filter((l) => /^\d+:\s+/.test(l));
+
+    return { ok: true, xattrs, acls: aclLines, xattrVerified: true, aclVerified: true };
+  }
+
+  if (process.platform === "linux") {
+    const tools = findLinuxTools();
+    const xattrs: Record<string, string> = {};
+    let xattrVerified = false;
+    if (tools.getfattr) {
+      const res = Bun.spawnSync(
+        [tools.getfattr, "-h", "-d", "-m", "-", "--encoding=hex", entryPath],
+        { stdout: "pipe", stderr: "pipe" },
+      );
+      if (res.exitCode !== 0) {
+        return {
+          ok: false,
+          reason: `failed to read xattrs for ${entryPath}: ${res.stderr.toString().trim()}`,
+        };
+      }
+      const pairs: Array<[string, string]> = [];
+      for (const line of res.stdout.toString("utf8").split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const eq = trimmed.indexOf("=");
+        if (eq > 0) {
+          const k = trimmed.slice(0, eq);
+          let v = trimmed.slice(eq + 1);
+          if (v.startsWith("0x")) v = v.slice(2);
+          pairs.push([k, v.toLowerCase()]);
+        } else {
+          pairs.push([trimmed, ""]);
+        }
+      }
+      pairs.sort(([a], [b]) => a.localeCompare(b));
+      for (const [k, v] of pairs) xattrs[k] = v;
+      xattrVerified = true;
+    }
+
+    const acls: string[] = [];
+    let aclVerified = false;
+    if (tools.getfacl && !isSymlink) {
+      const res = Bun.spawnSync([tools.getfacl, "-p", "--omit-header", "--numeric", entryPath], {
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      if (res.exitCode !== 0) {
+        return {
+          ok: false,
+          reason: `failed to read ACLs for ${entryPath}: ${res.stderr.toString().trim()}`,
+        };
+      }
+      for (const line of res.stdout.toString("utf8").split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (trimmed && !trimmed.startsWith("#")) acls.push(trimmed);
+      }
+      aclVerified = true;
+    }
+
+    return { ok: true, xattrs, acls, xattrVerified, aclVerified };
+  }
+
+  return { ok: true, xattrs: {}, acls: [], xattrVerified: false, aclVerified: false };
+}
+
+export type TreeEntryRecord = {
+  relPath: string;
+  kind: "file" | "dir" | "symlink";
+  mode: number;
+  uid: number;
+  gid: number;
+  hardlinked: boolean;
+  sha256?: string;
+  symlinkTarget?: string;
+  escapesRoot?: boolean;
+  xattrs: Record<string, string>;
+  acls: string[];
+};
+
+export type EquivalenceRecordResult =
+  | {
+      ok: true;
+      rootKind: "file" | "dir";
+      entries: TreeEntryRecord[];
+      digest: string;
+    }
+  | { ok: false; reason: string };
+
+/**
+ * Compute a deterministic, full-tree equivalence record covering:
+ * - all entries (including .git, hidden dotfiles, empty subdirectories)
+ * - file kinds (refusing FIFOs, sockets, device nodes)
+ * - regular file bytes, full mode & 0o7777, uid, gid, hardlink status
+ * - symlink targets and escaping-relative-symlink detection
+ * - extended attribute names + raw hex values and ACL rule lines
+ */
+export function computeEquivalenceRecord(
+  rootPath: string,
+  opts?: { excludeRootGit?: boolean },
+): EquivalenceRecordResult {
+  let rootStat;
+  try {
+    rootStat = lstatSync(rootPath);
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `cannot stat ${rootPath}: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+
+  if (!rootStat.isFile() && !rootStat.isDirectory()) {
+    return { ok: false, reason: `unsupported object kind at ${rootPath}` };
+  }
+  const rootKind: "file" | "dir" = rootStat.isFile() ? "file" : "dir";
+  const absRoot = resolve(rootPath);
+  const entries: TreeEntryRecord[] = [];
+
+  const visit = (absPath: string, relPath: string): string | null => {
+    let st;
+    try {
+      st = lstatSync(absPath);
+    } catch (err) {
+      return `cannot lstat ${relPath || "."}: ${err instanceof Error ? err.message : String(err)}`;
+    }
+
+    const isFile = st.isFile();
+    const isDir = st.isDirectory();
+    const isSymlink = st.isSymbolicLink();
+    if (!isFile && !isDir && !isSymlink) {
+      return `unsupported filesystem object kind at ${relPath || "."}`;
+    }
+
+    const meta = readEntryMetadata(absPath, isSymlink);
+    if (!meta.ok) return meta.reason;
+
+    if (isFile) {
+      const bytes = readFileSync(absPath);
+      entries.push({
+        relPath,
+        kind: "file",
+        mode: st.mode & 0o7777,
+        uid: st.uid,
+        gid: st.gid,
+        hardlinked: st.nlink > 1,
+        sha256: sha256Hex(bytes),
+        xattrs: meta.xattrs,
+        acls: meta.acls,
+      });
+      return null;
+    }
+
+    if (isSymlink) {
+      const target = readlinkSync(absPath);
+      let escapesRoot = false;
+      if (!isAbsolute(target)) {
+        const resolvedTarget = resolve(dirname(absPath), target);
+        const rel = relative(absRoot, resolvedTarget);
+        if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+          escapesRoot = true;
+        }
+      }
+      entries.push({
+        relPath,
+        kind: "symlink",
+        mode: st.mode & 0o7777,
+        uid: st.uid,
+        gid: st.gid,
+        hardlinked: false,
+        symlinkTarget: target,
+        escapesRoot,
+        xattrs: meta.xattrs,
+        acls: meta.acls,
+      });
+      return null;
+    }
+
+    // Directory
+    entries.push({
+      relPath,
+      kind: "dir",
+      mode: st.mode & 0o7777,
+      uid: st.uid,
+      gid: st.gid,
+      hardlinked: false,
+      xattrs: meta.xattrs,
+      acls: meta.acls,
+    });
+
+    const children = readdirSync(absPath).sort();
+    for (const child of children) {
+      if (opts?.excludeRootGit && relPath === "" && child === ".git") {
+        continue;
+      }
+      const childRel = relPath ? `${relPath}/${child}` : child;
+      const err = visit(join(absPath, child), childRel);
+      if (err) return err;
+    }
+    return null;
+  };
+
+  const err = visit(absRoot, "");
+  if (err) return { ok: false, reason: err };
+
+  const digest = sha256Hex(stableJson({ rootKind, entries }));
+  return { ok: true, rootKind, entries, digest };
+}
+
+export type AdoptionEquivalenceResult =
+  | {
+      equivalent: true;
+      srcSnapshot: Extract<TargetSnapshot, { kind: "tree" }>;
+      dstSnapshot: Extract<TargetSnapshot, { kind: "tree" }>;
+    }
+  | { equivalent: false; reason: string };
+
+/**
+ * Finite, explicit adoption-equivalence contract comparing canonical `src`
+ * against existing non-symlink `dst`. Refuses any difference in entry set
+ * (including .git), file kind, bytes, mode & 0o7777, uid/gid, hardlinks,
+ * escaping relative symlinks, xattr names/raw values, or ACL lines.
+ */
+export function checkAdoptionEquivalence(src: string, dst: string): AdoptionEquivalenceResult {
+  const srcRec = computeEquivalenceRecord(src);
+  if (!srcRec.ok) {
+    return { equivalent: false, reason: `canonical source check failed: ${srcRec.reason}` };
+  }
+  const dstRec = computeEquivalenceRecord(dst);
+  if (!dstRec.ok) {
+    return { equivalent: false, reason: `destination check failed: ${dstRec.reason}` };
+  }
+
+  if (srcRec.rootKind !== dstRec.rootKind) {
+    return {
+      equivalent: false,
+      reason: `kind differs (destination is ${dstRec.rootKind}, canonical source is ${srcRec.rootKind})`,
+    };
+  }
+
+  for (const entry of dstRec.entries) {
+    const label = entry.relPath || ".";
+    if (entry.kind === "file" && entry.hardlinked) {
+      return {
+        equivalent: false,
+        reason: `destination contains hardlinked file "${label}" (replacing would sever hardlink identity)`,
+      };
+    }
+    if (entry.kind === "symlink" && entry.escapesRoot) {
+      return {
+        equivalent: false,
+        reason: `destination contains escaping relative symlink "${label}" -> "${entry.symlinkTarget}"`,
+      };
+    }
+  }
+
+  const srcMap = new Map(srcRec.entries.map((e) => [e.relPath, e]));
+  const dstMap = new Map(dstRec.entries.map((e) => [e.relPath, e]));
+
+  for (const [rel, dstEntry] of dstMap) {
+    const srcEntry = srcMap.get(rel);
+    const label = rel || ".";
+    if (!srcEntry) {
+      return {
+        equivalent: false,
+        reason: `destination has extra entry "${label}" not present in canonical source`,
+      };
+    }
+    if (srcEntry.kind !== dstEntry.kind) {
+      return {
+        equivalent: false,
+        reason: `entry "${label}" kind differs (destination ${dstEntry.kind} vs source ${srcEntry.kind})`,
+      };
+    }
+    if (srcEntry.mode !== dstEntry.mode) {
+      return {
+        equivalent: false,
+        reason: `entry "${label}" mode differs (destination 0${dstEntry.mode.toString(8)} vs source 0${srcEntry.mode.toString(8)})`,
+      };
+    }
+    if (srcEntry.uid !== dstEntry.uid || srcEntry.gid !== dstEntry.gid) {
+      return {
+        equivalent: false,
+        reason: `entry "${label}" owner/group differs (destination ${dstEntry.uid}:${dstEntry.gid} vs source ${srcEntry.uid}:${srcEntry.gid})`,
+      };
+    }
+    if (srcEntry.kind === "file" && srcEntry.sha256 !== dstEntry.sha256) {
+      return {
+        equivalent: false,
+        reason: `file "${label}" contents differ`,
+      };
+    }
+    if (srcEntry.kind === "symlink" && srcEntry.symlinkTarget !== dstEntry.symlinkTarget) {
+      return {
+        equivalent: false,
+        reason: `symlink "${label}" target differs (destination "${dstEntry.symlinkTarget}" vs source "${srcEntry.symlinkTarget}")`,
+      };
+    }
+    if (stableJson(srcEntry.xattrs) !== stableJson(dstEntry.xattrs)) {
+      return {
+        equivalent: false,
+        reason: `entry "${label}" extended attributes differ`,
+      };
+    }
+    if (stableJson(srcEntry.acls) !== stableJson(dstEntry.acls)) {
+      return {
+        equivalent: false,
+        reason: `entry "${label}" ACLs differ`,
+      };
+    }
+  }
+
+  for (const rel of srcMap.keys()) {
+    if (!dstMap.has(rel)) {
+      return {
+        equivalent: false,
+        reason: `canonical source has entry "${rel || "."}" missing from destination`,
+      };
+    }
+  }
+
+  return {
+    equivalent: true,
+    srcSnapshot: {
+      kind: "tree",
+      rootKind: srcRec.rootKind,
+      equivalenceDigest: srcRec.digest,
+    },
+    dstSnapshot: {
+      kind: "tree",
+      rootKind: dstRec.rootKind,
+      equivalenceDigest: dstRec.digest,
+    },
+  };
+}
