@@ -236,7 +236,8 @@ describe("vault-backed exec (flyingrobots/agent-hub#10)", () => {
     run(["exec", "--vault", "T=nope", "--", ...SH_ARGV], m.env);
     run(["exec", "--keep", "A", "--vault", "T=k", "--", ...SH_ARGV], m.env);
     const schema = JSON.parse(readFileSync(join(REPO_ROOT, "schemas", "files", "agent_hub.exec_audit.schema.json"), "utf8"));
-    const validate = new Ajv2020({ strict: false }).compile(schema);
+    // Formats are not validated (no ajv-formats), and saying so must not print to stderr.
+    const validate = new Ajv2020({ strict: false, validateFormats: false }).compile(schema);
     const lines = readFileSync(m.statePath("exec-audit.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
     expect(lines.map((l) => l.outcome)).toEqual(["refused", "exec"]);
     for (const l of lines) expect(validate(l)).toBe(true);

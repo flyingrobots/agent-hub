@@ -496,6 +496,9 @@ function tomlScalarOrArray(v: unknown, where: string): string {
   return tomlScalar(v, where);
 }
 
+/** Plain code-unit order, so rendered bytes never depend on the locale. */
+const codeUnitCompare = (a: string, b: string): number => (a < b ? -1 : a > b ? 1 : 0);
+
 export function renderCodexSection(
   name: string,
   entry: Record<string, unknown>,
@@ -535,7 +538,7 @@ export function renderCodexSection(
     lines.push("");
     lines.push(`[mcp_servers.${key}.env]`);
     for (const [k, v] of Object.entries(entry.env as Record<string, string>).sort(([a], [b]) =>
-      a.localeCompare(b),
+      codeUnitCompare(a, b),
     )) {
       lines.push(`${formatTomlKey(k)} = ${tomlString(v)}`);
     }
@@ -545,7 +548,7 @@ export function renderCodexSection(
       lines.push("");
       lines.push(`[mcp_servers.${key}.${table}]`);
       for (const [k, v] of Object.entries(entry[table] as Record<string, string>).sort(([a], [b]) =>
-        a.localeCompare(b),
+        codeUnitCompare(a, b),
       )) {
         lines.push(`${formatTomlKey(k)} = ${tomlString(v)}`);
       }
@@ -554,7 +557,7 @@ export function renderCodexSection(
   for (const t of extraTables) {
     lines.push("");
     lines.push(`[mcp_servers.${key}.${formatTomlKey(t)}]`);
-    for (const [k, v] of Object.entries(entry[t] as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))) {
+    for (const [k, v] of Object.entries(entry[t] as Record<string, unknown>).sort(([a], [b]) => codeUnitCompare(a, b))) {
       if (isPlainObject(v)) {
         throw new TomlUnsupportedError(`mcp_servers.${name}.${t}.${k}: nested tables in extra are not supported`);
       }
@@ -787,7 +790,7 @@ export function rewriteCodexToml(
   const remaining = out.replace(/(?:\r?\n[ \t]*)+$/, "");
   const additions = [...updates.entries()]
     .filter(([name, v]) => v !== null && !placed.has(name))
-    .sort(([a], [b]) => a.localeCompare(b));
+    .sort(([a], [b]) => codeUnitCompare(a, b));
 
   const chunks: string[] = [];
   if (remaining.length > 0) chunks.push(remaining);

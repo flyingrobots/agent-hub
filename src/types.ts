@@ -185,6 +185,10 @@ export type SyncOptions = {
   explain?: boolean;
   targets?: TargetSelector[];
   disownLegacy?: Array<{ agent: AgentId; name: string }>;
+  /** Project mode (flyingrobots/agent-hub#11): sync <repo>/.agents/ into the repository. */
+  project?: boolean;
+  /** With project: rebuild .agents/sync.lock.json from outputs equal to the intended bytes. */
+  relock?: boolean;
   /** Called with each output event as it happens (the CLI prints it at once). */
   onEvent?: (event: import("./output.ts").OutputEvent) => void;
 };
