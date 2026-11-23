@@ -19,3 +19,5 @@ Contract ledger for [commands and agents](README.md).
 | PRIM-OWN-6 | CRLF, BOM or a blank first line never bypass validation | Exit codes; files | E2E | Implemented | `primitives.test.ts › CRLF, a BOM or a blank first line never lets frontmatter through unvalidated` |
 | PRIM-OWN-7 | Empty and end-of-file frontmatter accepted; README.md ignored | Exit codes; files | E2E | Implemented | `primitives.test.ts › valid frontmatter edge forms are accepted: empty, and closing at end of file` |
 | PRIM-OWN-8 | Codex TOML is always valid | Exit codes; files | E2E | Implemented | `primitives.test.ts › Codex TOML is always valid: DEL escaped, managed keys refused, odd keys quoted, numbers checked` |
+| PRIM-OWN-9 | A body opening with a frontmatter-like block is refused | Exit 1; nothing written | E2E | Implemented | `primitives.test.ts › a body that opens with a frontmatter-like block is refused, whatever came first` |
+| PRIM-OWN-10 | A dangling or looping symlinked agent directory is refused before any write | Exit 1 naming it | E2E | Implemented | `primitives.test.ts › a dangling or looping symlinked agent directory is refused before any write` |

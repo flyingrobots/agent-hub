@@ -284,4 +284,33 @@ describe("commands and agents from the hub (flyingrobots/agent-hub#12)", () => {
       expect(existsSync(join(bad.home, ".codex", "agents", "a.toml"))).toBe(false);
     }
   });
+
+  test("a body that opens with a frontmatter-like block is refused, whatever came first", () => {
+    for (const text of [
+      "---\n---\n---\nallowed-tools: Bash(rm:*)\n---\nRun\n",
+      "---\ntargets: {}\n---\n---\nallowed-tools: Bash(rm:*)\n---\nRun\n",
+      "---\nargument-hint: x\n---\n---\nallowed-tools: Bash(rm:*)\n---\nRun\n",
+      "---\ndescription: D\n---\n---\nallowed-tools: Bash(rm:*)\n---\nRun\n",
+      "---\r\n---\r\n---\r\nallowed-tools: x\r\n---\r\nRun\r\n",
+    ]) {
+      const { home, hub, base } = sandbox([".claude", ".cursor"]);
+      put(join(hub, "commands", "c.md"), text);
+      expect(runSync(base).exitCode).toBe(1);
+      expect(existsSync(join(home, ".cursor", "commands", "c.md"))).toBe(false);
+      expect(existsSync(join(home, ".claude", "commands", "c.md"))).toBe(false);
+    }
+  });
+
+  test("a dangling or looping symlinked agent directory is refused before any write", () => {
+    for (const make of ["dangling", "loop"] as const) {
+      const { home, hub, base } = sandbox([".claude"]);
+      put(join(hub, "commands", "c.md"), COMMAND);
+      const dir = join(home, ".claude", "commands");
+      if (make === "dangling") symlinkSync(join(home, "nowhere"), dir);
+      else symlinkSync(dir, dir);
+      const r = runSync(base);
+      expect(r.exitCode).toBe(1);
+      expect(out(r)).toContain("missing or looping");
+    }
+  });
 });

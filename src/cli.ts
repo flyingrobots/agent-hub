@@ -13,7 +13,7 @@ import {
   type ApplyLockHandle,
 } from "./lock.ts";
 import { applyFileOp, planPrimitives, type PlannedFileOp } from "./primitives.ts";
-import { applyMcpTarget, planMcpSync, type PlannedMcpTarget } from "./mcp.ts";
+import { applyMcpTarget, planMcpSync, type PlaintextSecretWarning, type PlannedMcpTarget } from "./mcp.ts";
 import { canonicalizeHubPath, isPlainObject, parseJsonFile } from "./paths.ts";
 import {
   applySkillInstall,
@@ -183,6 +183,8 @@ type BuiltSyncPlan = {
   filePlans: PlannedFileOp[];
   mcpTargets: PlannedMcpTarget[];
   allOps: PlannedOp[];
+  /** Plaintext-secret warnings from the hub's server specs (Phase 2: warn, do not block). */
+  warnings: PlaintextSecretWarning[];
   changeOps: PlannedOp[];
   conflicts: PlannedOp[];
 };
@@ -246,7 +248,7 @@ function buildSyncPlan(
           });
 
     const mcpPlan = opts.skillOnly
-      ? { targets: [] as PlannedMcpTarget[], globalOps: [] as PlannedOp[] }
+      ? { targets: [] as PlannedMcpTarget[], globalOps: [] as PlannedOp[], warnings: [] as PlaintextSecretWarning[] }
       : planMcpSync(canonicalHubPath, homeDir, state, legacyV1, {
           adopt: opts.adopt,
           force: opts.force,
@@ -270,6 +272,7 @@ function buildSyncPlan(
       filePlans,
       mcpTargets: mcpPlan.targets,
       allOps,
+      warnings: mcpPlan.warnings,
       changeOps: allOps.filter((op) => op.status === "change"),
       conflicts: allOps.filter((op) => op.status === "conflict" || op.status === "error"),
     };
@@ -309,6 +312,16 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
     emit("stderr", "agent_hub.error", message, { code, ...data });
   // An error message from a lower layer may already carry the command prefix.
   const labeled = (msg: string) => (msg.startsWith(`${cmdLabel}: `) || msg.startsWith("sync-agents: ") || msg.startsWith("mcp-sync: ") ? msg : `${cmdLabel}: ${msg}`);
+  const emitWarnings = (warnings: readonly PlaintextSecretWarning[]): void => {
+    for (const w of warnings) {
+      emit(
+        "stderr",
+        "agent_hub.warning",
+        `[warn] mcp/${w.server}: ${w.field} ${w.reason}; write it as \${env:NAME}, or list "${w.field}" in allowPlaintextFields`,
+        { code: "plaintext_secret", server: w.server, field: w.field, reason: w.reason, source: w.source },
+      );
+    }
+  };
   const emitConflict = (op: PlannedOp): void => {
     const next = op.nextStep ? ` (${op.nextStep})` : "";
     emit("stderr", "agent_hub.conflict", `[conflict] ${op.reason}${next}`, {
@@ -473,6 +486,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
         configBase,
         disownLegacy,
       });
+      emitWarnings(plan.warnings);
 
       for (const op of plan.allOps) {
         if (explain) {
@@ -584,6 +598,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       configBase,
       disownLegacy,
     });
+    emitWarnings(plan.warnings);
 
     if (plan.conflicts.length > 0) {
       for (const c of plan.conflicts) emitConflict(c);

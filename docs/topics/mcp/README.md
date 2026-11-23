@@ -54,8 +54,109 @@ Rules:
   [Choosing targets](../sync/README.md#choosing-targets)) is not compiled at all, so it cannot
   reject a transport it does not support.
 
-Values are copied verbatim. agent-hub does not interpret `${...}` placeholders; whether a target
-application expands them is up to that application.
+Values are copied as written, except `${env:NAME}` references, which are compiled per target
+(next section). Any other `${...}` or `{...}` text is copied as is, and the target application
+decides what it means: Claude Code would expand a literal `${HOME}`, and OpenCode a literal
+`{env:HOME}`, so keep target-specific syntax in that target's override.
+
+## Environment references
+
+Write a secret, or anything else that varies, as `${env:NAME}` instead of a literal. `NAME` must
+match `^[A-Z_][A-Z0-9_]*$`; an unterminated or invalid reference stops the run. `sync-agents`
+never reads the variable: each agent reads it from its own environment when it starts the
+server, so the value never lands in a config file.
+
+```json
+{
+  "mcp": {
+    "transport": "http",
+    "url": "https://api.example.com/mcp",
+    "headers": { "Authorization": "Bearer ${env:EXAMPLE_TOKEN}" }
+  }
+}
+```
+
+Each target either compiles a reference into its own syntax or refuses it. A refusal stops the
+whole run, like any other planning error (an `error` line with code `plan`, naming the server,
+the target and the field), so nothing is written to any target; set
+`overrides.<target>.disabled: true` for that server, or give that target a literal in its
+override, to sync the rest:
+
+| Target | `command` | `args` | `env` | `url` | `headers` |
+| --- | --- | --- | --- | --- | --- |
+| `claude` | `${NAME}` | `${NAME}` | `${NAME}` | `${NAME}` | `${NAME}` |
+| `cursor` | `${env:NAME}` | `${env:NAME}` | `${env:NAME}` | `${env:NAME}` | `${env:NAME}` |
+| `opencode` | `{env:NAME}` | `{env:NAME}` | `{env:NAME}` | `{env:NAME}` | `{env:NAME}` |
+| `codex` | refused | refused | only `K = "${env:K}"`, compiled to `env_vars = ["K"]` | refused | only `Authorization: "Bearer ${env:X}"` (`bearer_token_env_var = "X"`) or a whole value `"${env:X}"` (`env_http_headers`) |
+| `antigravity` | refused | refused | refused | refused | refused |
+
+Limits worth knowing:
+
+- Claude Code documents `${VAR}` expansion for these five fields; in a remote server's `url` and
+  `headers` it reads some credential variables (its own `ANTHROPIC_*` keys, cloud and proxy
+  tokens) as empty instead of expanding them. Use a name of your own, such as
+  `EXAMPLE_TOKEN`.
+- An unset variable expands to empty in OpenCode, and is left as written in Claude Code (which
+  warns in `claude mcp list`). In Codex, an unset `env_vars` name is simply not passed to the
+  server, an unset `env_http_headers` variable drops that header, and an unset
+  `bearer_token_env_var` stops the server from starting. Cursor does not document it.
+- Verified: Claude Code 2.1.323 expands `${VAR}` in a user-scope `~/.claude.json` entry's
+  `command`, `args` and `env` (`claude mcp list` started the server with the expanded values);
+  its documentation covers `url` and `headers` too. Cursor documents `${env:VAR}` in all five
+  fields for its MCP config, without saying whether that includes the global
+  `~/.cursor/mcp.json`.
+- Codex has no interpolation, so a reference anywhere else, or with text around it
+  (`"Bearer ${env:X}-suffix"`), is refused for Codex. In `env` the key must be the variable's own
+  name (`GITHUB_TOKEN = "${env:GITHUB_TOKEN}"`; `TOKEN = "${env:GH_TOKEN}"` is refused). The
+  `Authorization` header name is matched in any case; the value must be exactly
+  `Bearer ${env:X}` with one space, and a header set twice in different capitalizations is
+  refused. Only fields the transport writes are checked (a stdio server's leftover `headers`
+  are ignored).
+- Antigravity expands nothing, so a server that needs a reference is refused there; disable it
+  for Antigravity, or give Antigravity a literal in `overrides.antigravity` (which keeps one
+  plaintext copy, and is reported as below).
+- **Where to set the variable.** Each agent reads it from its own process environment when it
+  starts the server. A variable exported in `~/.zshrc` reaches agents started from that shell
+  (Claude Code, Codex, OpenCode in a terminal). An app started from the Dock, Finder or
+  Spotlight on macOS (Cursor, Antigravity, desktop apps) does not read shell profiles: set the
+  variable for GUI apps (`launchctl setenv NAME value`, which lasts until logout) or start the
+  app from a shell, then restart it. A reference to a variable the agent cannot see gives the
+  server an empty or literal value, typically a 401 from the server.
+- **Existing configs.** Before this release a `${env:...}` string was copied verbatim. It is
+  now compiled, or refused for Codex and Antigravity, and a malformed one
+  (`${env:lowercase}`, an unterminated `${env:`) stops the run. There is no escape for a literal
+  `${env:` in a value.
+
+### Plaintext secrets
+
+On every run that plans MCP servers (sync, `--dry-run`, `--check`, `--explain`; not `--skill-only`,
+and not a read-only run that stops on a pending recovery), `sync-agents` prints one
+`agent_hub.warning` line per field, before the run's operations, for each literal value in a
+server spec that looks like a credential. Every layer is checked (the base `mcp`, inline
+overrides and `<target>/mcp.json` files, as each target resolves them); a field flagged for
+several targets is reported once. It does not refuse, and the exit code is
+unchanged; the value is never printed. It checks for known token patterns (`sk-…`, `ghp_…`, `github_pat_…`,
+Slack `xox?-…`, Google `AIza…`, AWS `AKIA…`, PEM private keys), any literal under an `env` key or
+header name with a credential word as one of its parts (split on `_`, `-`, `.` and camelCase:
+`token`, `secret`, `password`, `passwd`, `pwd`, `pass`, `passphrase`, `pat`, `apikey`,
+`credential(s)`, `authorization`, `bearer`; the pairs `api key`, `access key`, `private key`,
+`secret key`, `auth key`, `session key`, `auth token`; `password`, `secret`, `apikey` or
+`credential` inside a longer part, as in `PGPASSWORD`; or the `Cookie` header), and a URL with
+an embedded user and password. A second literal for the same field in another layer (a
+per-target `mcp.json`) is reported on its own.
+These are known token patterns and secret-bearing field names, not a scanner: a secret in any
+other shape is not noticed. To keep a literal you intend, name its field:
+
+```json
+{ "mcp": { "command": "/bin/x", "env": { "API_KEY": "public-demo-key" } }, "allowPlaintextFields": ["env.API_KEY"] }
+```
+
+`allowPlaintextFields` sits at the top level of `<hub>/mcp/<server>/mcp.json`, next to `mcp` and
+`overrides`, and applies to every target's resolved spec. Field paths are `command`, `args[i]`,
+`env.<KEY>`, `url` and `headers.<Name>`. Name matching is case-insensitive and by whole parts, so
+`GIT_AUTHOR_NAME`, `MAX_TOKENS` or `X-Session-Id` are not reported; a non-secret
+`SECRET_FILE` is, and can be listed. Paths match exactly (case-sensitive), and an entry naming
+a field that does not exist is accepted silently.
 
 ## What each target receives
 
@@ -101,20 +202,23 @@ entry in the old layout stops the run, as above. On `dev`, a direct entry that h
 `enabled` key is dropped with a diagnostic. These statements come from reading OpenCode's source
 (anomalyco/opencode, tag `v1.19.6` and `dev` at `7b70422`), not from running OpenCode.
 
-The hub server names `servers` and `timeout` are refused for OpenCode. They are legal names
-inside `mcp.servers`, but in the previous layout they collide with OpenCode's own `mcp.servers`
-and `mcp.timeout` keys, so refusing them keeps an upgrade unambiguous. Until you rename the
-server or disable it for OpenCode (`overrides.opencode.disabled: true`), every run that includes
-OpenCode's MCP config stops. A disabled server still names its entry: a server of your own at
-`mcp.servers.timeout` is then a conflict, and `--force` would remove it, so rename the hub server
-instead when you have one.
+A hub server may be named `servers` or `timeout` like any other: it is written to
+`mcp.servers.servers` or `mcp.servers.timeout`, and OpenCode's own `mcp.timeout` settings are
+never touched. In the previous layout those names sat on OpenCode's own keys, so they get extra
+care on upgrade:
 
-A server by one of those names that an earlier `sync-agents` wrote in the previous layout is
-removed once it is disabled or renamed, provided it is unchanged (`mcp-remove-reserved-legacy`).
-If a `timeout` entry was changed, its record is retired and `mcp.timeout` is left alone
-(`retire-reserved-record`). A `mcp.servers` holding any value that is not a server object, which
-is what the previous layout's server named `servers` looks like, is refused unless
-`sync-agents` wrote it and it is unchanged, so nothing is ever written inside it.
+- a server `sync-agents` wrote at `mcp.timeout`, unchanged since, moves to
+  `mcp.servers.timeout` (`mcp-migrate-layout`); changed, it is a conflict like any edited
+  old-layout entry; one you wrote yourself, named like a hub server, is a conflict too;
+- a server `sync-agents` wrote at `mcp.servers` itself (a server named `servers`), unchanged
+  since, becomes the first entry of a new `mcp.servers` map. Any other `mcp.servers` holding a
+  value that is not a server object is refused, so nothing is ever written inside it;
+- a record for `timeout`, when `mcp.timeout` holds OpenCode's own settings and there is no
+  `mcp.servers.timeout`, is retired, and the settings are left alone (`retire-reserved-record`).
+  When `mcp.servers.timeout` exists, the record is applied to it as to any other server name.
+
+OpenCode reads a direct-layout server object at `mcp.servers` or `mcp.timeout` as a server too
+(`isDirectLegacyMcp` in its config normalizer), so these entries are the servers they look like.
 
 ### Codex TOML editing
 

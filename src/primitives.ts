@@ -6,7 +6,7 @@
  * files are owned by digest, like MCP entries: created, updated, adopted, pruned, or refused.
  */
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import {
   atomicWriteDurable,
@@ -95,6 +95,10 @@ function parseSource(kind: Kind, path: string, name: string): Source {
     body = text.slice(m[0].length);
   } else if (/^\s*---/.test(text)) {
     throw new PrimitiveError(`${path}: frontmatter must open with "---" on the first line and close with a "---" line`);
+  }
+  // A body that itself opens with a "---" line would become an agent's frontmatter, unvalidated.
+  if (/^\s*---[ \t]*(\n|$)/.test(body)) {
+    throw new PrimitiveError(`${path}: the body starts with a "---" line, which an agent would read as frontmatter; there must be one frontmatter block`);
   }
   return { kind, name, path, front, body };
 }
@@ -229,11 +233,28 @@ export function desiredPrimitiveFiles(
   const physical = (dst: string): string => {
     let dir = dirname(dst);
     const rest: string[] = [dst.slice(dir.length + 1)];
-    while (!existsSync(dir) && dir !== dirname(dir)) {
+    while (dir !== dirname(dir)) {
+      let st;
+      try {
+        st = lstatSync(dir);
+      } catch {
+        st = null; // absent: walk up
+      }
+      if (st) {
+        // A symlink whose target is missing or loops cannot hold files; say so plainly.
+        if (st.isSymbolicLink() && !existsSync(dir)) {
+          throw new PrimitiveError(`${dir} is a symlink to a missing or looping target; fix or remove it so ${dst} can be written`);
+        }
+        break;
+      }
       rest.unshift(dir.slice(dirname(dir).length + 1));
       dir = dirname(dir);
     }
-    return join(realpathSync(dir), ...rest);
+    try {
+      return join(realpathSync(dir), ...rest);
+    } catch (err) {
+      throw new PrimitiveError(`cannot resolve ${dir} for ${dst}: ${(err as NodeJS.ErrnoException).code ?? String(err)}`);
+    }
   };
   for (const t of PRIMITIVE_TARGETS) {
     if (!active.has(t.agent) || !existsSync(t.root(home, configBase))) continue;

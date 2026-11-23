@@ -10,7 +10,8 @@ agent that has a user directory for it, in that agent's own format:
 
 `<name>` must match `^[a-z0-9][a-z0-9-]*$`; it becomes each agent's file name and command name.
 A `README.md` and anything that is not a regular `.md` file are ignored. Frontmatter must start
-on the first line (`---`) and close with a `---` line; line endings and a leading BOM are
+on the first line (`---`) and close with a `---` line, and the body may not open with another
+`---` line (an agent would read it as frontmatter); line endings and a leading BOM are
 normalised first, and written files use LF.
 
 ## What each agent receives
