@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/flyingrobots/agent-hub/schemas/agent_hub.schema.schema.json",
+  "title": "agent_hub.schema",
+  "description": "One declared message schema (--schema prints one line per schema).",
+  "x-schema-version": "1.0.0",
+  "type": "object",
+  "required": [
+    "_schema",
+    "kind",
+    "run_id",
+    "message",
+    "schema_id",
+    "schema_version",
+    "schema"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "_schema": {
+      "type": "object",
+      "required": [
+        "id",
+        "version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "const": "agent_hub.schema"
+        },
+        "version": {
+          "const": "1.0.0"
+        }
+      }
+    },
+    "kind": {
+      "const": "schema"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "Identifies one invocation; every line it emits carries it."
+    },
+    "message": {
+      "type": "string",
+      "description": "The same content as human prose; --human prints only this."
+    },
+    "schema_id": {
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "schema": {
+      "type": "object"
+    }
+  }
+}

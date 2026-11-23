@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/flyingrobots/agent-hub/schemas/agent_hub.error.schema.json",
+  "title": "agent_hub.error",
+  "description": "A failure. usage errors exit 2; others exit 1.",
+  "x-schema-version": "1.0.0",
+  "type": "object",
+  "required": [
+    "_schema",
+    "kind",
+    "run_id",
+    "message",
+    "code"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "_schema": {
+      "type": "object",
+      "required": [
+        "id",
+        "version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "const": "agent_hub.error"
+        },
+        "version": {
+          "const": "1.0.0"
+        }
+      }
+    },
+    "kind": {
+      "const": "error"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "Identifies one invocation; every line it emits carries it."
+    },
+    "message": {
+      "type": "string",
+      "description": "The same content as human prose; --human prints only this."
+    },
+    "code": {
+      "enum": [
+        "usage",
+        "config",
+        "hub_not_found",
+        "lock",
+        "plan",
+        "apply",
+        "internal"
+      ]
+    },
+    "detail": {
+      "type": "string"
+    },
+    "committed": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "pending": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "journal": {
+      "type": "string"
+    },
+    "usage": {
+      "type": "string"
+    }
+  }
+}

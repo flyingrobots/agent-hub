@@ -175,8 +175,11 @@ export type ApplyHooks = {
 
 export type SyncRunResult = {
   exitCode: number;
+  /** Human messages, in order (what --human prints). */
   stdout: string[];
   stderr: string[];
+  /** Structured events, one per printed line (what the default JSON Lines output prints). */
+  events: import("./output.ts").OutputEvent[];
   recovery?: RecoveryReport;
 };
 

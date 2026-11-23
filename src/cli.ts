@@ -3,6 +3,7 @@ import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { xdgConfigBase } from "./adapters.ts";
+import { opData, SCHEMAS, schemaEvents, writeEvents, type OutputEvent, type SchemaId } from "./output.ts";
 import { applyLinkOp, planLinkSync, type PlannedLinkOp } from "./links.ts";
 import {
   acquireApplyLock,
@@ -77,6 +78,10 @@ Options:
                                    (excluded targets are never pruned). Replaces the
                                    config.json "disabledTargets" list for this run
       --print-dir                  Print the canonical resolved hub directory and exit
+      --human, --humanize          Print prose instead of JSON Lines (the default output: one
+                                   JSON object per line on stdout and stderr, each naming its
+                                   schema in "_schema")
+      --schema                     Print every output message schema as JSON Lines and exit
   -h, --help                       Show this help`;
 
 type HubUserConfig = {
@@ -261,6 +266,35 @@ function buildSyncPlan(
 export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult {
   const stdout: string[] = [];
   const stderr: string[] = [];
+  const events: OutputEvent[] = [];
+  // Every printed line is an event: its message goes to stdout/stderr (what --human prints) and
+  // the event to `events` (what the default JSON Lines output prints).
+  const emit = (
+    stream: "stdout" | "stderr",
+    id: SchemaId,
+    message: string,
+    data: Record<string, unknown> = {},
+  ): void => {
+    events.push({ stream, id, message, data });
+    (stream === "stdout" ? stdout : stderr).push(message);
+  };
+  const done = (exitCode: number, extra: { recovery?: RecoveryReport } = {}): SyncRunResult => ({
+    exitCode,
+    stdout,
+    stderr,
+    events,
+    ...extra,
+  });
+  const fail = (code: string, message: string, data: Record<string, unknown> = {}) =>
+    emit("stderr", "agent_hub.error", message, { code, ...data });
+  const emitConflict = (op: PlannedOp): void => {
+    const next = op.nextStep ? ` (${op.nextStep})` : "";
+    emit("stderr", "agent_hub.conflict", `[conflict] ${op.reason}${next}`, {
+      reason: op.reason,
+      ...(op.nextStep ? { next_step: op.nextStep } : {}),
+      op: opData(op),
+    });
+  };
 
   const homeDir = options.homeDir ?? homedir();
   const cwd = options.cwd ?? process.cwd();
@@ -279,12 +313,12 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
   const cmdLabel = mcpOnly ? "mcp-sync" : "sync-agents";
 
   if (checkOnly && skillSources.length > 0) {
-    stderr.push(`${cmdLabel}: --check cannot be combined with --skill`);
-    return { exitCode: 2, stdout, stderr };
+    fail("usage", `${cmdLabel}: --check cannot be combined with --skill`);
+    return done(2);
   }
   if (checkOnly && disownLegacy.length > 0) {
-    stderr.push(`${cmdLabel}: --check cannot be combined with --disown-legacy`);
-    return { exitCode: 2, stdout, stderr };
+    fail("usage", `${cmdLabel}: --check cannot be combined with --disown-legacy`);
+    return done(2);
   }
 
   let scope: TargetScope;
@@ -294,23 +328,24 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
     scope = resolveTargetScope(options.targets, userCfg.disabledTargets);
     configPath = userCfg.configPath;
   } catch (err) {
-    stderr.push(`${cmdLabel}: ${err instanceof Error ? err.message : String(err)}`);
-    return { exitCode: 1, stdout, stderr };
+    fail("config", `${cmdLabel}: ${err instanceof Error ? err.message : String(err)}`);
+    return done(1);
   }
   const configBase = xdgConfigBase(homeDir, xdgConfigHome);
 
   if (skillOnly && disownLegacy.length > 0) {
-    stderr.push(`${cmdLabel}: --skill-only cannot be combined with --disown-legacy (MCP planning does not run)`);
-    return { exitCode: 2, stdout, stderr };
+    fail("usage", `${cmdLabel}: --skill-only cannot be combined with --disown-legacy (MCP planning does not run)`);
+    return done(2);
   }
   // A disown request is consumed only by its agent's MCP planner; out of scope it would be
   // dropped silently, so refuse it as a usage error instead.
   for (const req of disownLegacy) {
     if (!scope.mcp.has(req.agent)) {
-      stderr.push(
+      fail(
+        "usage",
         `${cmdLabel}: --disown-legacy ${req.agent}:${req.name} needs ${req.agent}'s MCP config in scope; include "${req.agent}" or "${req.agent}:mcp" in --targets for this run (which replaces disabledTargets), or remove it from disabledTargets`,
       );
-      return { exitCode: 2, stdout, stderr };
+      return done(2);
     }
   }
 
@@ -323,8 +358,8 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
   });
 
   if (!existsSync(canonicalHubPath) || !statSync(canonicalHubPath).isDirectory()) {
-    stderr.push(`${cmdLabel}: canonical hub directory not found: ${canonicalHubPath}`);
-    return { exitCode: 1, stdout, stderr };
+    fail("hub_not_found", `${cmdLabel}: canonical hub directory not found: ${canonicalHubPath}`);
+    return done(1);
   }
 
   const paths = getStatePaths(canonicalHubPath, homeDir, xdgStateHome);
@@ -338,37 +373,65 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       state = loadOwnershipState(paths.statePath, canonicalHubPath).state;
       pendingJournal = loadPendingJournal(paths.journalPath);
     } catch (err) {
-      stderr.push(`${cmdLabel}: ${err instanceof Error ? err.message : String(err)}`);
-      return { exitCode: 1, stdout, stderr };
+      fail("plan", `${cmdLabel}: ${err instanceof Error ? err.message : String(err)}`);
+      return done(1);
     }
 
     if (pendingJournal) {
       const inspection = inspectPendingRecovery(pendingJournal, state);
       const isAmbiguous = inspection.classification === "ambiguous";
+      const pendingData = {
+        classification: inspection.classification,
+        destination: pendingJournal.destination,
+        reason: inspection.reason,
+        next_step: inspection.nextStep,
+      };
       if (explain) {
-        stdout.push(
-          `[explain] recovery ${pendingJournal.destination}`,
-          `  status:   ${isAmbiguous ? "conflict" : "pending-recovery"} (${inspection.classification})`,
-          `  observed: pending journal ${pendingJournal.opId} (${pendingJournal.kind})`,
-          `  intended: ${inspection.nextStep}`,
-          `  basis:    ${pendingJournal.authorization.basis}`,
-          `  reason:   ${inspection.reason}`,
+        emit(
+          "stdout",
+          "agent_hub.recovery",
+          [
+            `[explain] recovery ${pendingJournal.destination}`,
+            `  status:   ${isAmbiguous ? "conflict" : "pending-recovery"} (${inspection.classification})`,
+            `  observed: pending journal ${pendingJournal.opId} (${pendingJournal.kind})`,
+            `  intended: ${inspection.nextStep}`,
+            `  basis:    ${pendingJournal.authorization.basis}`,
+            `  reason:   ${inspection.reason}`,
+          ].join("\n"),
+          { event: "pending", ...pendingData },
         );
       }
       if (isAmbiguous) {
-        stderr.push(`[conflict] pending recovery ambiguous: ${inspection.reason}`);
-        stderr.push(`  next: ${inspection.nextStep}`);
-        return { exitCode: 1, stdout, stderr };
-      }
-      stdout.push(`[plan] [pending-recovery] ${inspection.classification}: ${inspection.reason}`);
-      if (checkOnly) {
-        stderr.push(
-          `${cmdLabel}: pending recovery detected (${inspection.classification}); run sync-agents to reconcile.`,
+        emit(
+          "stderr",
+          "agent_hub.recovery",
+          `[conflict] pending recovery ambiguous: ${inspection.reason}\n  next: ${inspection.nextStep}`,
+          { event: "ambiguous", ...pendingData },
         );
-        return { exitCode: 1, stdout, stderr };
+        return done(1);
       }
-      stdout.push(`${cmdLabel}: run without --dry-run to complete recovery before planning fresh sync.`);
-      return { exitCode: 0, stdout, stderr };
+      emit(
+        "stdout",
+        "agent_hub.recovery",
+        `[plan] [pending-recovery] ${inspection.classification}: ${inspection.reason}`,
+        { event: "pending", ...pendingData },
+      );
+      if (checkOnly) {
+        emit(
+          "stderr",
+          "agent_hub.summary",
+          `${cmdLabel}: pending recovery detected (${inspection.classification}); run sync-agents to reconcile.`,
+          { status: "pending_recovery" },
+        );
+        return done(1);
+      }
+      emit(
+        "stdout",
+        "agent_hub.summary",
+        `${cmdLabel}: run without --dry-run to complete recovery before planning fresh sync.`,
+        { status: "pending_recovery" },
+      );
+      return done(0);
     }
 
     let plan: BuiltSyncPlan | null = null;
@@ -388,31 +451,36 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
 
       for (const op of plan.allOps) {
         if (explain) {
-          stdout.push(...formatExplainBlock(op));
+          emit("stdout", "agent_hub.op", formatExplainBlock(op).join("\n"), { phase: "explain", op: opData(op) });
         }
         if (op.status === "change" && !explain) {
-          stdout.push(formatOpSummary("plan", op));
+          emit("stdout", "agent_hub.op", formatOpSummary("plan", op), { phase: "plan", op: opData(op) });
         } else if (op.status === "conflict" || op.status === "error") {
-          const next = op.nextStep ? ` (${op.nextStep})` : "";
-          stderr.push(`[conflict] ${op.reason}${next}`);
+          emitConflict(op);
         }
       }
 
       if (plan.conflicts.length > 0) {
-        stderr.push(`${cmdLabel}: ${plan.conflicts.length} conflict(s) found; refusing to overwrite.`);
-        return { exitCode: 1, stdout, stderr };
+        emit("stderr", "agent_hub.summary", `${cmdLabel}: ${plan.conflicts.length} conflict(s) found; refusing to overwrite.`, {
+          status: "conflicts",
+          conflicts: plan.conflicts.length,
+        });
+        return done(1);
       }
       if (checkOnly && plan.changeOps.length > 0) {
-        stderr.push(`${cmdLabel}: out of sync (${plan.changeOps.length} change(s) needed).`);
-        return { exitCode: 1, stdout, stderr };
+        emit("stderr", "agent_hub.summary", `${cmdLabel}: out of sync (${plan.changeOps.length} change(s) needed).`, {
+          status: "out_of_sync",
+          changes: plan.changeOps.length,
+        });
+        return done(1);
       }
       if (plan.changeOps.length === 0 && !explain) {
-        stdout.push(`${cmdLabel}: everything is in sync.`);
+        emit("stdout", "agent_hub.summary", `${cmdLabel}: everything is in sync.`, { status: "in_sync", changes: 0 });
       }
-      return { exitCode: 0, stdout, stderr };
+      return done(0);
     } catch (err) {
-      stderr.push(`${cmdLabel}: ${err instanceof Error ? err.message : String(err)}`);
-      return { exitCode: 1, stdout, stderr };
+      fail("plan", `${cmdLabel}: ${err instanceof Error ? err.message : String(err)}`);
+      return done(1);
     } finally {
       if (plan) cleanupStagedTempDirs(plan.stagedSkills.tempDirs);
     }
@@ -428,8 +496,8 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       lockHandle = acquireApplyLock(paths.lockPath, canonicalHubPath);
     } catch (err) {
       if (err instanceof LockBusyError || err instanceof LockSystemError) {
-        stderr.push(`${cmdLabel}: ${err.message}`);
-        return { exitCode: 1, stdout, stderr };
+        fail("lock", `${cmdLabel}: ${err.message}`);
+        return done(1);
       }
       throw err;
     }
@@ -449,11 +517,14 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       state = recovered.state;
       recoveryReport = recovered.report;
       for (const act of recoveryReport.actions) {
-        stdout.push(`[recover] ${act}`);
+        emit("stdout", "agent_hub.recovery", `[recover] ${act}`, { event: "recovered", action: act });
       }
       if (!recoveryReport.resolved) {
-        stderr.push(`[conflict] pending recovery ambiguous: ${recoveryReport.error}`);
-        return { exitCode: 1, stdout, stderr, recovery: recoveryReport };
+        emit("stderr", "agent_hub.recovery", `[conflict] pending recovery ambiguous: ${recoveryReport.error}`, {
+          event: "ambiguous",
+          reason: String(recoveryReport.error),
+        });
+        return done(1, { recovery: recoveryReport });
       }
     }
 
@@ -472,27 +543,28 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
     });
 
     if (plan.conflicts.length > 0) {
-      for (const c of plan.conflicts) {
-        const next = c.nextStep ? ` (${c.nextStep})` : "";
-        stderr.push(`[conflict] ${c.reason}${next}`);
-      }
-      if (recoveryReport.hadPending) {
-        stderr.push(
-          `${cmdLabel}: Phase 0 recovery completed above; preflight found ${plan.conflicts.length} conflict(s), so no new Phase 2 target or ledger changes were applied.`,
-        );
-      } else {
-        stderr.push(`${cmdLabel}: ${plan.conflicts.length} conflict(s) found; refusing to overwrite.`);
-      }
-      return { exitCode: 1, stdout, stderr, recovery: recoveryReport };
+      for (const c of plan.conflicts) emitConflict(c);
+      emit(
+        "stderr",
+        "agent_hub.summary",
+        recoveryReport.hadPending
+          ? `${cmdLabel}: Phase 0 recovery completed above; preflight found ${plan.conflicts.length} conflict(s), so no new Phase 2 target or ledger changes were applied.`
+          : `${cmdLabel}: ${plan.conflicts.length} conflict(s) found; refusing to overwrite.`,
+        { status: "conflicts", conflicts: plan.conflicts.length },
+      );
+      return done(1, { recovery: recoveryReport });
     }
 
     if (plan.changeOps.length === 0) {
       if (recoveryReport.hadPending) {
-        stdout.push(`${cmdLabel}: Phase 0 recovery completed; everything is now in sync.`);
+        emit("stdout", "agent_hub.summary", `${cmdLabel}: Phase 0 recovery completed; everything is now in sync.`, {
+          status: "recovered_in_sync",
+          changes: 0,
+        });
       } else {
-        stdout.push(`${cmdLabel}: everything is in sync.`);
+        emit("stdout", "agent_hub.summary", `${cmdLabel}: everything is in sync.`, { status: "in_sync", changes: 0 });
       }
-      return { exitCode: 0, stdout, stderr, recovery: recoveryReport };
+      return done(0, { recovery: recoveryReport });
     }
 
     hooks?.afterPlanBeforeApply?.();
@@ -508,7 +580,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
         label: `${sk.op.action} ${sk.dstDir}`,
         run: () => {
           applySkillInstall(sk, canonicalHubPath, state, paths.journalPath, flags, hooks);
-          stdout.push(formatOpSummary("sync", sk.op));
+          emit("stdout", "agent_hub.op", formatOpSummary("sync", sk.op), { phase: "sync", op: opData(sk.op) });
         },
       });
     }
@@ -527,7 +599,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
             flags,
             hooks,
           );
-          stdout.push(formatOpSummary("sync", lp.op));
+          emit("stdout", "agent_hub.op", formatOpSummary("sync", lp.op), { phase: "sync", op: opData(lp.op) });
         },
       });
     }
@@ -548,7 +620,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
           );
           for (const op of mt.ops) {
             if (op.status === "change") {
-              stdout.push(formatOpSummary("sync", op));
+              emit("stdout", "agent_hub.op", formatOpSummary("sync", op), { phase: "sync", op: opData(op) });
             }
           }
         },
@@ -564,33 +636,39 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
         const msg = err instanceof Error ? err.message : String(err);
         const pendingAfter = remainingWork.slice(idx + 1).map((w) => w.label);
         const hasPendingJournal = existsSync(paths.journalPath);
-        stderr.push(`${cmdLabel}: apply failed during "${work.label}": ${msg}`);
-        if (committed.length > 0) {
-          stderr.push(`  committed: ${committed.join(", ")}`);
-        }
+        const lines = [`${cmdLabel}: apply failed during "${work.label}": ${msg}`];
+        if (committed.length > 0) lines.push(`  committed: ${committed.join(", ")}`);
         if (hasPendingJournal) {
-          stderr.push(
+          lines.push(
             `  pending recovery: journal retained at ${paths.journalPath}; re-run sync-agents once storage is healthy to reconcile`,
           );
         }
-        if (pendingAfter.length > 0) {
-          stderr.push(`  pending: ${pendingAfter.join(", ")}`);
-        }
-        return { exitCode: 1, stdout, stderr, recovery: recoveryReport };
+        if (pendingAfter.length > 0) lines.push(`  pending: ${pendingAfter.join(", ")}`);
+        fail("apply", lines.join("\n"), {
+          detail: msg,
+          committed: [...committed],
+          pending: pendingAfter,
+          ...(hasPendingJournal ? { journal: paths.journalPath } : {}),
+        });
+        return done(1, { recovery: recoveryReport });
       }
     }
 
-    return { exitCode: 0, stdout, stderr, recovery: recoveryReport };
+    emit("stdout", "agent_hub.summary", `${cmdLabel}: applied ${committed.length} change(s).`, {
+      status: "applied",
+      changes: committed.length,
+    });
+    return done(0, { recovery: recoveryReport });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    if (recoveryReport.hadPending) {
-      stderr.push(
-        `${cmdLabel}: Phase 0 recovery completed above; preflight failed (${msg}), so no new Phase 2 target or ledger changes were applied.`,
-      );
-    } else {
-      stderr.push(`${cmdLabel}: ${msg}`);
-    }
-    return { exitCode: 1, stdout, stderr, recovery: recoveryReport };
+    fail(
+      "plan",
+      recoveryReport.hadPending
+        ? `${cmdLabel}: Phase 0 recovery completed above; preflight failed (${msg}), so no new Phase 2 target or ledger changes were applied.`
+        : `${cmdLabel}: ${msg}`,
+      { detail: msg },
+    );
+    return done(1, { recovery: recoveryReport });
   } finally {
     if (plan) cleanupStagedTempDirs(plan.stagedSkills.tempDirs);
     releaseApplyLock(lockHandle);
@@ -601,6 +679,8 @@ export function parseCliArgs(argv: string[]): {
   options: SyncOptions;
   printDir: boolean;
   showHelp: boolean;
+  human: boolean;
+  showSchema: boolean;
 } {
   const options: SyncOptions = {
     skillSources: [],
@@ -608,6 +688,8 @@ export function parseCliArgs(argv: string[]): {
   };
   let printDir = false;
   let showHelp = false;
+  let human = false;
+  let showSchema = false;
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
@@ -659,12 +741,16 @@ export function parseCliArgs(argv: string[]): {
       printDir = true;
     } else if (arg === "-h" || arg === "--help") {
       showHelp = true;
+    } else if (arg === "--human" || arg === "--humanize") {
+      human = true;
+    } else if (arg === "--schema") {
+      showSchema = true;
     } else {
       throw new Error(`unknown option: ${arg}`);
     }
   }
 
-  return { options, printDir, showHelp };
+  return { options, printDir, showHelp, human, showSchema };
 }
 
 function parseTargetsArg(raw: string): TargetSelector[] {
@@ -705,35 +791,72 @@ function parseDisownArg(raw: string): { agent: AgentId; name: string } {
   return { agent: agent as AgentId, name };
 }
 
-if (import.meta.main) {
-  let parsed;
+/** --human or --humanize anywhere on the command line, even when parsing fails. */
+export function wantsHuman(argv: readonly string[]): boolean {
+  return argv.includes("--human") || argv.includes("--humanize");
+}
+
+export function helpEvents(command: string, usage: string): OutputEvent[] {
+  return [
+    {
+      stream: "stdout",
+      id: "agent_hub.help",
+      message: usage,
+      data: { command, usage, schemas: Object.keys(SCHEMAS) },
+    },
+  ];
+}
+
+/**
+ * The CLI boundary: parse, run, and print every outcome as events, including usage errors and
+ * unexpected throws, so stdout and stderr only ever carry schema'd lines (or prose with --human).
+ */
+export function cliMain(argv: string[], command = "sync-agents", usage = CLI_USAGE, mcpOnly = false): number {
+  const human = wantsHuman(argv);
   try {
-    parsed = parseCliArgs(process.argv.slice(2));
+    let parsed;
+    try {
+      parsed = parseCliArgs(argv);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      writeEvents(
+        [{ stream: "stderr", id: "agent_hub.error", message: `${command}: ${msg}\n${usage}`, data: { code: "usage", detail: msg, usage } }],
+        human,
+      );
+      return 2;
+    }
+    if (parsed.showSchema) {
+      writeEvents(schemaEvents(), human);
+      return 0;
+    }
+    if (parsed.showHelp) {
+      writeEvents(helpEvents(command, usage), human);
+      return 0;
+    }
+    if (parsed.printDir) {
+      const dir = resolveCanonicalHubDir({
+        hubDir: parsed.options.hubDir,
+        envAgentsDir: parsed.options.hubDir ? undefined : process.env.AGENTS_DIR,
+        homeDir: homedir(),
+        cwd: process.cwd(),
+        xdgConfigHome: process.env.XDG_CONFIG_HOME,
+      });
+      writeEvents([{ stream: "stdout", id: "agent_hub.print_dir", message: dir, data: { hub: dir } }], human);
+      return 0;
+    }
+    const res = runSync({ ...parsed.options, ...(mcpOnly ? { mcpOnly: true } : {}) });
+    writeEvents(res.events, human);
+    return res.exitCode;
   } catch (err) {
-    console.error(`sync-agents: ${err instanceof Error ? err.message : String(err)}`);
-    console.error(CLI_USAGE);
-    process.exit(2);
+    const msg = err instanceof Error ? err.message : String(err);
+    writeEvents(
+      [{ stream: "stderr", id: "agent_hub.error", message: `${command}: internal error: ${msg}`, data: { code: "internal", detail: msg } }],
+      human,
+    );
+    return 1;
   }
+}
 
-  if (parsed.showHelp) {
-    console.log(CLI_USAGE);
-    process.exit(0);
-  }
-
-  if (parsed.printDir) {
-    const dir = resolveCanonicalHubDir({
-      hubDir: parsed.options.hubDir,
-      envAgentsDir: parsed.options.hubDir ? undefined : process.env.AGENTS_DIR,
-      homeDir: homedir(),
-      cwd: process.cwd(),
-      xdgConfigHome: process.env.XDG_CONFIG_HOME,
-    });
-    console.log(dir);
-    process.exit(0);
-  }
-
-  const res = runSync(parsed.options);
-  for (const line of res.stdout) console.log(line);
-  for (const line of res.stderr) console.error(line);
-  process.exit(res.exitCode);
+if (import.meta.main) {
+  process.exit(cliMain(process.argv.slice(2)));
 }

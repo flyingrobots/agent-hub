@@ -34,6 +34,7 @@ import { CLI_USAGE } from "../src/cli.ts";
 // on first exec); these took 3.5-5 s locally, so the 5 s default flaked.
 setDefaultTimeout(30_000);
 import { getStatePaths, loadOwnershipState, loadPendingJournal } from "../src/state.ts";
+import { decodeOutput, isSyncAgents } from "./jsonl.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 const INSTALL_SH = join(REPO_ROOT, "install.sh");
@@ -143,7 +144,11 @@ function run(cmd: string[], env: Record<string, string | undefined>, cwd?: strin
 }
 
 function sb(env: Record<string, string>) {
-  return (args: string[], cwd?: string) => run([BIN, ...args], env, cwd);
+  return (args: string[], cwd?: string) => {
+    const r = run([BIN, ...args], env, cwd);
+    if (args.includes("--human")) return r;
+    return { ...r, ...decodeOutput(r.stdout, r.stderr) };
+  };
 }
 
 function writeSkill(hub: string, name: string) {
