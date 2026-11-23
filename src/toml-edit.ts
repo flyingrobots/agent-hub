@@ -455,6 +455,10 @@ export function normalizeCodexComparable(entry: unknown): Record<string, unknown
   if (isPlainObject(copy.http_headers) && Object.keys(copy.http_headers).length === 0) {
     delete copy.http_headers;
   }
+  if (isPlainObject(copy.env_http_headers) && Object.keys(copy.env_http_headers).length === 0) {
+    delete copy.env_http_headers;
+  }
+  if (Array.isArray(copy.env_vars) && copy.env_vars.length === 0) delete copy.env_vars;
   return copy;
 }
 
@@ -474,6 +478,13 @@ export function renderCodexSection(
   if (typeof entry.url === "string") {
     lines.push(`url = ${JSON.stringify(entry.url)}`);
   }
+  // Variables Codex reads from its own environment (flyingrobots/agent-hub#6).
+  if (typeof entry.bearer_token_env_var === "string") {
+    lines.push(`bearer_token_env_var = ${JSON.stringify(entry.bearer_token_env_var)}`);
+  }
+  if (Array.isArray(entry.env_vars) && entry.env_vars.length > 0) {
+    lines.push(`env_vars = [${entry.env_vars.map((v) => JSON.stringify(v)).join(", ")}]`);
+  }
   if (isPlainObject(entry.env) && Object.keys(entry.env).length > 0) {
     lines.push("");
     lines.push(`[mcp_servers.${key}.env]`);
@@ -483,13 +494,15 @@ export function renderCodexSection(
       lines.push(`${formatTomlKey(k)} = ${JSON.stringify(v)}`);
     }
   }
-  if (isPlainObject(entry.http_headers) && Object.keys(entry.http_headers).length > 0) {
-    lines.push("");
-    lines.push(`[mcp_servers.${key}.http_headers]`);
-    for (const [k, v] of Object.entries(entry.http_headers as Record<string, string>).sort(
-      ([a], [b]) => a.localeCompare(b),
-    )) {
-      lines.push(`${formatTomlKey(k)} = ${JSON.stringify(v)}`);
+  for (const table of ["http_headers", "env_http_headers"] as const) {
+    if (isPlainObject(entry[table]) && Object.keys(entry[table]).length > 0) {
+      lines.push("");
+      lines.push(`[mcp_servers.${key}.${table}]`);
+      for (const [k, v] of Object.entries(entry[table] as Record<string, string>).sort(([a], [b]) =>
+        a.localeCompare(b),
+      )) {
+        lines.push(`${formatTomlKey(k)} = ${JSON.stringify(v)}`);
+      }
     }
   }
   return lines.join(eol);

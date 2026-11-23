@@ -4,6 +4,7 @@
  * compilation rules, and comparable normalizers.
  */
 import { isAbsolute, join, sep } from "node:path";
+import { exactEnvRef, hasEnvRef, mapSpecRefs, specFields, validateSpecRefs } from "./env-refs.ts";
 import { isPlainObject } from "./paths.ts";
 import { normalizeCodexComparable } from "./toml-edit.ts";
 import type { AgentId, McpServerSpec, McpTransport } from "./types.ts";
@@ -180,6 +181,74 @@ export function normalizeLegacyOpenCodeComparable(entry: unknown): Record<string
   return copy;
 }
 
+/** Validate every ${env:...} reference, naming the server and source on failure. */
+function checkRefs(spec: McpServerSpec, serverName: string, sourceLabel: string): void {
+  try {
+    validateSpecRefs(spec);
+  } catch (err) {
+    throw new Error(`${sourceLabel}: MCP "${serverName}": ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+/**
+ * Codex has no interpolation; it reads variables only through dedicated keys. Compile the exact
+ * forms it can express and refuse every other reference:
+ * - env K = "${env:K}"            -> env_vars = ["K"] (forwarded from the agent's environment)
+ * - Authorization = "Bearer ${env:X}" -> bearer_token_env_var = "X"
+ * - header H = "${env:X}"         -> env_http_headers.H = "X"
+ */
+function compileCodexRefs(
+  out: Record<string, unknown>,
+  spec: McpServerSpec,
+  serverName: string,
+  sourceLabel: string,
+): void {
+  const refuse = (field: string, why: string) => {
+    throw new Error(
+      `${sourceLabel}: Codex cannot express the \${env:...} reference in ${field} of MCP "${serverName}" (${why}); use a literal, or set overrides.codex.disabled = true`,
+    );
+  };
+  if (typeof spec.command === "string" && hasEnvRef(spec.command)) refuse("command", "Codex expands no variables in command");
+  (spec.args ?? []).forEach((a, i) => {
+    if (hasEnvRef(a)) refuse(`args[${i}]`, "Codex expands no variables in args");
+  });
+  if (typeof spec.url === "string" && hasEnvRef(spec.url)) refuse("url", "Codex expands no variables in url");
+  if (out.env && typeof out.env === "object") {
+    const env = { ...(out.env as Record<string, string>) };
+    const forwarded: string[] = [];
+    for (const [k, v] of Object.entries(env)) {
+      if (!hasEnvRef(v)) continue;
+      if (exactEnvRef(v) !== k) refuse(`env.${k}`, `only env ${k} = "\${env:${k}}", forwarding the same name, is supported`);
+      forwarded.push(k);
+      delete env[k];
+    }
+    if (forwarded.length > 0) {
+      if (Object.keys(env).length > 0) out.env = env;
+      else delete out.env;
+      out.env_vars = forwarded.sort();
+    }
+  }
+  if (out.http_headers && typeof out.http_headers === "object") {
+    const headers = { ...(out.http_headers as Record<string, string>) };
+    const fromEnv: Record<string, string> = {};
+    for (const [h, v] of Object.entries(headers)) {
+      if (!hasEnvRef(v)) continue;
+      const bearer = /^Bearer (\$\{env:[A-Z_][A-Z0-9_]*\})$/.exec(v);
+      if (h.toLowerCase() === "authorization" && bearer) {
+        out.bearer_token_env_var = exactEnvRef(bearer[1]!);
+      } else if (exactEnvRef(v) !== null) {
+        fromEnv[h] = exactEnvRef(v)!;
+      } else {
+        refuse(`headers.${h}`, 'only "Bearer \${env:X}" for Authorization, or a whole-value "\${env:X}", is supported');
+      }
+      delete headers[h];
+    }
+    if (Object.keys(fromEnv).length > 0) out.env_http_headers = fromEnv;
+    if (Object.keys(headers).length > 0) out.http_headers = headers;
+    else delete out.http_headers;
+  }
+}
+
 export const MCP_ADAPTERS: readonly McpAdapterDef[] = [
   {
     id: "antigravity",
@@ -191,6 +260,13 @@ export const MCP_ADAPTERS: readonly McpAdapterDef[] = [
     rootDir: (homeDir) => join(homeDir, ".gemini", "config"),
     configPath: (homeDir) => join(homeDir, ".gemini", "config", "mcp_config.json"),
     compile(transport, spec, serverName, sourceLabel) {
+      checkRefs(spec, serverName, sourceLabel);
+      const ref = specFields(spec).find(([, v]) => hasEnvRef(v));
+      if (ref) {
+        throw new Error(
+          `${sourceLabel}: Antigravity does not expand environment references (\${env:...} in ${ref[0]} of MCP "${serverName}"); use a literal, or set overrides.antigravity.disabled = true`,
+        );
+      }
       if (transport === "sse") {
         throw new Error(
           `${sourceLabel}: Antigravity does not support SSE transport for MCP "${serverName}" (set overrides.antigravity.disabled = true or override antigravity to http/stdio)`,
@@ -219,7 +295,10 @@ export const MCP_ADAPTERS: readonly McpAdapterDef[] = [
     supportedTransports: ["stdio", "http", "sse"],
     rootDir: (homeDir) => join(homeDir, ".claude"),
     configPath: (homeDir) => join(homeDir, ".claude.json"),
-    compile(transport, spec) {
+    compile(transport, rawSpec, serverName, sourceLabel) {
+      checkRefs(rawSpec, serverName, sourceLabel);
+      // Claude Code expands ${VAR} in command, args, env, url and headers.
+      const spec = mapSpecRefs(rawSpec, (name) => `\${${name}}`);
       if (transport === "stdio") {
         const out: Record<string, unknown> = {
           type: "stdio",
@@ -252,6 +331,7 @@ export const MCP_ADAPTERS: readonly McpAdapterDef[] = [
           `${sourceLabel}: Codex does not support SSE transport for MCP "${serverName}" (set overrides.codex.disabled = true or override codex to http/stdio)`,
         );
       }
+      checkRefs(spec, serverName, sourceLabel);
       const out: Record<string, unknown> = {};
       if (transport === "stdio") {
         out.command = spec.command;
@@ -261,6 +341,7 @@ export const MCP_ADAPTERS: readonly McpAdapterDef[] = [
         out.url = spec.url;
         if (spec.headers && Object.keys(spec.headers).length > 0) out.http_headers = spec.headers;
       }
+      compileCodexRefs(out, spec, serverName, sourceLabel);
       return out;
     },
     normalizeComparable: normalizeCodexComparable,
@@ -274,7 +355,9 @@ export const MCP_ADAPTERS: readonly McpAdapterDef[] = [
     supportedTransports: ["stdio", "http", "sse"],
     rootDir: (homeDir) => join(homeDir, ".cursor"),
     configPath: (homeDir) => join(homeDir, ".cursor", "mcp.json"),
-    compile(transport, spec) {
+    compile(transport, spec, serverName, sourceLabel) {
+      // Cursor expands ${env:VAR} itself in command, args, env, url and headers.
+      checkRefs(spec, serverName, sourceLabel);
       if (transport === "stdio") {
         const out: Record<string, unknown> = {
           type: "stdio",
@@ -307,7 +390,10 @@ export const MCP_ADAPTERS: readonly McpAdapterDef[] = [
     supportedTransports: ["stdio", "http", "sse"],
     rootDir: (_homeDir, configBase) => join(configBase, "opencode"),
     configPath: (_homeDir, configBase) => join(configBase, "opencode", "opencode.json"),
-    compile(transport, spec, serverName, sourceLabel) {
+    compile(transport, rawSpec, serverName, sourceLabel) {
+      checkRefs(rawSpec, serverName, sourceLabel);
+      // OpenCode substitutes {env:VAR} inside any string of its config.
+      const spec = mapSpecRefs(rawSpec, (name) => `{env:${name}}`);
       if (serverName === "servers" || serverName === "timeout") {
         throw new Error(
           `${sourceLabel}: MCP server name "${serverName}" is reserved by OpenCode's config (mcp.${serverName}); rename the server, or set overrides.opencode.disabled = true`,
