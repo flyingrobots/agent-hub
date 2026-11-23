@@ -57,6 +57,60 @@ Rules:
 Values are copied verbatim. agent-hub does not interpret `${...}` placeholders; whether a target
 application expands them is up to that application.
 
+## Environment references
+
+Write a secret, or anything else that varies, as `${env:NAME}` instead of a literal. `NAME` must
+match `^[A-Z_][A-Z0-9_]*$`; an unterminated or invalid reference stops the run. `sync-agents`
+never reads the variable: each agent reads it from its own environment when it starts the
+server, so the value never lands in a config file.
+
+```json
+{
+  "mcp": {
+    "transport": "http",
+    "url": "https://api.example.com/mcp",
+    "headers": { "Authorization": "Bearer ${env:EXAMPLE_TOKEN}" }
+  }
+}
+```
+
+Each target either compiles a reference into its own syntax or refuses the server for that
+target with a message naming the field (set `overrides.<target>.disabled` to skip it there):
+
+| Target | `command` | `args` | `env` | `url` | `headers` |
+| --- | --- | --- | --- | --- | --- |
+| `claude` | `${NAME}` | `${NAME}` | `${NAME}` | `${NAME}` | `${NAME}` |
+| `cursor` | `${env:NAME}` | `${env:NAME}` | `${env:NAME}` | `${env:NAME}` | `${env:NAME}` |
+| `opencode` | `{env:NAME}` | `{env:NAME}` | `{env:NAME}` | `{env:NAME}` | `{env:NAME}` |
+| `codex` | refused | refused | only `K = "${env:K}"`, compiled to `env_vars = ["K"]` | refused | only `Authorization: "Bearer ${env:X}"` (`bearer_token_env_var = "X"`) or a whole value `"${env:X}"` (`env_http_headers`) |
+| `antigravity` | refused | refused | refused | refused | refused |
+
+Limits worth knowing:
+
+- Claude Code documents `${VAR}` expansion for these five fields; in a remote server's `url` and
+  `headers` it reads some credential variables (its own `ANTHROPIC_*` keys, cloud and proxy
+  tokens) as empty instead of expanding them. Use a name of your own, such as
+  `EXAMPLE_TOKEN`.
+- An unset variable expands to empty in OpenCode and is left as written in Claude Code.
+- Codex has no interpolation, so a reference anywhere else, or with text around it
+  (`"Bearer ${env:X}-suffix"`), is refused for Codex.
+
+### Plaintext secrets
+
+On every run, `sync-agents` warns (it does not refuse) about literal values in a server spec that
+look like credentials. It checks for known token patterns (`sk-…`, `ghp_…`, `github_pat_…`,
+Slack `xox?-…`, Google `AIza…`, AWS `AKIA…`, PEM private keys), any literal under an `env` key or
+header name that suggests a credential (`token`, `secret`, `password`, `api_key`, `auth`,
+`credential`, `private_key`, `session`, `cookie`), and a URL with an embedded user and password.
+These are known token patterns and secret-bearing field names, not a scanner: a secret in any
+other shape is not noticed. To keep a literal you intend, name its field:
+
+```json
+{ "mcp": { "command": "/bin/x", "env": { "API_KEY": "public-demo-key" } }, "allowPlaintextFields": ["env.API_KEY"] }
+```
+
+Field paths are `command`, `args[i]`, `env.<KEY>`, `url` and `headers.<Name>`.
+
 ## What each target receives
 
 | Target | File and key | stdio | http | sse | New file mode |
