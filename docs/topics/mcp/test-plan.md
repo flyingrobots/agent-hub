@@ -25,6 +25,14 @@ under `test/`; the documentation gate fails if a cited test does not exist.
 | MCP-TOML-4 | Inline-table, dotted-key, bare `[mcp_servers]` and `[[mcp_servers]]` forms are refused | Throws | Unit | Implemented | `toml-edit.test.ts › refuses unsupported inline table, dotted root key, bare [mcp_servers], and [[mcp_servers]]` |
 | MCP-TOML-5 | A change to any unrelated parsed value is refused | Throws | Unit | Implemented | `toml-edit.test.ts › semantic preservation guard rejects deliberate mutation of unrelated parsed values` |
 | MCP-TOML-6 | CRLF line endings and basic-string escapes survive | CRLF present, no bare LF; escaped keys round-trip | Unit | Implemented | `hardening.test.ts › F17 & F18c: CRLF preservation and TOML 1.0/1.1 \e, \xHH, \uXXXX, \UXXXXXXXX basic-string key escapes` |
+| MCP-TOML-7 | Updating a managed table keeps the comment after it and keeps the table's position | Comment text present before the next table; table order | Unit | Implemented | `toml-edit.test.ts › updating a managed section keeps the comment after it and keeps its position` |
+| MCP-TOML-8 | Pruning a managed table keeps the comment after it | Comment text present | Unit | Implemented | `toml-edit.test.ts › pruning a managed section keeps the comment after it` |
+| MCP-TOML-9 | A trailing comment at end of file after a managed table survives | Comment text present | Unit | Implemented | `toml-edit.test.ts › a trailing comment at end of file after a managed section survives` |
+| MCP-TOML-10 | CRLF files keep CRLF and the following comment | CRLF only; comment present | Unit | Implemented | `toml-edit.test.ts › CRLF documents keep CRLF and the following comment` |
+| MCP-TOML-11 | New servers are appended after existing content | Position | Unit | Implemented | `toml-edit.test.ts › a new server is appended after existing content` |
+| MCP-TOML-12 | A multiline string whose last line starts with `#` is cut with its table; no stale fragment remains | Fragment absent; following comment present | Unit | Implemented | `toml-edit.test.ts › a multiline string whose last line starts with # is cut with its section, leaking no stale value` |
+| MCP-TOML-13 | A trailing comment that mentions `"""` or `'''` survives update and prune | Comment text present | Unit | Implemented | `toml-edit.test.ts › a trailing comment that mentions triple quotes survives update and prune` |
+| MCP-TOML-14 | Repeated rewrites of a mid-file server with `env` or `http_headers` subtables are byte-stable | Second rewrite byte-equal to first; no blank-line growth | Unit | Implemented | `toml-edit.test.ts › repeated rewrites of a mid-file server with env and http_headers subtables are byte-stable` |
 
 ## Strict JSON refusals
 

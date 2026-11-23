@@ -39,6 +39,9 @@ changes are called out under **Changed** with what to do.
 
 ### Fixed
 
+- The Codex TOML editor no longer deletes a comment that sits between a managed
+  `[mcp_servers.<name>]` table and the next table, and an updated table stays where
+  it was instead of moving to the end of the file (flyingrobots/agent-hub#15).
 - A duplicate key in a JSON target config no longer lets a rewrite silently drop
   the user's earlier block of MCP servers.
 - Two prune assertions in the test suite that could never fail (they used
