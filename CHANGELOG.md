@@ -10,6 +10,9 @@ changes are called out under **Changed** with what to do.
 
 ### Fixed
 
+- A target JSON config that is empty or holds only whitespace (as Antigravity creates
+  `mcp_config.json`) no longer stops the whole run as invalid JSON; it is treated like an absent
+  file ([#54](https://github.com/flyingrobots/agent-hub/issues/54)).
 - On macOS, `--adopt` no longer refuses an identical copy because one side carries
   `com.apple.provenance`, the attribute macOS adds to files written by some applications. Any
   other differing extended attribute still blocks adoption.

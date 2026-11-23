@@ -261,6 +261,10 @@ when:
   names the decoded key and its location;
 - the document root, or its `mcpServers`/`mcp` value, is not an object.
 
+A `.json` that holds nothing, or only spaces, tabs and line breaks, is not refused: it is treated
+like an absent file and written. (Antigravity creates `mcp_config.json` as an empty file.) A
+truncated document, such as a lone `{`, is still refused.
+
 Codex is refused on invalid TOML, a non-table `mcp_servers`, or a form the editor cannot change
 safely (above).
 

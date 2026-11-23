@@ -59,10 +59,13 @@ export function parseJsonFile(filePath: string): unknown {
  * Parse a target agent JSON config file strictly via JSON.parse (never scanning raw
  * text for `//`, which false-positives on https:// URLs). On SyntaxError, explicitly
  * notes that JSONC comments and trailing commas are unsupported until a comment-preserving
- * editor is added.
+ * editor is added. A file holding only JSON whitespace is an empty object.
  */
 export function parseStrictJsonTargetFile(filePath: string): unknown {
   const raw = readFileSync(filePath, "utf8");
+  // A file that was read successfully and holds nothing but JSON whitespace has no content to
+  // protect (Antigravity creates its MCP config as 0 bytes), so it reads as an empty object.
+  if (/^[ \t\r\n]*$/.test(raw)) return {};
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw) as unknown;
