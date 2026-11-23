@@ -10,6 +10,14 @@ changes are called out under **Changed** with what to do.
 
 ### Added
 
+- Environment references: write `${env:NAME}` in a hub server spec instead of a secret. Claude
+  Code, Cursor and OpenCode get their native syntax in every field; Codex gets `env_vars`,
+  `bearer_token_env_var` and `env_http_headers` for the forms it can express; anything a target
+  cannot express is refused for that target. `sync-agents` never reads the variable.
+- Plaintext-secret warnings: a literal that looks like a credential (known token patterns,
+  secret-bearing field names, URL credentials) prints an `agent_hub.warning` line on every run;
+  `allowPlaintextFields` in `mcp.json` silences a field. See docs/topics/mcp.
+
 - Machine-readable output: every line `sync-agents` prints, on stdout and stderr, is a JSON
   object naming its schema (`_schema`), with `kind`, `run_id` and `message`. The schemas, one
   per message type and each versioned on its own, are in `schemas/`; `sync-agents --schema`
@@ -36,6 +44,12 @@ changes are called out under **Changed** with what to do.
   `--disown-legacy`, and the TOML-preserving Codex editor.
 
 ### Changed
+
+- **`${env:NAME}` in a hub server spec is now a reference, no longer literal text.** It is
+  compiled for each target, refused for Antigravity and for Codex outside the forms it can
+  express, and a malformed one (`${env:lower}`, unterminated) stops the run. Run
+  `sync-agents --dry-run` first; disable a refused server for that target, or move the literal
+  into that target's override.
 
 - **Breaking: output is JSON Lines by default.** Scripts that read `sync-agents` output as text
   must add `--human` (alias `--humanize`) to get prose, for example

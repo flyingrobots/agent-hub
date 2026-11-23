@@ -82,7 +82,7 @@ for a in "$@"; do
   esac
 done
 RUN_ID="$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')"
-SCHEMA_IDS='"agent_hub.op","agent_hub.conflict","agent_hub.recovery","agent_hub.summary","agent_hub.error","agent_hub.help","agent_hub.print_dir","agent_hub.schema"'
+SCHEMA_IDS='"agent_hub.op","agent_hub.conflict","agent_hub.recovery","agent_hub.summary","agent_hub.error","agent_hub.help","agent_hub.print_dir","agent_hub.schema","agent_hub.warning"'
 
 # Escape a string for a JSON string literal (backslash, quote, and the control characters a
 # message or path can contain here: newline, tab, carriage return).

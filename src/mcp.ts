@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { detectPlaintextSecrets, specFields } from "./env-refs.ts";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -307,9 +308,13 @@ export function compileAgentEntry(
   return MCP_ADAPTER_BY_ID[agent].compile(transport, spec, serverName, sourceLabel);
 }
 
+/** A literal that looks like a credential in a hub server spec (warning only, Phase 2). */
+export type PlaintextSecretWarning = { server: string; field: string; reason: string; source: string };
+
 export function loadCanonicalServers(
   canonicalHubPath: string,
   activeTargets?: ReadonlySet<AgentId>,
+  warnings?: PlaintextSecretWarning[],
 ): CompiledServerMap {
   const result: CompiledServerMap = new Map();
   const mcpRoot = join(canonicalHubPath, "mcp");
@@ -337,6 +342,17 @@ export function loadCanonicalServers(
 
     const rawDoc = parseJsonFile(basePath) as RawMcpDocument;
     const baseSpec = parseSpecSnippet(rawDoc, basePath);
+    const allowRaw = rawDoc.allowPlaintextFields;
+    if (
+      allowRaw !== undefined &&
+      (!Array.isArray(allowRaw) || !allowRaw.every((f) => typeof f === "string" && f.length > 0))
+    ) {
+      throw new Error(
+        `${basePath}: "allowPlaintextFields" must be an array of field paths such as "env.API_KEY" or "headers.Authorization"`,
+      );
+    }
+    const allowPlaintext = (allowRaw as string[] | undefined) ?? [];
+    const warnedFields = new Set<string>();
 
     if (rawDoc.overrides !== undefined) {
       if (!isPlainObject(rawDoc.overrides)) {
@@ -363,6 +379,8 @@ export function loadCanonicalServers(
       // excluded by --targets/disabledTargets must not reject a transport it does not support.
       if (activeTargets && !activeTargets.has(agent)) continue;
       let resolved: McpServerSpec = { ...baseSpec };
+      // The layer that last set each field, so a warning names the file to edit.
+      const layers: Array<[McpServerSpec, string]> = [[baseSpec, basePath]];
 
       if (rawDoc.overrides && rawDoc.overrides[agent] !== undefined) {
         const inlineOv = parseSpecSnippet(
@@ -370,6 +388,7 @@ export function loadCanonicalServers(
           `${basePath}#overrides.${agent}`,
         );
         resolved = mergeSpec(resolved, inlineOv, `${basePath}#overrides.${agent}`);
+        layers.push([inlineOv, `${basePath}#overrides.${agent}`]);
       }
 
       const subPath = join(serverDir, agent, "mcp.json");
@@ -377,8 +396,18 @@ export function loadCanonicalServers(
         const subRaw = parseJsonFile(subPath);
         const subOv = parseSpecSnippet(subRaw, subPath);
         resolved = mergeSpec(resolved, subOv, subPath);
+        layers.push([subOv, subPath]);
       }
 
+      if (warnings) {
+        for (const w of detectPlaintextSecrets(resolved, allowPlaintext)) {
+          const fieldIn = (s: McpServerSpec) => specFields(s).some(([f]) => f === w.field);
+          const source = [...layers].reverse().find(([s]) => fieldIn(s))?.[1] ?? basePath;
+          if (warnedFields.has(`${w.field}\0${source}`)) continue;
+          warnedFields.add(`${w.field}\0${source}`);
+          warnings.push({ server: name, field: w.field, reason: w.reason, source });
+        }
+      }
       compiled[agent] = compileAgentEntry(agent, name, resolved, basePath);
     }
 
@@ -1418,8 +1447,9 @@ export function planMcpSync(
     configBase?: string;
     disownLegacy: Array<{ agent: AgentId; name: string }>;
   },
-): { targets: PlannedMcpTarget[]; globalOps: PlannedOp[] } {
-  const servers = loadCanonicalServers(canonicalHubPath, opts.activeTargets);
+): { targets: PlannedMcpTarget[]; globalOps: PlannedOp[]; warnings: PlaintextSecretWarning[] } {
+  const warnings: PlaintextSecretWarning[] = [];
+  const servers = loadCanonicalServers(canonicalHubPath, opts.activeTargets, warnings);
   const now = new Date().toISOString();
   const { disownByAgent, globalOps } = validateDisownRequests(opts.disownLegacy, legacyV1, servers);
 
@@ -1444,7 +1474,7 @@ export function planMcpSync(
     if (plan) targets.push(plan);
   }
 
-  return { targets, globalOps };
+  return { targets, globalOps, warnings };
 }
 
 export function applyMcpTarget(

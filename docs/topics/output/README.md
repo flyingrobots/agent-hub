@@ -38,6 +38,7 @@ the bare path, or read `.hub` from the JSON line.
 | `agent_hub.recovery` | stdout, stderr | Phase 0 write-ahead recovery, the only place recovery is reported. `event` is `pending` (stdout: a journal is waiting, read-only modes), `recovered` (stdout: an action taken, with `action`) or `ambiguous` (stderr: refused, with `reason` and `next_step`). `classification` names the journal's state |
 | `agent_hub.summary` | stdout, stderr | How the run ended; see below |
 | `agent_hub.error` | stderr | A failure; see below |
+| `agent_hub.warning` | stderr | Something worth attention that changes neither the run nor its exit code. `code` is `plaintext_secret` (a literal in a hub server spec looks like a credential; see [MCP servers](../mcp/README.md#plaintext-secrets)), with `server`, `field`, `reason` and `source`. The value itself is never printed |
 | `agent_hub.help` | stdout | `--help`: `command`, `usage` (the help text) and `schemas` (every schema id), followed by one `agent_hub.schema` line per message type |
 | `agent_hub.print_dir` | stdout | `--print-dir`: `hub` |
 | `agent_hub.schema` | stdout | `--schema`, and after `--help`: one line per message type, with `schema_id`, `schema_version` and the `schema` |
