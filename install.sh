@@ -146,9 +146,15 @@ canonicalize_path() {
   local raw="$1"
   local p
   p="$(expand_tilde "$raw")"
+  if [[ "$p" == *$'\n'* ]]; then
+    echo "${0##*/}: refusing a path that contains a newline: $raw" >&2
+    return 1
+  fi
+  # Resolve a relative path against the physical cwd, as the engine's process.cwd() does;
+  # the logical $PWD keeps symlink names, so a ".." would climb a different directory.
   case "$p" in
     /*) ;;
-    *)  p="$PWD/$p" ;;
+    *)  p="$(pwd -P)/$p" ;;
   esac
   p="$(lexical_normalize "$p")"
 
@@ -239,8 +245,17 @@ paths_overlap() {
 try_atomic_dir_exchange() {
   local a="$1"
   local b="$2"
-  command -v bun >/dev/null 2>&1 || return 1
-  bun -e '
+  # Bun runs the FFI exchange; without Bun, a verified compiled binary can (BUN_BE_BUN=1 makes a
+  # bun --compile executable behave as the bun CLI), so --binary installs stay atomic.
+  local -a runner
+  if command -v bun >/dev/null 2>&1; then
+    runner=(bun)
+  elif [[ -n "$BINARY_SRC" && -x "$a/bin/sync-agents" ]] && is_native_executable "$a/bin/sync-agents"; then
+    runner=(env BUN_BE_BUN=1 "$a/bin/sync-agents")
+  else
+    return 1
+  fi
+  "${runner[@]}" -e '
     import { dlopen, FFIType, ptr } from "bun:ffi";
     const [a, b] = process.argv.slice(1);
     const ab = Buffer.from(`${a}\0`);
@@ -319,6 +334,12 @@ if [[ -n "$CONFIG_AGENTS_DIR" ]]; then
 else
   HUB_DIR="$("$REPO_DIR/bin/sync-agents" --print-dir)"
 fi
+# With --binary, also ask the binary itself where the hub is: it is what will run, and it reads
+# config.json without Bun or python3. Refuse if either view overlaps the prefix.
+BINARY_HUB_DIR=""
+if [[ -n "$BINARY_SRC" && -z "$CONFIG_AGENTS_DIR" ]]; then
+  BINARY_HUB_DIR="$("$BINARY_SRC" --print-dir)"
+fi
 
 if [[ "$INSTALL_DIR" == "/" || "$INSTALL_DIR" == "$CANON_HOME" ]]; then
   echo "install.sh: refusing unsafe --prefix: $INSTALL_DIR" >&2
@@ -327,6 +348,10 @@ fi
 
 if paths_overlap "$INSTALL_DIR" "$HUB_DIR"; then
   echo "install.sh: refusing --prefix ($INSTALL_DIR) that overlaps hub directory ($HUB_DIR)" >&2
+  exit 1
+fi
+if [[ -n "$BINARY_HUB_DIR" ]] && paths_overlap "$INSTALL_DIR" "$BINARY_HUB_DIR"; then
+  echo "install.sh: refusing --prefix ($INSTALL_DIR) that overlaps hub directory ($BINARY_HUB_DIR, as the binary resolves it)" >&2
   exit 1
 fi
 

@@ -17,14 +17,23 @@ the layout you ask for: a later plain `./install.sh` switches a binary install b
 layout, and `--binary` switches a source install to the binary. The previous runtime is replaced
 as a whole, including any `src/mcp-sync.ts` that only the source layout has.
 
-`install.sh` itself is a Bash script and runs offline. Without Bun on `PATH` it still works, with
-two differences:
+`install.sh` itself is a Bash script and runs offline. What it needs besides Bash:
 
-- **Swap.** With Bun it replaces an existing runtime with one atomic directory exchange
-  (`renamex_np` on macOS, `renameat2` on Linux). Without Bun it falls back to two renames, so for
-  an instant there is no runtime; if the process is killed in between, the previous runtime is
-  left in `<prefix>-old.*/prev`.
-- **`--agents-dir`.** Writing `config.json` needs Bun or `python3`.
+- **Swap.** It replaces an existing runtime with one atomic directory exchange (`renamex_np` on
+  macOS, `renameat2` on Linux), run by Bun or, with `--binary` and no Bun, by the verified binary
+  itself (`BUN_BE_BUN=1`). Only a source-layout install without Bun falls back to two renames,
+  leaving an instant with no runtime; if it is killed in between, the previous runtime is in
+  `<parent of prefix>/.agent-hub-old.XXXXXX/prev` (on a normal exit or `SIGTERM` that
+  backup is cleaned up).
+- **Source layout.** Installing or syncing the bundled skill runs the Bun sources, so a source
+  install without Bun needs `--no-skill`; the binary layout needs no Bun at all.
+- **`--agents-dir`** writes `config.json` with Bun or `python3`. When `config.json` exists but
+  neither is available, `bin/sync-agents --print-dir` (which `install.sh` uses for its hub-overlap
+  check) refuses rather than guessing; with `--binary`, `install.sh` also checks the binary's own
+  view of the hub.
+- **Paths.** A relative path is resolved against the physical current directory, and a path
+  containing a newline is refused, so `install.sh`, the wrapper and the engine always name the
+  same directory.
 
 ## Installing a release binary
 

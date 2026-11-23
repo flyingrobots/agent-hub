@@ -65,9 +65,15 @@ canonicalize_path() {
   local raw="$1"
   local p
   p="$(expand_tilde "$raw")"
+  if [[ "$p" == *$'\n'* ]]; then
+    echo "${0##*/}: refusing a path that contains a newline: $raw" >&2
+    return 1
+  fi
+  # Resolve a relative path against the physical cwd, as the engine's process.cwd() does;
+  # the logical $PWD keeps symlink names, so a ".." would climb a different directory.
   case "$p" in
     /*) ;;
-    *)  p="$PWD/$p" ;;
+    *)  p="$(pwd -P)/$p" ;;
   esac
   p="$(lexical_normalize "$p")"
 
@@ -127,7 +133,11 @@ read_config_agents_dir() {
         process.stdout.write(cfg.agentsDir);
       }
     ' "$cfg" 2>/dev/null || true
-  elif command -v python3 >/dev/null 2>&1; then
+  elif ! command -v python3 >/dev/null 2>&1; then
+    # Guessing ~/.agents here would let install.sh's hub-overlap guard check the wrong hub.
+    echo "sync-agents: $cfg exists but neither bun nor python3 is available to read it; pass --dir or set AGENTS_DIR" >&2
+    return 1
+  else
     python3 -c '
 import json, sys
 try:
@@ -226,7 +236,7 @@ if [[ "$PRINT_DIR" -eq 1 ]]; then
   elif [[ -n "${AGENTS_DIR:-}" ]]; then
     RAW_DIR="$AGENTS_DIR"
   else
-    CFG_DIR="$(read_config_agents_dir)"
+    CFG_DIR="$(read_config_agents_dir)" || exit 1
     if [[ -n "$CFG_DIR" ]]; then
       RAW_DIR="$CFG_DIR"
     else

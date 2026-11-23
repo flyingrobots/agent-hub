@@ -23,6 +23,7 @@ import {
   readlinkSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -412,6 +413,53 @@ describe.skipIf(compileUnavailable !== null)("compiled sync-agents binary", () =
 });
 
 describe.skipIf(compileUnavailable !== null)("install.sh --binary", () => {
+  // A PATH of symlinks to /usr/bin and /bin minus bun and python, with an mv that logs each call.
+  function minimalHostPath(root: string): { path: string; mvLog: string } {
+    const tools = join(root, "tools");
+    mkdirSync(tools, { recursive: true });
+    for (const d of ["/usr/bin", "/bin"]) {
+      for (const n of readdirSync(d)) {
+        if (/^(python|pip|bun|mv$)/.test(n) || existsSync(join(tools, n))) continue;
+        try {
+          symlinkSync(join(d, n), join(tools, n));
+        } catch {
+          // skip unreadable entries
+        }
+      }
+    }
+    const mvLog = join(root, "mv.log");
+    writeFileSync(join(tools, "mv"), `#!/bin/sh\necho "$@" >> "${mvLog}"\nexec /bin/mv "$@"\n`);
+    chmodSync(join(tools, "mv"), 0o755);
+    return { path: tools, mvLog };
+  }
+
+  test("without Bun or python3, the binary's own hub view still blocks a prefix that is the configured hub", () => {
+    const { home, env } = makeSandbox();
+    const { path } = minimalHostPath(home);
+    const rt = join(home, "rt");
+    mkdirSync(join(home, ".config", "agent-hub"), { recursive: true });
+    writeFileSync(join(home, ".config", "agent-hub", "config.json"), JSON.stringify({ agentsDir: rt }));
+    const r = run([INSTALL_SH, "--binary", BIN, "--prefix", rt, "--bin-dir", join(home, ".local", "bin"), "--no-skill"], { ...env, PATH: path });
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toMatch(/overlaps hub directory|neither bun nor python3/);
+    expect(existsSync(rt)).toBe(false);
+  });
+
+  test("without Bun on PATH, upgrading a binary runtime is one atomic exchange (no two-step rename)", () => {
+    const { home, env } = makeSandbox();
+    const prefix = join(home, ".agent-hub");
+    const binDir = join(home, ".local", "bin");
+    const base = [INSTALL_SH, "--binary", BIN, "--prefix", prefix, "--bin-dir", binDir, "--no-skill"];
+    const { path, mvLog } = minimalHostPath(home);
+    expect(run(base, { ...env, PATH: path }).exitCode).toBe(0);
+    writeFileSync(mvLog, "");
+    const upgrade = run(base, { ...env, PATH: path });
+    expect(upgrade.exitCode).toBe(0);
+    const moves = readFileSync(mvLog, "utf8");
+    expect(moves).not.toContain(prefix);
+    expect(Bun.spawnSync([join(binDir, "sync-agents"), "--help"]).exitCode).toBe(0);
+  });
+
   test("installs the compiled binary as the runtime, keeps marker and shim semantics, and passes --check", () => {
     const { home, hub, env } = makeSandbox();
     const prefix = join(home, ".agent-hub");

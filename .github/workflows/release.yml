@@ -206,7 +206,7 @@ jobs:
           NOTES
           files=(release/sync-agents-* release/agent-hub-skill.tar.gz release/SHA256SUMS)
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::error::a release for $TAG appeared after verification; refusing to replace its assets"
+            echo "::error::a release or draft for $TAG exists (a draft may be left by an earlier failed publish, and the read-only verify job cannot see drafts); refusing to replace its assets. Publish or delete it deliberately."
             exit 1
           fi
           # Upload everything to a draft, then publish, so a partial upload is never public.

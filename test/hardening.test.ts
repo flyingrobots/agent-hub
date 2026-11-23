@@ -411,3 +411,66 @@ describe("install.sh hub-overlap guard agrees with the engine on '..' paths (Bak
     expect(existsSync(join(home, "rt"))).toBe(false);
   }, INSTALLER_TIMEOUT_MS);
 });
+
+describe("Bash path canonicalizers agree with the engine (Baker Street PR #17 blind pass)", () => {
+  function noInterpreterPath(root: string): string {
+    // PATH of symlinks to every /usr/bin and /bin tool except bun and python, to model a minimal host.
+    const tools = join(root, "tools");
+    mkdirSync(tools, { recursive: true });
+    for (const d of ["/usr/bin", "/bin"]) {
+      for (const n of readdirSync(d)) {
+        if (/^(python|pip|bun)/.test(n) || existsSync(join(tools, n))) continue;
+        try { symlinkSync(join(d, n), join(tools, n)); } catch { /* skip */ }
+      }
+    }
+    return tools;
+  }
+
+  test("a relative AGENTS_DIR with '..' from a symlinked cwd resolves like the engine (physical cwd)", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-hub-pcwd-")));
+    tempRoots.push(root);
+    mkdirSync(join(root, "real", "a", "b"), { recursive: true });
+    symlinkSync(join(root, "real", "a", "b"), join(root, "link"));
+    mkdirSync(join(root, "link", "sub"), { recursive: true });
+    const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root, AGENTS_DIR: "../../hub" };
+    const cwd = `${root}/link/sub`; // logical path through the symlink
+    const viaWrapper = Bun.spawnSync(["bash", "-c", `cd "${cwd}" && "$0" --print-dir`, join(REPO_ROOT, "bin", "sync-agents")], { env, stdout: "pipe" }).stdout.toString().trim();
+    const viaEngine = Bun.spawnSync(["bash", "-c", `cd "${cwd}" && bun "$0" --print-dir`, join(REPO_ROOT, "src", "cli.ts")], { env, stdout: "pipe" }).stdout.toString().trim();
+    expect(viaEngine).toBe(join(root, "real", "a", "hub"));
+    expect(viaWrapper).toBe(viaEngine);
+  });
+
+  test("--print-dir refuses to guess when config.json exists but neither bun nor python3 can read it", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-hub-nopy-")));
+    tempRoots.push(root);
+    mkdirSync(join(root, ".config", "agent-hub"), { recursive: true });
+    writeFileSync(join(root, ".config", "agent-hub", "config.json"), JSON.stringify({ agentsDir: join(root, "rt") }));
+    const r = Bun.spawnSync(["/bin/bash", join(REPO_ROOT, "bin", "sync-agents"), "--print-dir"], {
+      env: { PATH: noInterpreterPath(root), HOME: root, XDG_CONFIG_HOME: join(root, ".config") },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("neither bun nor python3");
+    expect(r.stdout.toString()).toBe("");
+  });
+
+  test("a path containing a newline is refused rather than truncated", () => {
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "agent-hub-nl-")));
+    tempRoots.push(root);
+    const r = Bun.spawnSync([join(REPO_ROOT, "bin", "sync-agents"), "--print-dir", "--dir", `${root}/x\ny`], {
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(r.exitCode).not.toBe(0);
+    expect(r.stderr.toString()).toContain("newline");
+    const inst = Bun.spawnSync(["bash", INSTALL_SH, "--prefix", `${root}/rt\ntail`, "--no-skill"], {
+      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root, XDG_STATE_HOME: join(root, "s") },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(inst.exitCode).not.toBe(0);
+    expect(existsSync(join(root, "rt"))).toBe(false);
+  }, INSTALLER_TIMEOUT_MS);
+});
