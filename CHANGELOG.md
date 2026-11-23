@@ -66,6 +66,8 @@ changes are called out under **Changed** with what to do.
 
 ### Fixed
 
+- A Codex `config.toml` that starts with a UTF-8 BOM directly before a managed
+  `[mcp_servers.<name>]` table is edited instead of refused; the BOM is kept.
 - Security: a `.env`, `bunfig.toml`, `tsconfig.json` or `jsconfig.json` in (or, for the last
   two, above) the directory `sync-agents` or `install.sh` was run from could redirect the hub,
   config and state paths, or run its own code, because Bun loads them by default. Every `bun`
