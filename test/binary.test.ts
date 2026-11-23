@@ -219,7 +219,7 @@ describe.skipIf(compileUnavailable !== null)("compiled sync-agents binary", () =
     writeFileSync(join(cwd, "preload.ts"), `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");\n`);
     writeFileSync(join(cwd, "bunfig.toml"), `preload = ["./preload.ts"]\n`);
     writeFileSync(join(cwd, "tsconfig.json"), JSON.stringify({ compilerOptions: { paths: { "*": ["./preload.ts"] } } }));
-    const r = run([BIN, "--print-dir"], env, cwd);
+    const r = run([BIN, "--print-dir", "--human"], env, cwd);
     expect(r.exitCode).toBe(0);
     expect(r.stdout.trim()).toBe(join(home, ".agents"));
     expect(existsSync(marker)).toBe(false);

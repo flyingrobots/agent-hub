@@ -315,12 +315,12 @@ if [[ "$SHOW_SCHEMA" -eq 1 ]]; then
     emit_error internal "sync-agents: bun is required to print the schemas (they are also in $INSTALL_ROOT/schemas/)"
     exit 1
   fi
-  exec bun "$CLI_SCRIPT" "$@"
+  exec bun "${BUN_ISOLATED[@]}" "$CLI_SCRIPT" "$@"
 fi
 
 if [[ "$SHOW_HELP" -eq 1 && "$HUMAN" -eq 0 ]] && command -v bun >/dev/null 2>&1 && [[ -f "$CLI_SCRIPT" ]]; then
   # The engine prints the help line and then every message schema.
-  exec bun "$CLI_SCRIPT" --help
+  exec bun "${BUN_ISOLATED[@]}" "$CLI_SCRIPT" --help
 fi
 if [[ "$SHOW_HELP" -eq 1 ]]; then
   # Without Bun: the help line alone (its "schemas" names every schema; see schemas/).
