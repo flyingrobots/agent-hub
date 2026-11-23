@@ -14,9 +14,9 @@ Run `sync-agents --print-dir` to confirm the canonical resolved hub path.
 ## Golden Rule
 
 1. **Always edit inside the canonical hub (`~/.agents/`)** — never edit per-agent synced targets directly:
-   - Instructions symlinks: `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, `~/.gemini/config/AGENTS.md`, `~/.config/opencode/AGENTS.md`, `~/.cursor/AGENTS.md` *(unverified)*
-   - Per-skill symlinks: `~/.claude/skills/<name>`, `~/.codex/skills/<name>`, `~/.gemini/skills/<name>`, `~/.config/opencode/skills/<name>`, `~/.cursor/skills/<name>`
-   - Compiled MCP entries: `~/.gemini/config/mcp_config.json` (`antigravity`), `mcpServers` in `~/.claude.json` (`claude`), `[mcp_servers.*]` in `~/.codex/config.toml` (`codex`), `mcpServers` in `~/.cursor/mcp.json` (`cursor`), `mcp` in `~/.config/opencode/opencode.json` (`opencode`)
+   - Instructions symlinks: `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, `~/.gemini/config/AGENTS.md`, `${XDG_CONFIG_HOME:-~/.config}/opencode/AGENTS.md`, `~/.cursor/AGENTS.md` *(unverified)*
+   - Per-skill symlinks: `~/.claude/skills/<name>`, `~/.codex/skills/<name>`, `~/.gemini/skills/<name>`, `${XDG_CONFIG_HOME:-~/.config}/opencode/skills/<name>`, `~/.cursor/skills/<name>`
+   - Compiled MCP entries: `~/.gemini/config/mcp_config.json` (`antigravity`), `mcpServers` in `~/.claude.json` (`claude`), `[mcp_servers.*]` in `~/.codex/config.toml` (`codex`), `mcpServers` in `~/.cursor/mcp.json` (`cursor`), `mcp` in `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json` (`opencode`)
 2. **Always finish with `sync-agents` and verify with `sync-agents --check`.**
 
 ---

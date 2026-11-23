@@ -12,6 +12,7 @@ module directly.
 | ID | Requirement | Oracle | Evidence | Status | Test |
 | --- | --- | --- | --- | --- | --- |
 | SYNC-HUB-1 | The hub resolves from `--dir`, then `$AGENTS_DIR`, then `config.json` `agentsDir`, then `~/.agents` | `--print-dir` output per layer (answered by the `bin/sync-agents` wrapper, not the TypeScript resolver sync uses) | E2E | Implemented | `agent-hub.test.ts › resolves hub directory with precedence: --dir > AGENTS_DIR > config.json > ~/.agents` |
+| SYNC-HUB-3 | `src/cli.ts --print-dir` and the wrapper agree when `disabledTargets` is invalid | Same printed hub | E2E | Implemented | `followups.test.ts › bin/sync-agents --print-dir and src/cli.ts --print-dir agree when disabledTargets is invalid` |
 | SYNC-HUB-2 | A relative `--dir` is canonicalized, so links are absolute and `--check` works from any working directory | Link targets absolute; `--check` from another CWD exits 0, and 1 once a link breaks | E2E | Implemented | `agent-hub.test.ts › Contract 7 (MUST #6): relative --dir hub canonicalizes to absolute links and --check catches broken links across CWDs` |
 
 ## Links and skills
@@ -19,6 +20,7 @@ module directly.
 | ID | Requirement | Oracle | Evidence | Status | Test |
 | --- | --- | --- | --- | --- | --- |
 | SYNC-LINK-1 | Rules and skills are linked into every target whose root exists; tool-owned directories are preserved; removed skills are pruned | Symlinks present, `.system` dir untouched, link gone after hub removal (checked with `lstat`) | E2E | Implemented | `agent-hub.test.ts › installs skills, preserves tool-owned dirs, compiles MCP configs, passes --check, and prunes cleanly` |
+| SYNC-LINK-6 | OpenCode links and MCP config follow `$XDG_CONFIG_HOME` | Links and `opencode.json` under the XDG base; `--check` 0 | E2E | Implemented | `followups.test.ts › OpenCode links and MCP follow $XDG_CONFIG_HOME, as OpenCode itself does` |
 | SYNC-LINK-2 | Unsafe skill sources (escaping, absolute or cyclic symlinks) are refused with no hub change | Exit 1, message, skill absent from hub | E2E | Implemented | `hardening.test.ts › F3 & F12: cyclic symlinks and escaping/absolute symlinks in skills & archives are rejected safely` |
 | SYNC-LINK-3 | A failed skill install leaves no staging directories in the hub | No `.staging-*` entries | Unit | Implemented | `hardening.test.ts › F4: applySkillInstall cleans up .staging-* on mid-install failure (zero leaks in <hub>/skills)` |
 | SYNC-LINK-4 | The skill name comes from `SKILL.md` frontmatter, including quoted values and inline comments | Installed directory name | E2E | Implemented | `hardening.test.ts › F10: YAML frontmatter name parses inline comments and quoted scalars cleanly` |
@@ -51,11 +53,13 @@ module directly.
 | SYNC-SCOPE-6 | A scoped run keeps link records it cannot attribute to a target under the current `HOME` | Record and link survive | E2E | Implemented | `adapters.test.ts › restricted --targets sync never prunes link records whose owning target cannot be resolved` |
 | SYNC-SCOPE-7 | Ownership is never inferred from an overlapping earlier `HOME` | Claude link under old `HOME=~/.cursor` survives `--targets cursor` | E2E | Implemented | `adapters.test.ts › a Claude link recorded under an old HOME nested in ~/.cursor survives a --targets cursor run` |
 | SYNC-SCOPE-8 | A scoped run still prunes the active target's own stale links | Cursor link gone (by `lstat`), Claude link kept, scoped `--check` 0, unscoped `--check` 1 | E2E | Implemented | `adapters.test.ts › --targets cursor:links prunes a removed skill from Cursor and keeps Claude's` |
-| SYNC-SCOPE-9 | Re-enabling an excluded target catches up its missed prunes | Next run prunes the removed server and skill | E2E | Gap: exercised by a review probe (Baker Street round 2, blind pass E-6), not a maintained test | — |
+| SYNC-SCOPE-10 | A repeated `--targets` flag exits 2 | Exit code, message | E2E | Implemented | `followups.test.ts › a repeated --targets flag is a usage error (exit 2), not silently last-wins` |
+| SYNC-SCOPE-11 | Excluded agents are absent from the compiled server map, so they can never be read as disabled | Map keys | Unit | Implemented | `followups.test.ts › the compiled server map has no entry for an inactive agent` |
+| SYNC-SCOPE-9 | Re-enabling an excluded target catches up its missed prunes | Next run prunes the removed server and skill | E2E | Implemented | `followups.test.ts › SYNC-SCOPE-9: re-enabling an excluded target catches up the prunes it missed` |
 
 ## Upgrade
 
 | ID | Requirement | Oracle | Evidence | Status | Test |
 | --- | --- | --- | --- | --- | --- |
 | SYNC-UP-1 | A three-target v2 ledger loads and syncs with zero churn | State bytes and generation unchanged | E2E | Implemented | `adapters.test.ts › backward-compatible loading of existing 3-agent v2 ledger causes zero churn` |
-| SYNC-UP-2 | Zero churn also holds when `~/.cursor` and `~/.config/opencode` already exist, under the three legacy targets | State bytes unchanged | E2E | Planned: flyingrobots/agent-hub#3 | — |
+| SYNC-UP-2 | Zero churn also holds when `~/.cursor` and `~/.config/opencode` already exist, under the three legacy targets | State bytes unchanged | E2E | Implemented | `followups.test.ts › zero churn for a three-target ledger when ~/.cursor and ~/.config/opencode already exist` |

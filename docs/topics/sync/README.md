@@ -56,10 +56,10 @@ point at the same place. `sync-agents --print-dir` prints the resolved hub.
 | `codex` | `~/.codex/AGENTS.md` | `~/.codex/skills/<name>` | `~/.codex/config.toml` (`[mcp_servers.*]`) |
 | `antigravity` | `~/.gemini/GEMINI.md` and `~/.gemini/config/AGENTS.md` | `~/.gemini/skills/<name>` | `~/.gemini/config/mcp_config.json` (`mcpServers`) |
 | `cursor` | `~/.cursor/AGENTS.md` | `~/.cursor/skills/<name>` | `~/.cursor/mcp.json` (`mcpServers`) |
-| `opencode` | `~/.config/opencode/AGENTS.md` | `~/.config/opencode/skills/<name>` | `~/.config/opencode/opencode.json` (`mcp`) |
+| `opencode` | `<oc>/AGENTS.md` | `<oc>/skills/<name>` | `<oc>/opencode.json` (`mcp`) |
 
 A target is synced only when its root directory (`~/.claude`, `~/.codex`, `~/.gemini`,
-`~/.cursor`, `~/.config/opencode`) exists. Antigravity's `~/.gemini/config/AGENTS.md` link and
+`~/.cursor`, `<oc>`) exists. `<oc>` is `${XDG_CONFIG_HOME:-~/.config}/opencode`, where OpenCode itself reads its global config. Antigravity's `~/.gemini/config/AGENTS.md` link and
 its MCP config additionally need `~/.gemini/config`. Cursor reads global rules from its settings, so the
 effect of `~/.cursor/AGENTS.md` is unverified. Gemini CLI's `~/.gemini/settings.json` is not a
 target.
@@ -89,7 +89,8 @@ domain suffix: `opencode:mcp`, `cursor:links`.
 - **`--targets <csv>`** (or `--targets=<csv>`) picks the selectors for one run of sync,
   `--check`, `--dry-run` or `--explain`, for example `--targets claude,opencode:links`. An
   unknown selector exits `2`. An explicit `--targets` list **replaces** `disabledTargets` for
-  that run: `--targets cursor` acts on Cursor even when `"cursor"` is disabled.
+  that run: `--targets cursor` acts on Cursor even when `"cursor"` is disabled. Give `--targets`
+  once; repeating it exits `2`.
 
 A run never plans changes for an excluded target or domain:
 
@@ -99,8 +100,8 @@ A run never plans changes for an excluded target or domain:
 - When the target is active again, the next run catches it up, including any prunes it missed.
 - The one exception is Phase 0 recovery, which acts on `sync-agents`' own interrupted write
   whatever its target (see [Write-ahead recovery](../ownership/README.md#write-ahead-recovery)).
-- `--disown-legacy` naming an excluded target currently does nothing and says nothing; tracked
-  in flyingrobots/agent-hub#3.
+- `--disown-legacy <target>:<name>` needs that target's MCP domain in scope; otherwise the run
+  exits `2` and names the selector to add.
 
 A link is attributed to a target only when its path is exactly that target's rules file or a
 direct child of its skills directory under the current `HOME`. A scoped run keeps any record it

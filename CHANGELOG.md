@@ -28,6 +28,10 @@ changes are called out under **Changed** with what to do.
 
 ### Changed
 
+- OpenCode's rules, skills and `opencode.json` live under
+  `${XDG_CONFIG_HOME:-~/.config}/opencode`, matching OpenCode itself.
+- `--disown-legacy` for a target whose MCP domain is out of scope, and a repeated
+  `--targets`, now exit 2 instead of being silently ignored.
 - Upgrading from a three-target build: the first unscoped run also writes hub MCP
   servers into Cursor and OpenCode configs where those directories exist. Set
   `"disabledTargets": ["cursor:mcp", "opencode:mcp"]` first to leave those two MCP
@@ -39,6 +43,8 @@ changes are called out under **Changed** with what to do.
 
 ### Fixed
 
+- `src/cli.ts --print-dir` ignored a valid `agentsDir` when `disabledTargets` was
+  invalid. Codex editor refusals now carry the `codex:mcp` remedy.
 - The Codex TOML editor no longer deletes a comment that sits between a managed
   `[mcp_servers.<name>]` table and the next table, and an updated table stays where
   it was instead of moving to the end of the file (flyingrobots/agent-hub#15).

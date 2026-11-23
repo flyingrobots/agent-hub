@@ -35,7 +35,7 @@ exist.
 | OWN-REC-8 | A forced delete of an unmanaged disabled entry completes with no generation bump | Generation | E2E | Implemented | `recovery.test.ts › mcp-write forced delete of unmanaged disabled entry (ledger-neutral) -> completes with zero generation bump` |
 | OWN-REC-9 | An adoption copy interrupted mid-swap completes and cleans its backup | Destination and backup | E2E | Implemented | `recovery.test.ts › link-adopt-copy interrupted mid-swap (committed backup rename) -> completes switch & cleans backup` |
 | OWN-REC-10 | A target changed unexpectedly after interruption is preserved with its journal, and the next run is blocked | Destination bytes; journal present; exit 1 | E2E | Implemented | `recovery.test.ts › ambiguous target modified unexpectedly after interruption -> preserves destination & journal, blocks next run` |
-| OWN-REC-11 | Phase 0 recovery of a journal whose target is excluded by `--targets` leaves an edited target untouched and refuses | Target bytes; exit 1 | E2E | Gap: exercised by a review probe (Baker Street round 1, Moriarty M-A-6), not a maintained test | — |
+| OWN-REC-11 | Phase 0 recovery of a journal whose target is excluded by `--targets` leaves an edited target untouched and refuses | Target bytes; exit 1 | E2E | Implemented | `followups.test.ts › OWN-REC-11: Phase 0 recovery of an excluded target's journal refuses when that target was edited` |
 
 ## Concurrency
 
@@ -49,6 +49,6 @@ exist.
 | ID | Requirement | Oracle | Evidence | Status | Test |
 | --- | --- | --- | --- | --- | --- |
 | OWN-V1-1 | The v1 lifecycle (adopt, retire absent, disown) behaves as documented | Ledger and target per step | E2E | Implemented | `agent-hub.test.ts › Contract 2 (Amendment 5): full legacy v1 .mcp-managed.json lifecycle (L1-L6) & --disown-legacy` |
-| OWN-LED-5 | A mixed conflict also leaves the ledger untouched | State bytes | E2E | Gap: not asserted by OWN-LED-2's test | — |
-| OWN-V1-3 | `--force` replaces a v1-claimed entry | Target and ledger | E2E | Gap: no maintained test | — |
-| OWN-V1-2 | `--disown-legacy` naming a target excluded from the run reports it rather than silently doing nothing | Nonzero exit with message | E2E | Planned: flyingrobots/agent-hub#3 | — |
+| OWN-LED-5 | A mixed conflict also leaves the ledger untouched | State bytes | E2E | Implemented | `followups.test.ts › OWN-LED-5: a mixed conflict leaves the ledger byte-identical` |
+| OWN-V1-3 | `--force` replaces a v1-claimed entry | Target and ledger | E2E | Implemented | `followups.test.ts › OWN-V1-3: --force replaces a differing entry claimed only by a legacy v1 manifest` |
+| OWN-V1-2 | `--disown-legacy` naming an agent whose MCP domain is out of scope exits 2 with the selector to add | Nonzero exit with message | E2E | Implemented | `followups.test.ts › --disown-legacy naming an agent whose MCP domain is out of scope is refused, not silently dropped` |

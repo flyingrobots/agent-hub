@@ -12,7 +12,7 @@ under `test/`; the documentation gate fails if a cited test does not exist.
 | MCP-CMP-1 | Claude, Codex and Antigravity receive compiled entries; a removed server is pruned from Claude | Parsed target configs | E2E | Implemented | `agent-hub.test.ts › installs skills, preserves tool-owned dirs, compiles MCP configs, passes --check, and prunes cleanly` |
 | MCP-CMP-2 | Cursor and OpenCode receive stdio and sse entries in the documented shapes, keep unrelated keys and an existing `0600` mode, pass `--check`, and prune | Parsed configs, file mode | E2E | Implemented | `adapters.test.ts › Cursor and OpenCode compile stdio/http/sse, preserve unrelated keys & 0600 mode, pass --check, and prune cleanly` |
 | MCP-CMP-3 | Cursor http is `{url, headers}`; OpenCode http is `{type: "remote", url, headers, enabled: true}` | Deep equality | E2E | Implemented | `adapters.test.ts › R-4b: Cursor and OpenCode compile http servers to the documented shapes` |
-| MCP-CMP-5 | Prune from Codex and Antigravity; new-file modes (`0600`, Antigravity `0644`) | Parsed configs, mode | E2E | Gap: no maintained test | — |
+| MCP-CMP-5 | Prune from Codex and Antigravity; new-file modes (`0600`, Antigravity `0644`) | Parsed configs, mode | E2E | Implemented | `followups.test.ts › MCP-CMP-5: Codex and Antigravity prune removed servers; new configs get 0600 and Antigravity 0644` |
 | MCP-CMP-4 | Emitted OpenCode entries validate against OpenCode's published schema | Schema validation | — | Gap: checked by hand against `https://opencode.ai/config.json` during review; layout change tracked in flyingrobots/agent-hub#13 | — |
 
 ## Codex TOML editing
@@ -44,6 +44,7 @@ under `test/`; the documentation gate fails if a cited test does not exist.
 | MCP-JSON-4 | A non-object `mcpServers` refuses without clobbering | Byte equality | E2E | Implemented | `hardening.test.ts › F5: corrupt mcpServers (null / array) in JSON target fails closed without clobbering` |
 | MCP-JSON-5 | A refusal names its scope, the `"<target>:mcp"` remedy and the resolved `config.json` path, and stops the whole run | Message text; Claude not updated | E2E | Implemented | `adapters.test.ts › R-2: a JSONC refusal names its scope and the --targets/disabledTargets opt-out` |
 | MCP-JSON-6 | Non-object JSON roots, invalid TOML and a non-table `mcp_servers` carry the same remedy | Message text; file unchanged | E2E | Implemented | `adapters.test.ts › non-object JSON root, invalid TOML, and a non-table mcp_servers all carry the remedy` |
+| MCP-JSON-8 | A Codex editor refusal (dotted `mcp_servers` key) names the `codex:mcp` remedy and the config path, and leaves the file untouched | Message text; byte equality | E2E | Implemented | `followups.test.ts › a Codex editor refusal (dotted mcp_servers key) names the codex:mcp remedy and the config path` |
 | MCP-JSON-7 | Malformed JSON errors name the file | Message text | E2E | Implemented | `hardening.test.ts › F14: malformed JSON errors include the offending file path` |
 
 ## Conflicts
