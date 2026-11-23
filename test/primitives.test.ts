@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, statSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getStatePaths, loadOwnershipState } from "../src/state.ts";
@@ -312,5 +312,84 @@ describe("commands and agents from the hub (flyingrobots/agent-hub#12)", () => {
       expect(r.exitCode).toBe(1);
       expect(out(r)).toContain("missing or looping");
     }
+  });
+
+  describe("defensive checks (flyingrobots/agent-hub#41)", () => {
+    test("a file changed between planning and applying is left alone", () => {
+      const { home, hub, base } = sandbox([".claude"]);
+      put(join(hub, "commands", "review.md"), COMMAND);
+      const dst = join(home, ".claude", "commands", "review.md");
+      const r = runSync(base, {
+        afterPlanBeforeApply: () => {
+          mkdirSync(join(home, ".claude", "commands"), { recursive: true });
+          writeFileSync(dst, "written in between\n");
+        },
+      });
+      expect(r.exitCode).toBe(1);
+      expect(read(dst)).toBe("written in between\n");
+    });
+
+    test("new files are written 0644", () => {
+      const { home, hub, base } = sandbox([".claude"]);
+      put(join(hub, "commands", "review.md"), COMMAND);
+      expect(runSync(base).exitCode).toBe(0);
+      expect(statSync(join(home, ".claude", "commands", "review.md")).mode & 0o777).toBe(0o644);
+    });
+
+    test("Codex extra keys are written in sorted order", () => {
+      const { home, hub, base } = sandbox([".codex"]);
+      put(join(hub, "agents", "a.md"), "---\ndescription: D\ntargets:\n  codex:\n    zeta: 1\n    alpha: 2\n---\nx\n");
+      expect(runSync(base).exitCode).toBe(0);
+      const text = read(join(home, ".codex", "agents", "a.toml"));
+      expect(text.indexOf("alpha = 2")).toBeLessThan(text.indexOf("zeta = 1"));
+    });
+
+    test("a file that already matches with a stale ledger digest gets a ledger-only refresh", () => {
+      const { home, hub, base, ledger } = sandbox([".claude"]);
+      put(join(hub, "commands", "review.md"), COMMAND);
+      expect(runSync(base).exitCode).toBe(0);
+      const dst = join(home, ".claude", "commands", "review.md");
+      const statePath = getStatePaths(hub, home, base.xdgStateHome).statePath;
+      const st = JSON.parse(read(statePath));
+      st.files[dst].digest = "0".repeat(64);
+      writeFileSync(statePath, JSON.stringify(st));
+      const before = read(dst);
+      const r = runSync(base);
+      expect(r.exitCode).toBe(0);
+      expect(out(r)).toContain("file-refresh");
+      expect(read(dst)).toBe(before);
+      expect(ledger().files[dst]!.digest).not.toBe("0".repeat(64));
+    });
+
+    test("malformed frontmatter values are refused: non-string description, non-mapping targets, unknown or non-mapping target, empty agent body", () => {
+      const bad: Array<[string, string]> = [
+        ["commands/a.md", "---\ndescription: 3\n---\nx\n"],
+        ["commands/b.md", "---\nargument-hint: [1, 2]\n---\nx\n"],
+        ["commands/c.md", "---\ntargets: [claude]\n---\nx\n"],
+        ["commands/d.md", "---\ntargets:\n  antigravity: {}\n---\nx\n"],
+        ["commands/e.md", "---\ntargets:\n  claude: 1\n---\nx\n"],
+        ["agents/f.md", "---\ndescription: D\n---\n\n"],
+      ];
+      for (const [rel, text] of bad) {
+        const { home, hub, base } = sandbox([".claude"]);
+        put(join(hub, rel), text);
+        expect(runSync(base).exitCode).toBe(1);
+        expect(existsSync(join(home, ".claude", "commands"))).toBe(false);
+      }
+    });
+
+    test("a recorded file outside any agent's commands or agents directory is never pruned", () => {
+      const { home, hub, base, ledger } = sandbox([".claude"]);
+      // A sibling file whose name merely starts with "commands" is not inside the directory.
+      const near = join(home, ".claude", "commandsX.md");
+      put(near, "keep\n");
+      const statePath = getStatePaths(hub, home, base.xdgStateHome).statePath;
+      mkdirSync(join(statePath, ".."), { recursive: true });
+      const empty = { claude: {}, codex: {}, antigravity: {}, cursor: {}, opencode: {} };
+      writeFileSync(statePath, JSON.stringify({ version: 2, generation: 1, hubPath: hub, links: {}, mcp: empty, resolvedLegacyV1: { claude: [], codex: [], antigravity: [], cursor: [], opencode: [] }, files: { [near]: { kind: "command", digest: Bun.CryptoHasher.hash("sha256", "keep\n", "hex"), basis: "created", updatedAt: "2026-11-01T00:00:00Z" } } }));
+      expect(runSync({ ...base, targets: [parseTargetSelector("claude:links")!] }).exitCode).toBe(0);
+      expect(read(near)).toBe("keep\n");
+      expect(ledger().files[near]).toBeDefined();
+    });
   });
 });
