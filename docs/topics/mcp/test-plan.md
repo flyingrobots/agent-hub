@@ -100,4 +100,5 @@ under `test/`; the documentation gate fails if a cited test does not exist.
 | MCP-SEC-7 | Name matching is by parts; references never warn | Throws / equality | Unit | Implemented | `env-refs.test.ts › common non-secret names do not warn; the docs' Bearer reference does not warn` |
 | MCP-ENV-15 | Codex refusals carry server and source | Throws / equality | Unit | Implemented | `env-refs.test.ts › a Codex refusal names the server and its source` |
 | MCP-ENV-16 | An Authorization header spelled twice is refused wherever it sits | Throws | Unit | Implemented | `env-refs.test.ts › an Authorization header spelled twice is refused for Codex wherever it sits among the headers` |
+| MCP-ENV-17 | A malformed reference is reported against the file that holds it | Error names the per-target file and field | E2E | Implemented | `env-refs.test.ts › in a per-target mcp.json, the error names that file, not the base` |
 | MCP-SEC-8 | Credential names in camelCase, compound or header form warn | Warned fields | Unit | Implemented | `env-refs.test.ts › credential names in camelCase, compound or header form still warn` |
