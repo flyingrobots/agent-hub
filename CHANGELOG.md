@@ -45,6 +45,12 @@ changes are called out under **Changed** with what to do.
 
 ### Changed
 
+- **`${env:NAME}` in a hub server spec is now a reference, no longer literal text.** It is
+  compiled for each target, refused for Antigravity and for Codex outside the forms it can
+  express, and a malformed one (`${env:lower}`, unterminated) stops the run. Run
+  `sync-agents --dry-run` first; disable a refused server for that target, or move the literal
+  into that target's override.
+
 - **Breaking: output is JSON Lines by default.** Scripts that read `sync-agents` output as text
   must add `--human` (alias `--humanize`) to get prose, for example
   `"$(sync-agents --print-dir --human)"`; `--help` prints JSON lines too. Earlier versions reject

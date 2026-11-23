@@ -262,4 +262,20 @@ describe("a sync warns about plaintext secrets and still syncs (flyingrobots/age
     expect(r.events.some((e) => e.id === "agent_hub.warning")).toBe(false);
     expect(JSON.parse(fs.readFileSync(path.join(b.home, ".claude.json"), "utf8")).mcpServers.gh.env.GITHUB_TOKEN).toBe("${GITHUB_TOKEN}");
   });
+
+  test("a sync never reads a referenced variable: its value appears in no config and no output", () => {
+    const { home, opts } = sb({ mcp: { command: "/bin/gh", env: { GITHUB_TOKEN: "${env:GITHUB_TOKEN}" } } });
+    const sentinel = "sentinel-value-that-must-not-leak-1234567890";
+    const saved = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_TOKEN = sentinel;
+    try {
+      const r = runSync(opts);
+      expect(r.exitCode).toBe(0);
+      expect(JSON.stringify(r.events)).not.toContain(sentinel);
+      expect(fs.readFileSync(path.join(home, ".claude.json"), "utf8")).not.toContain(sentinel);
+    } finally {
+      if (saved === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = saved;
+    }
+  });
 });
