@@ -368,4 +368,43 @@ describe("OpenCode adapter writes the current mcp.servers layout (flyingrobots/a
     expect(out(r)).toContain("conflict");
     expect(readFileSync(cfg, "utf8")).toBe(text);
   });
+
+  test("an edited old-layout server agent-hub wrote at mcp.servers is refused, even with --force or --adopt (Baker Street PR #36 F1)", () => {
+    const { home, hub, cfg, base } = sandbox();
+    server(hub, "servers", { command: "/bin/s" });
+    const written = { type: "local", command: ["/bin/s"], enabled: true };
+    const text = writeCfg(cfg, { mcp: { servers: { ...written, command: ["/bin/s", "--mine"] } } });
+    seedLedger(home, hub, cfg, base.xdgStateHome!, { servers: written });
+    for (const extra of [{}, { force: true }, { adopt: true }]) {
+      const r = runSync({ ...base, ...extra });
+      expect(r.exitCode).toBe(1);
+      expect(readFileSync(cfg, "utf8")).toBe(text);
+    }
+  });
+
+  test("the mcp.servers migration rewrites the file, and a remote old-layout server at mcp.timeout migrates too (Baker Street PR #36 F6)", () => {
+    const { home, hub, cfg, base } = sandbox();
+    server(hub, "servers", { command: "/bin/s" });
+    server(hub, "timeout", { transport: "http", url: "https://t.invalid/mcp" });
+    const legacyS = { type: "local", command: ["/bin/s"], enabled: true };
+    const legacyT = { type: "remote", url: "https://t.invalid/mcp", enabled: true };
+    writeCfg(cfg, { mcp: { servers: legacyS, timeout: legacyT } });
+    seedLedger(home, hub, cfg, base.xdgStateHome!, { servers: legacyS, timeout: legacyT });
+    expect(runSync(base).exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(cfg, "utf8")).mcp).toEqual({
+      servers: { servers: { type: "local", command: ["/bin/s"] }, timeout: { type: "remote", url: "https://t.invalid/mcp" } },
+    });
+    expect(runSync({ ...base, checkOnly: true }).exitCode).toBe(0);
+  });
+
+  test("an mcp.servers migration that is the run's only change still rewrites the file (Baker Street PR #36 M12)", () => {
+    const { home, hub, cfg, base } = sandbox();
+    server(hub, "servers", { command: "/bin/s" });
+    const legacy = { type: "local", command: ["/bin/s"], enabled: true };
+    writeCfg(cfg, { mcp: { servers: legacy } });
+    seedLedger(home, hub, cfg, base.xdgStateHome!, { servers: legacy });
+    expect(runSync(base).exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(cfg, "utf8")).mcp).toEqual({ servers: { servers: { type: "local", command: ["/bin/s"] } } });
+    expect(runSync({ ...base, checkOnly: true }).exitCode).toBe(0);
+  });
 });

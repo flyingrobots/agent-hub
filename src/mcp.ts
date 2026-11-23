@@ -1233,7 +1233,7 @@ function planSingleMcpTarget(
       observed: `${rootKey}.${name} holds ${adapter.label}'s own settings, not the server sync-agents wrote there`,
       intended: `stop managing ${rootKey}.${name}; leave it untouched`,
       ownershipBasis: rec.basis,
-      reason: `the previous-layout server at ${rootKey}.${name} was replaced by ${adapter.label}'s own settings`,
+      reason: `${rootKey}.${name} holds ${adapter.label}'s own settings and ${rootKey}.${adapter.nestedKey}.${name} is absent, so the record describes no entry in this file`,
       targetMutation: false,
       ledgerMutation: true,
     });

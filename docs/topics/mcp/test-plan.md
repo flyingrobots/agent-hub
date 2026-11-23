@@ -30,6 +30,9 @@ under `test/`; the documentation gate fails if a cited test does not exist.
 | MCP-OC-14 | Migration and a hub spec change in one run: moved, then updated | Layout; no conflict; `--check` 0 | E2E | Implemented | `opencode-v2.test.ts › migration and a hub spec change in the same run: moved, then updated; --check is clean` |
 | MCP-OC-15 | An unchanged agent-hub old-layout server at `mcp.timeout` or `mcp.servers` migrates into the map | Layout; record kept; `--check` 0 | E2E | Implemented | `opencode-v2.test.ts › an unchanged old-layout server agent-hub wrote at mcp.timeout migrates to mcp.servers.timeout (flyingrobots/agent-hub#24)`, `opencode-v2.test.ts › an unchanged old-layout server agent-hub wrote at mcp.servers migrates into the map (flyingrobots/agent-hub#24)` |
 | MCP-OC-16 | An unmanaged old-layout server object at `mcp.timeout` named like a hub server is a conflict | Exit 1; file unchanged | E2E | Implemented | `opencode-v2.test.ts › an old-layout server object at mcp.timeout that agent-hub did not write, named like a hub server, is a conflict (flyingrobots/agent-hub#24)` |
+| MCP-OC-17 | An edited old-layout `servers` object agent-hub wrote is refused under every flag | File byte-identical | E2E | Implemented | `opencode-v2.test.ts › an edited old-layout server agent-hub wrote at mcp.servers is refused, even with --force or --adopt (Baker Street PR #36 F1)` |
+| MCP-OC-18 | The `servers` migration rewrites the file; a remote old-layout `timeout` migrates | Layout; `--check` 0 | E2E | Implemented | `opencode-v2.test.ts › the mcp.servers migration rewrites the file, and a remote old-layout server at mcp.timeout migrates too (Baker Street PR #36 F6)` |
+| MCP-OC-19 | An `mcp.servers` migration that is the only change still rewrites the file | Layout; `--check` 0 | E2E | Implemented | `opencode-v2.test.ts › an mcp.servers migration that is the run's only change still rewrites the file (Baker Street PR #36 M12)` |
 
 ## Codex TOML editing
 

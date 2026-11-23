@@ -213,8 +213,9 @@ care on upgrade:
 - a server `sync-agents` wrote at `mcp.servers` itself (a server named `servers`), unchanged
   since, becomes the first entry of a new `mcp.servers` map. Any other `mcp.servers` holding a
   value that is not a server object is refused, so nothing is ever written inside it;
-- a record for `timeout` whose `mcp.timeout` now holds OpenCode's own settings object is retired,
-  and the settings are left alone (`retire-reserved-record`).
+- a record for `timeout`, when `mcp.timeout` holds OpenCode's own settings and there is no
+  `mcp.servers.timeout`, is retired, and the settings are left alone (`retire-reserved-record`).
+  When `mcp.servers.timeout` exists, the record is applied to it as to any other server name.
 
 OpenCode reads a direct-layout server object at `mcp.servers` or `mcp.timeout` as a server too
 (`isDirectLegacyMcp` in its config normalizer), so these entries are the servers they look like.

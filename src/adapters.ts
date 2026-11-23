@@ -81,7 +81,6 @@ export type McpAdapterDef = {
   readonly rootKey?: "mcpServers" | "mcp";
   /** When set, servers live one level down, at `<rootKey>.<nestedKey>` (OpenCode: `mcp.servers`). */
   readonly nestedKey?: string;
-  /** Keys of `<rootKey>` that are not server names (OpenCode: `servers`, `timeout`). */
   /**
    * Keys of <rootKey> the agent itself uses (OpenCode: servers, timeout). They are legal server
    * names in the nested map; only the previous direct layout needs care with them.
