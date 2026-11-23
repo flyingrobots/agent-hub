@@ -24,13 +24,14 @@ import {
   readdirSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join, resolve, sep } from "node:path";
+import { join, relative, resolve, sep } from "node:path";
 import { loadCanonicalServers, type PlaintextSecretWarning, type VaultInvocation } from "./mcp.ts";
 import { formatExplainBlock, formatOpSummary, opData, type OutputEvent, type SchemaId } from "./output.ts";
 import { atomicWriteDurable, expandTilde, findDuplicateJsonKey, isPlainObject, sha256Hex } from "./paths.ts";
 import { renderCodexSection } from "./toml-edit.ts";
-import { resolveTargetScope, type AgentId, type PlannedOp, type SyncOptions, type SyncRunResult, type TargetScope } from "./types.ts";
+import { resolveTargetScope, type AgentId, type ApplyHooks, type PlannedOp, type SyncOptions, type SyncRunResult, type TargetScope } from "./types.ts";
 import { findGrant, loadGrants, realProgram, vaultStateDir } from "./vault.ts";
+import { acquireApplyLock, LockBusyError, LockSystemError, releaseApplyLock, type ApplyLockHandle } from "./lock.ts";
 
 export const LOCK_REL = ".agents/sync.lock.json";
 
@@ -74,7 +75,7 @@ export function validateLockEntryPath(rel: string, kind: "file" | "link"): strin
 
 class ProjectError extends Error {
   constructor(
-    readonly code: "usage" | "config" | "hub_not_found" | "apply",
+    readonly code: "usage" | "config" | "hub_not_found" | "apply" | "lock",
     message: string,
   ) {
     super(message);
@@ -207,17 +208,66 @@ function resolveRepo(options: SyncOptions, cwd: string, homeDir: string): string
   if (r.status !== 0 || !r.stdout.trim()) {
     throw new ProjectError("config", `sync-agents --project: ${cwd} is not inside a git repository; run it from the repository or pass --dir <repo>`);
   }
-  return realpathSync(r.stdout.trim());
+  const top = realpathSync(r.stdout.trim());
+  // A hostile core.worktree can point git's toplevel anywhere; only trust one that contains cwd.
+  const here = realpathSync(cwd);
+  if (!inside(top, here)) {
+    throw new ProjectError("config", `sync-agents --project: git reports the repository root as ${top}, which does not contain ${here} (core.worktree?); pass --dir <repo> to name the repository`);
+  }
+  return top;
+}
+
+/** The writer lock for one repository: in the user's state dir, keyed by the repo's real path. */
+export function projectLockPath(repo: string, homeDir: string, xdgStateHome?: string): string {
+  return join(vaultStateDir(homeDir, xdgStateHome), "project-locks", `${sha256Hex(repo)}.lock`);
+}
+
+/**
+ * Every MCP input under .agents/mcp must be a real directory or a regular file: a symlink could
+ * read config (and allow-listed secrets) from outside the repository, and a FIFO or device
+ * would hang the read. Runs before loadCanonicalServers in project mode, which never follows.
+ */
+function assertMcpInputsSafe(repo: string, hub: string): void {
+  const walk = (abs: string): void => {
+    let st;
+    try {
+      st = lstatSync(abs);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return;
+      throw err;
+    }
+    const rel = relative(repo, abs);
+    if (st.isSymbolicLink()) throw new ProjectError("config", `sync-agents --project: ${rel} is a symlink; project mode reads only real files and directories under .agents/mcp; nothing was written`);
+    if (st.isDirectory()) {
+      for (const n of readdirSync(abs).sort(byCodeUnit)) walk(join(abs, n));
+      return;
+    }
+    if (!st.isFile()) throw new ProjectError("config", `sync-agents --project: ${rel} is not a regular file; nothing was written`);
+  };
+  walk(join(hub, "mcp"));
+}
+
+/** True when the repository's volume folds case (APFS and HFS+ by default). */
+function caseInsensitiveVolume(repo: string): boolean {
+  try {
+    const a = lstatSync(join(repo, ".agents"));
+    const b = lstatSync(join(repo, ".AGENTS"));
+    return a.ino === b.ino && a.dev === b.dev;
+  } catch {
+    return false;
+  }
 }
 
 /** The whole intended output set for this scope, from `<repo>/.agents/`. */
 function intendedOutputs(
+  repo: string,
   hub: string,
   scope: TargetScope,
   warnings: PlaintextSecretWarning[],
   invocations: VaultInvocation[],
 ): Output[] {
   const outs: Output[] = [];
+  assertMcpInputsSafe(repo, hub);
   const mcpAgents = new Set<AgentId>(PROJECT_MCP_AGENTS.filter((a) => scope.mcp.has(a)));
   // The bare launcher, so committed files are the same on every machine.
   const servers = loadCanonicalServers(hub, mcpAgents, warnings, { execPath: "sync-agents", invocations });
@@ -313,7 +363,7 @@ function writeLink(abs: string, target: string): void {
   renameSync(tmp, abs);
 }
 
-export function runProjectSync(options: SyncOptions): SyncRunResult {
+export function runProjectSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const events: OutputEvent[] = [];
@@ -342,6 +392,7 @@ export function runProjectSync(options: SyncOptions): SyncRunResult {
 
   const homeDir = options.homeDir ?? homedir();
   const cwd = options.cwd ?? process.cwd();
+  let lockHandle: ApplyLockHandle | null = null;
   try {
     const repo = resolveRepo(options, cwd, homeDir);
     const hub = join(repo, ".agents");
@@ -357,14 +408,24 @@ export function runProjectSync(options: SyncOptions): SyncRunResult {
     // Project scope never reads the user's disabledTargets: committed outputs must not depend on
     // one machine's config. Only --targets narrows a run.
     const scope = resolveTargetScope(options.targets, []);
-    const { lock, raw } = relock ? { lock: { files: {}, links: {} } as Lock, raw: existsSync(join(repo, LOCK_REL)) ? readFileSync(join(repo, LOCK_REL), "utf8") : null } : loadLock(repo);
+    // Apply runs on one repository are serialized; read-only modes never take the lock.
+    if (!dryRun) {
+      try {
+        lockHandle = acquireApplyLock(projectLockPath(repo, homeDir, options.xdgStateHome ?? process.env.XDG_STATE_HOME), repo);
+      } catch (err) {
+        if (err instanceof LockBusyError || err instanceof LockSystemError) throw new ProjectError("lock", `${label}: ${err.message}`);
+        throw err;
+      }
+    }
+    const { lock, raw } = relock ? { lock: { files: {}, links: {} } as Lock, raw: relockRaw(repo) } : loadLock(repo);
 
     const warnings: PlaintextSecretWarning[] = [];
     const invocations: VaultInvocation[] = [];
     let outs: Output[];
     try {
-      outs = intendedOutputs(hub, scope, warnings, invocations);
+      outs = intendedOutputs(repo, hub, scope, warnings, invocations);
     } catch (err) {
+      if (err instanceof ProjectError) throw err;
       throw new ProjectError("config", `${label}: ${err instanceof Error ? err.message : String(err)}`);
     }
     if (warnings.length > 0) {
@@ -430,6 +491,18 @@ export function runProjectSync(options: SyncOptions): SyncRunResult {
     const nextRaw = renderLock(next);
     const lockChanges = raw === null ? !empty : raw !== nextRaw;
 
+    if (caseInsensitiveVolume(repo)) {
+      const seen = new Map<string, string>();
+      for (const pl of plans) {
+        const k = pl.rel.toLowerCase();
+        const prev = seen.get(k);
+        if (prev !== undefined && prev !== pl.rel) {
+          throw new ProjectError("config", `${label}: ${prev} and ${pl.rel} differ only in case, and this volume folds case; nothing was written (remove the stale one, or run --relock)`);
+        }
+        seen.set(k, pl.rel);
+      }
+    }
+
     const conflictPlans = plans.filter((p) => p.op.status === "conflict");
     const changePlans = plans.filter((p) => p.op.status === "change");
     const changes = changePlans.length + (lockChanges ? 1 : 0);
@@ -488,6 +561,7 @@ export function runProjectSync(options: SyncOptions): SyncRunResult {
 
     // Apply: outputs first, the lockfile last, so the lock never claims bytes that are not on
     // disk. An interrupted run leaves unclaimed identical outputs: --adopt or --relock takes them.
+    hooks?.afterPlanBeforeApply?.();
     let applied = 0;
     for (const pl of changePlans) {
       const abs = join(repo, pl.rel);
@@ -504,7 +578,7 @@ export function runProjectSync(options: SyncOptions): SyncRunResult {
       opEvent("sync", pl.op);
     }
     if (lockChanges) {
-      atomicWriteDurable(join(repo, LOCK_REL), nextRaw, 0o644);
+      atomicWriteDurable(join(repo, LOCK_REL), nextRaw, 0o644, 0o644);
       applied += changePlans.length === 0 ? 1 : 0;
     }
     if (applied === 0 && !lockChanges) {
@@ -518,5 +592,22 @@ export function runProjectSync(options: SyncOptions): SyncRunResult {
     const msg = err instanceof Error ? err.message : String(err);
     emit("stderr", "agent_hub.error", msg.startsWith("sync-agents") ? msg : `${label}: ${msg}`, { code });
     return done(code === "usage" ? 2 : 1);
+  } finally {
+    releaseApplyLock(lockHandle);
+  }
+}
+
+/**
+ * The current lockfile bytes for --relock, which never parses them: a regular file's text, null
+ * when absent, and "" for anything else (a symlink, FIFO or device is never read, and the
+ * mismatch makes relock replace it with a regular file).
+ */
+function relockRaw(repo: string): string | null {
+  const p = join(repo, LOCK_REL);
+  try {
+    return lstatSync(p).isFile() ? readFileSync(p, "utf8") : "";
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw err;
   }
 }

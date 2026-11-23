@@ -329,7 +329,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
     emit("stderr", "agent_hub.error", "sync-agents: --relock needs --project", { code: "usage" });
     return done(2);
   }
-  if (options.project) return runProjectSync(options);
+  if (options.project) return runProjectSync(options, hooks);
 
   const homeDir = options.homeDir ?? homedir();
   const cwd = options.cwd ?? process.cwd();
