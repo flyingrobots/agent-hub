@@ -16,7 +16,10 @@ changes are called out under **Changed** with what to do.
   secrets stop an import unless `--rewrite-secrets`. Planning is the default; `--apply` writes.
   See docs/topics/import.
 - `overrides.<agent>.extra`: native fields for one agent that the canonical spec does not model.
-
+- Commands and agents: `<hub>/commands/<name>.md` and `<hub>/agents/<name>.md` are generated
+  into Claude Code, OpenCode, Cursor and (agents only) Codex, each in its own format, from a
+  portable frontmatter subset; anything else goes under `targets.<agent>`. See
+  docs/topics/primitives.
 - Environment references: write `${env:NAME}` in a hub server spec instead of a secret. Claude
   Code, Cursor and OpenCode get their native syntax in every field; Codex gets `env_vars`,
   `bearer_token_env_var` and `env_http_headers` for the forms it can express; anything a target
@@ -77,9 +80,9 @@ changes are called out under **Changed** with what to do.
   `enabled: true`. An old-layout entry named like a hub server that `sync-agents` did not write,
   or that was edited, stops the run as a conflict that `--force` and `--adopt` do not override:
   move it to `mcp.servers.<name>` yourself, rename or remove it, or exclude `"opencode:mcp"`. Your
-  own old-layout entries with other names stay put and are listed by `--explain`. The hub server
-  names `servers` and `timeout` are refused for OpenCode and stop every run that includes it
-  until you rename the server or set `overrides.opencode.disabled: true`.
+  own old-layout entries with other names stay put and are listed by `--explain`. Hub servers
+  may be named `servers` or `timeout`; they are written to `mcp.servers.<name>`, and
+  agent-hub's own old-layout entries under those names move there too.
 - OpenCode's rules, skills and `opencode.json` live under
   `${XDG_CONFIG_HOME:-~/.config}/opencode`, matching OpenCode itself. If you set an absolute
   `XDG_CONFIG_HOME`, the first unscoped sync after upgrading moves the links there, writes hub

@@ -47,11 +47,22 @@ export type ManagedMcpRecord = {
   updatedAt: string;
 };
 
+/** A file sync-agents generated in an agent's directory (a command or an agent definition). */
+export type ManagedFileRecord = {
+  kind: "command" | "agent";
+  /** sha256 of the bytes written. */
+  digest: string;
+  basis: OwnershipBasis;
+  updatedAt: string;
+};
+
 export type OwnershipStateV2 = {
   version: 2;
   generation: number;
   hubPath: string;
   links: Record<string, ManagedLinkRecord>;
+  /** Generated files, keyed by destination (absent in ledgers written before Phase 7). */
+  files: Record<string, ManagedFileRecord>;
   mcp: Record<AgentId, Record<string, ManagedMcpRecord>>;
   resolvedLegacyV1: Record<AgentId, string[]>;
 };
@@ -77,7 +88,9 @@ export type StateDelta =
       resolvedLegacyV1: string[];
     }
   | { kind: "link-set"; destination: string; record: ManagedLinkRecord }
-  | { kind: "link-delete"; destination: string };
+  | { kind: "link-delete"; destination: string }
+  | { kind: "file-set"; destination: string; record: ManagedFileRecord }
+  | { kind: "file-delete"; destination: string };
 
 export type JournalOpKind =
   | "mcp-write"
@@ -85,7 +98,9 @@ export type JournalOpKind =
   | "link-replace"
   | "link-adopt-copy"
   | "link-prune"
-  | "skill-replace";
+  | "skill-replace"
+  | "file-write"
+  | "file-delete";
 
 export type PendingJournalRecord = {
   version: 1;
