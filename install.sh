@@ -304,7 +304,7 @@ is_native_executable() {
 is_compiled_sync_agents_binary() {
   local f="$1"
   local first_line
-  first_line="$("$f" --help 2>/dev/null | head -n 1)" || true
+  first_line="$("$f" --help --human 2>/dev/null | head -n 1)" || true
   [[ "$first_line" == "$EXPECTED_USAGE_LINE" ]]
 }
 
@@ -355,10 +355,10 @@ if [[ -n "${AGENTS_DIR:-}" ]]; then
   add_hub_candidate "$hub_path" "AGENTS_DIR"
 fi
 if [[ -z "$CONFIG_AGENTS_DIR" ]]; then
-  hub_path="$("$REPO_DIR/bin/sync-agents" --print-dir)"
+  hub_path="$("$REPO_DIR/bin/sync-agents" --print-dir --human)"
   add_hub_candidate "$hub_path" "bin/sync-agents --print-dir"
   if [[ -n "$BINARY_SRC" ]]; then
-    hub_path="$("$BINARY_SRC" --print-dir)"
+    hub_path="$("$BINARY_SRC" --print-dir --human)"
     add_hub_candidate "$hub_path" "the binary's --print-dir"
   fi
 fi
@@ -457,6 +457,9 @@ else
   cp "$REPO_DIR"/src/*.ts "$STAGE_DIR/src/"
 fi
 cp -R "$REPO_DIR/skills/agent-hub" "$STAGE_DIR/skills/agent-hub"
+# The output message schemas: the source engine imports them; beside a binary (which embeds them)
+# they are the installed copy of the contract.
+cp -R "$REPO_DIR/schemas" "$STAGE_DIR/schemas"
 
 INSTALLED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 cat > "$STAGE_DIR/.agent-hub-runtime" <<EOF
@@ -568,7 +571,7 @@ os.replace(tmp, cfg_path)
   echo "[install] config    -> $CFG_FILE ($CONFIG_AGENTS_DIR)"
 fi
 
-HUB_DIR="$("$SHIM_PATH" --print-dir)"
+HUB_DIR="$("$SHIM_PATH" --print-dir --human)"
 if [[ "$INSTALL_SKILL" -eq 1 && -d "$HUB_DIR" ]]; then
   SYNC_ARGS=(--skill "$INSTALL_DIR/skills/agent-hub")
   if [[ "$FORCE_SKILL" -eq 1 ]]; then
@@ -577,5 +580,6 @@ if [[ "$INSTALL_SKILL" -eq 1 && -d "$HUB_DIR" ]]; then
   if [[ "$NO_SYNC" -eq 1 ]]; then
     SYNC_ARGS+=(--skill-only)
   fi
-  "$SHIM_PATH" "${SYNC_ARGS[@]}"
+  # install.sh talks to a person, so the sync it runs prints prose.
+  "$SHIM_PATH" --human "${SYNC_ARGS[@]}"
 fi

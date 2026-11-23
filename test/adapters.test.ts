@@ -14,6 +14,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { getStatePaths, loadOwnershipState } from "../src/state.ts";
+import { decodeOutput, isSyncAgents } from "./jsonl.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 // AGENT_HUB_BINARY runs this suite against a compiled binary instead of the source wrapper.
@@ -53,11 +54,13 @@ function runCmd(cmd: string[], env: Record<string, string | undefined>) {
     stdout: "pipe",
     stderr: "pipe",
   });
-  return {
-    exitCode: proc.exitCode,
-    stdout: proc.stdout.toString(),
-    stderr: proc.stderr.toString(),
-  };
+  const stdout = proc.stdout.toString();
+  const stderr = proc.stderr.toString();
+  // sync-agents speaks JSON Lines; validate every line, then assert against the human messages.
+  if (isSyncAgents(cmd) && !cmd.includes("--human")) {
+    return { exitCode: proc.exitCode, ...decodeOutput(stdout, stderr) };
+  }
+  return { exitCode: proc.exitCode, stdout, stderr, events: [] };
 }
 
 afterEach(() => {

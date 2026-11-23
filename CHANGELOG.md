@@ -10,6 +10,11 @@ changes are called out under **Changed** with what to do.
 
 ### Added
 
+- Machine-readable output: every line `sync-agents` prints, on stdout and stderr, is a JSON
+  object naming its schema (`_schema`), with `kind`, `run_id` and `message`. The schemas, one
+  per message type and each versioned on its own, are in `schemas/`; `sync-agents --schema`
+  prints them. See docs/topics/output.
+
 - Standalone binaries: `bun run build:bin` compiles `dist/sync-agents`, and
   `./install.sh --binary <file>` installs one as the runtime (no Bun needed to run it).
   Tagged releases publish unsigned binaries for macOS and Linux with `SHA256SUMS` and
@@ -32,6 +37,19 @@ changes are called out under **Changed** with what to do.
 
 ### Changed
 
+- **Breaking: output is JSON Lines by default.** Scripts that read `sync-agents` output as text
+  must add `--human` (alias `--humanize`) to get prose, for example
+  `"$(sync-agents --print-dir --human)"`; `--help` prints JSON lines too. Earlier versions reject
+  `--human` (exit 2), so change such scripts when you upgrade, not before; `sync-agents --schema`
+  exits 0 only on a version with JSON Lines. Exit codes are unchanged, except that
+  `bin/sync-agents` no longer reads another option's value as `--help` or `--print-dir`
+  (`--skill --print-dir` now fails as the engine does). The prose is the same
+  except that every run now ends with one summary or error line: a sync that changed something
+  ends with `applied N change(s).`, `--dry-run` and `--explain` with `N change(s) planned`, and
+  an ambiguous recovery with an error line after the recovery line, and a doubled
+  `sync-agents: mcp-sync:` prefix on refusals is now one prefix. Lines are printed as they
+  happen rather than at the end of the run. `src/mcp-sync.ts --print-dir` now prints the hub
+  instead of running an MCP sync.
 - OpenCode servers are written in its current `mcp.servers` layout instead of the deprecated
   direct `mcp.<name>` form. Run `sync-agents --dry-run` first: entries `sync-agents` wrote in the
   old layout, unchanged since, move on the next sync (`mcp-migrate-layout`), without the old
@@ -72,6 +90,12 @@ changes are called out under **Changed** with what to do.
   two, above) the directory `sync-agents` or `install.sh` was run from could redirect the hub,
   config and state paths, or run its own code, because Bun loads them by default. Every `bun`
   call now ignores them, and binaries are compiled not to load them.
+- Ownership records now move to the spelling of the run that plans them (ledger only), so a
+  `HOME` or `~/.config` alias removed after syncing under the real path no longer turns into
+  conflicts or "moved" MCP records.
+- Two agents' skill directories that are one physical directory (`~/.codex/skills` a symlink
+  to `~/.claude/skills`) no longer fail the first sync with a stale-snapshot error: the shared
+  link is planned once.
 - Rewriting a Codex table that holds a long hand-written multiline string whose lines start
   with `#` no longer takes time quadratic in its length; the cut comes from the TOML scanner.
 - `src/cli.ts --print-dir` ignored a valid `agentsDir` when `disabledTargets` was

@@ -1,0 +1,115 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/flyingrobots/agent-hub/schemas/agent_hub.op.schema.json",
+  "title": "agent_hub.op",
+  "description": "One planned (plan, explain) or applied (sync) operation on a target, the hub or the ownership ledger.",
+  "x-schema-version": "1.0.0",
+  "type": "object",
+  "required": [
+    "_schema",
+    "kind",
+    "run_id",
+    "message",
+    "phase",
+    "op"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "_schema": {
+      "type": "object",
+      "required": [
+        "id",
+        "version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "const": "agent_hub.op"
+        },
+        "version": {
+          "const": "1.0.0"
+        }
+      }
+    },
+    "kind": {
+      "const": "op"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "Identifies one invocation; every line it emits carries it."
+    },
+    "message": {
+      "type": "string",
+      "description": "The same content as human prose; --human prints only this."
+    },
+    "phase": {
+      "enum": [
+        "plan",
+        "sync",
+        "explain"
+      ]
+    },
+    "op": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "domain",
+        "action",
+        "status",
+        "destination",
+        "observed",
+        "intended",
+        "ownership_basis",
+        "reason",
+        "target_mutation",
+        "ledger_mutation"
+      ],
+      "properties": {
+        "domain": {
+          "enum": [
+            "skill",
+            "link",
+            "mcp",
+            "recovery"
+          ]
+        },
+        "action": {
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "ok",
+            "change",
+            "conflict",
+            "error"
+          ]
+        },
+        "destination": {
+          "type": "string"
+        },
+        "observed": {
+          "type": "string"
+        },
+        "intended": {
+          "type": "string"
+        },
+        "ownership_basis": {
+          "type": "string"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "next_step": {
+          "type": "string"
+        },
+        "target_mutation": {
+          "type": "boolean"
+        },
+        "ledger_mutation": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

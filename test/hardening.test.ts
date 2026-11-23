@@ -29,6 +29,7 @@ import { computeEquivalenceRecord } from "../src/paths.ts";
 import { applySkillInstall, parseYamlScalar, planSkillInstalls } from "../src/skills.ts";
 import { createEmptyState, getStatePaths, loadOwnershipState, loadPendingJournal } from "../src/state.ts";
 import { decodeTomlBasicString, rewriteCodexToml, scanTomlDocument } from "../src/toml-edit.ts";
+import { decodeOutput, isSyncAgents, printedHub } from "./jsonl.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 // AGENT_HUB_BINARY runs this suite against a compiled binary instead of the source wrapper.
@@ -71,11 +72,13 @@ function runCmd(cmd: string[], env: Record<string, string | undefined>, cwd?: st
     stdout: "pipe",
     stderr: "pipe",
   });
-  return {
-    exitCode: proc.exitCode,
-    stdout: proc.stdout.toString(),
-    stderr: proc.stderr.toString(),
-  };
+  const stdout = proc.stdout.toString();
+  const stderr = proc.stderr.toString();
+  // sync-agents speaks JSON Lines; validate every line, then assert against the human messages.
+  if (isSyncAgents(cmd) && !cmd.includes("--human")) {
+    return { exitCode: proc.exitCode, ...decodeOutput(stdout, stderr) };
+  }
+  return { exitCode: proc.exitCode, stdout, stderr, events: [] };
 }
 
 afterEach(() => {
@@ -397,8 +400,8 @@ describe("install.sh hub-overlap guard agrees with the engine on '..' paths (Bak
       // A raw string: join() would normalize the ".." away and hide the bug.
       AGENTS_DIR: `${home}/nope/../rt`,
     };
-    const viaWrapper = Bun.spawnSync([join(REPO_ROOT, "bin", "sync-agents"), "--print-dir"], { env, stdout: "pipe" }).stdout.toString().trim();
-    const viaEngine = Bun.spawnSync(["bun", join(REPO_ROOT, "src", "cli.ts"), "--print-dir"], { env, stdout: "pipe" }).stdout.toString().trim();
+    const viaWrapper = printedHub(Bun.spawnSync([join(REPO_ROOT, "bin", "sync-agents"), "--print-dir"], { env, stdout: "pipe" }).stdout.toString());
+    const viaEngine = printedHub(Bun.spawnSync(["bun", join(REPO_ROOT, "src", "cli.ts"), "--print-dir"], { env, stdout: "pipe" }).stdout.toString());
     expect(viaWrapper).toBe(join(home, "rt"));
     expect(viaEngine).toBe(viaWrapper);
 
@@ -434,8 +437,8 @@ describe("Bash path canonicalizers agree with the engine (Baker Street PR #17 bl
     mkdirSync(join(root, "link", "sub"), { recursive: true });
     const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root, AGENTS_DIR: "../../hub" };
     const cwd = `${root}/link/sub`; // logical path through the symlink
-    const viaWrapper = Bun.spawnSync(["bash", "-c", `cd "${cwd}" && "$0" --print-dir`, join(REPO_ROOT, "bin", "sync-agents")], { env, stdout: "pipe" }).stdout.toString().trim();
-    const viaEngine = Bun.spawnSync(["bash", "-c", `cd "${cwd}" && bun "$0" --print-dir`, join(REPO_ROOT, "src", "cli.ts")], { env, stdout: "pipe" }).stdout.toString().trim();
+    const viaWrapper = printedHub(Bun.spawnSync(["bash", "-c", `cd "${cwd}" && "$0" --print-dir`, join(REPO_ROOT, "bin", "sync-agents")], { env, stdout: "pipe" }).stdout.toString());
+    const viaEngine = printedHub(Bun.spawnSync(["bash", "-c", `cd "${cwd}" && bun "$0" --print-dir`, join(REPO_ROOT, "src", "cli.ts")], { env, stdout: "pipe" }).stdout.toString());
     expect(viaEngine).toBe(join(root, "real", "a", "hub"));
     expect(viaWrapper).toBe(viaEngine);
   });
@@ -451,7 +454,7 @@ describe("Bash path canonicalizers agree with the engine (Baker Street PR #17 bl
       stderr: "pipe",
     });
     expect(r.exitCode).toBe(1);
-    expect(r.stderr.toString()).toContain("neither bun nor python3");
+    expect(decodeOutput("", r.stderr.toString()).stderr).toContain("neither bun nor python3");
     expect(r.stdout.toString()).toBe("");
   });
 
@@ -464,7 +467,7 @@ describe("Bash path canonicalizers agree with the engine (Baker Street PR #17 bl
       stderr: "pipe",
     });
     expect(r.exitCode).not.toBe(0);
-    expect(r.stderr.toString()).toContain("newline");
+    expect(decodeOutput(r.stdout.toString(), r.stderr.toString()).stderr).toContain("newline");
     const inst = Bun.spawnSync(["bash", INSTALL_SH, "--prefix", `${root}/rt\ntail`, "--no-skill"], {
       env: { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: root, XDG_STATE_HOME: join(root, "s") },
       stdout: "pipe",

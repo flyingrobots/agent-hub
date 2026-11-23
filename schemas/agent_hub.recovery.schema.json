@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/flyingrobots/agent-hub/schemas/agent_hub.recovery.schema.json",
+  "title": "agent_hub.recovery",
+  "description": "Phase 0 write-ahead recovery: a pending journal found, an action taken, or an ambiguous state refused.",
+  "x-schema-version": "1.0.0",
+  "type": "object",
+  "required": [
+    "_schema",
+    "kind",
+    "run_id",
+    "message",
+    "event"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "_schema": {
+      "type": "object",
+      "required": [
+        "id",
+        "version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "const": "agent_hub.recovery"
+        },
+        "version": {
+          "const": "1.0.0"
+        }
+      }
+    },
+    "kind": {
+      "const": "recovery"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "Identifies one invocation; every line it emits carries it."
+    },
+    "message": {
+      "type": "string",
+      "description": "The same content as human prose; --human prints only this."
+    },
+    "event": {
+      "enum": [
+        "pending",
+        "recovered",
+        "ambiguous"
+      ]
+    },
+    "classification": {
+      "type": "string"
+    },
+    "destination": {
+      "type": "string"
+    },
+    "reason": {
+      "type": "string"
+    },
+    "next_step": {
+      "type": "string"
+    },
+    "action": {
+      "type": "string"
+    }
+  }
+}

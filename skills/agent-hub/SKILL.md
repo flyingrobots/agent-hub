@@ -9,7 +9,9 @@ Shared configuration for local AI coding agents lives in a canonical hub directo
 
 > **Note:** **Gemini CLI** (`~/.gemini/settings.json`) is not currently supported by the MCP compiler. The `antigravity` adapter targets Antigravity's `~/.gemini/config/mcp_config.json`.
 
-Run `sync-agents --print-dir` to confirm the canonical resolved hub path.
+Run `sync-agents --print-dir --human` to confirm the canonical resolved hub path.
+
+**Output is JSON Lines.** Every line `sync-agents` prints, on stdout and stderr, is one JSON object with `_schema` (`id`, `version`), `kind`, `run_id` and `message`. Parse the lines and branch on `kind`: `op` (a planned, applied or explained change, in `op`), `conflict` (a refusal, with `reason` and `next_step`), `recovery` (`event`: `pending`, `recovered`, `ambiguous`), `summary` (`status`), `error` (`code`), `help`, `print_dir` (`hub`), `schema`. Every run ends with exactly one `summary` or `error` line; read the outcome from it and from the exit code, and the table in `docs/topics/output/README.md` says what each `status` and `code` means. A strict-JSON or TOML refusal is an `error` with code `plan`, not a `conflict`. `message` is the prose a person would read; quote it to the user. Pass `--human` only when you want prose instead, for example `"$(sync-agents --print-dir --human)"` in a shell command. `sync-agents --schema` prints every schema. If a line is not JSON, or a run ends without a `summary` or `error` line, treat the run as failed and show the user the raw output; if `sync-agents --schema` exits 2, the installed runtime predates JSON Lines, so use its prose output.
 
 ## Golden Rule
 
@@ -67,7 +69,7 @@ sync-agents --skill-only --skill https://github.com/owner/repo.git
 ### 3. Remove a Skill
 
 ```bash
-rm -rf "$(sync-agents --print-dir)/skills/<name>"
+hub="$(sync-agents --print-dir --human)" && [ -n "$hub" ] && rm -rf "$hub/skills/<name>"
 sync-agents
 sync-agents --check
 ```
@@ -143,7 +145,9 @@ Edit `<hub>/AGENTS.md` directly. Run `sync-agents --check` to confirm all manage
 | `sync-agents --dir <path>` | Target a different canonical hub directory (normalized to real absolute path) |
 | `sync-agents --targets <csv>` | Restrict sync/check/dry-run/explain to specific selector(s): a target (`antigravity`, `claude`, `codex`, `cursor`, `opencode`) or `<target>:mcp` / `<target>:links`; excluded targets are never pruned. An explicit `--targets` list replaces `disabledTargets` for that run |
 | `sync-agents --explain` | Show observed state, intended state, ownership basis, reason, and next step (read-only) |
-| `sync-agents --dry-run` (`-n`) | Show `[plan]` actions without modifying final destinations, state, journals, or locks |
+| `sync-agents --human` | Print prose instead of JSON Lines (any command) |
+| `sync-agents --schema` | Print the JSON Schema of every output message type |
+| `sync-agents --dry-run` (`-n`) | Show planned actions (`op` lines with `phase: "plan"`) without modifying final destinations, state, journals, or locks |
 | `sync-agents --check` | Exit `0` iff the active targets, ownership ledger, and recovery state all require zero work (excluded targets and domains are not checked; a pending recovery journal always is) |
 | `sync-agents --adopt` | Adopt unmanaged identical symlinks/MCP entries or strictly equivalent files/dirs (checks `.git`, bytes, mode bits, owner/group, raw xattr values, ACLs) |
 | `sync-agents --force-skill` | Allow `--skill` to replace differing canonical skill(s) ONLY |
@@ -163,4 +167,4 @@ Edit `<hub>/AGENTS.md` directly. Run `sync-agents --check` to confirm all manage
 
 The four JSON adapters (`antigravity`, `claude`, `cursor`, `opencode`) refuse a target config when a `.jsonc` sibling exists (e.g. `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.jsonc`), or when the `.json` has comments, trailing commas, or a key repeated in one object. **A refusal stops the whole run**: no Phase 2 target or ledger change is applied. The error names the target, the resolved `config.json` path, and the remedy.
 
-When you hit one: tell the user which file was refused and why, then offer to add `"<target>:mcp"` to `disabledTargets`, which leaves only that tool's MCP config alone and keeps its rules and skills syncing. **Never edit, rename, reformat, or strip comments from the user's `.jsonc`/`.json` yourself, and never reach for `--force`, unless the user explicitly asks.** The same goes for a `[conflict]` on a personal MCP entry in one tool's config: excluding that target is the non-destructive way to sync the rest.
+When you hit one: tell the user which file was refused and why, then offer to add `"<target>:mcp"` to `disabledTargets`, which leaves only that tool's MCP config alone and keeps its rules and skills syncing. **Never edit, rename, reformat, or strip comments from the user's `.jsonc`/`.json` yourself, and never reach for `--force`, unless the user explicitly asks.** The same goes for a `conflict` line about a personal MCP entry in one tool's config: excluding that target is the non-destructive way to sync the rest.

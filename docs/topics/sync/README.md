@@ -22,7 +22,7 @@ instead of a plan: `--check` exits `1`, and the next real run handles it in Phas
 | Command | Result |
 | --- | --- |
 | `sync-agents` | Recover, plan, apply |
-| `sync-agents --dry-run` | Print `[plan]` lines for the changes a sync would make |
+| `sync-agents --dry-run` | Print a planned `op` line for each change a sync would make, then a `planned` summary |
 | `sync-agents --check` | Exit `0` if nothing needs doing, `1` if anything does |
 | `sync-agents --explain` | Print observed state, intended state, ownership basis, reason and next step per object |
 
@@ -39,7 +39,7 @@ The hub directory is resolved, in order, from:
 4. `~/.agents`
 
 The path is canonicalized to a real absolute path, so links written from any working directory
-point at the same place. `sync-agents --print-dir` prints the resolved hub.
+point at the same place. `sync-agents --print-dir --human` prints the resolved hub (without `--human`, as a JSON line).
 
 ```text
 <hub>/
@@ -111,10 +111,19 @@ different `HOME` or `XDG_CONFIG_HOME`.
 `XDG_CONFIG_HOME` is used only when it is an absolute path, as the XDG spec requires. Ownership
 is decided by physical location, not spelling: a link or MCP entry recorded under one spelling of
 a directory (a symlinked `~/.config`, a `HOME` reached through a symlink) is recognized under any
-other while that spelling still resolves, so switching between such spellings causes no
-conflict, duplicate or prune. If a recorded spelling stops resolving (for example a `HOME` alias
-symlink is removed), its records no longer match: the run reports conflicts (and may describe
-MCP records as moved) and changes nothing; `--adopt` then records the current spelling.
+other, so switching between such spellings causes no conflict, duplicate or prune. A sync
+stores each record it plans under the spelling of that run (`rekey-link-record`,
+`rekey-mcp-record`: ledger only, no file changes), so a record keeps a spelling that resolved
+the last time you synced, and removing an old alias afterwards changes nothing. `--check` does
+not count a re-key as drift. A record is re-keyed only to a spelling for the same target, and
+only when no other desired spelling holds it: when `~/.codex/skills` is a symlink to
+`~/.claude/skills`, the shared link is one object with one record, planned once. That record is
+kept under the spelling that sorts first; if that spelling is the symlinked one and you later
+replace the symlink with a real directory, the next run reports the other link as unmanaged,
+and `--adopt` records it. If
+you remove an alias *before* syncing under the new spelling, the old records no longer match:
+the run reports conflicts (and may describe MCP records as moved) and changes nothing;
+`--adopt` then records the current spelling.
 
 ## Installing skills
 
