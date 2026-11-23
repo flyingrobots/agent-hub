@@ -124,8 +124,16 @@ The vault is for **one user on one machine**. What it does and does not protect:
   `BASH_ENV`, `NODE_OPTIONS` or `DYLD_INSERT_LIBRARIES`) is refused, as is an exec that moves a
   granted key into a different variable.
 - **Not protected:** a change to the program file itself (or to what it loads) at the granted
-  path. The grant binds the path, not the file's contents. `PATH`, `HOME` and the other allowlisted
-  variables are passed through from the agent and can still affect what the program does.
+  path. The grant binds the path, not the file's contents.
+- **Not protected: the values of pass-through variables.** The grant binds the *names* of the
+  `--keep` variables, not their values, and `PATH`, `HOME` and the other allowlisted variables come
+  from the agent. An agent config that sets them can change what the granted program does. In
+  particular, a granted program that looks up another program through `PATH` (`/usr/bin/env node`,
+  or a script whose shebang is `#!/usr/bin/env node`, the usual shape of an npm MCP server) runs
+  whichever interpreter that `PATH` finds first; and a granted `--keep` name such as `BASH_ENV` or
+  `NODE_OPTIONS` can be given a value that loads other code. For the strongest binding, grant the
+  real interpreter and script directly (`/opt/homebrew/bin/node /path/to/server.js`) and keep no
+  variable that a loader reads.
 - **Not protected: code running as you.** Any process with your user ID can run `security
   find-generic-password` itself, edit `grants.json`, or set `AGENT_HUB_SECURITY_BIN`. The keychain
   may prompt the first time a new program reads an item; agent-hub does not rely on that.
