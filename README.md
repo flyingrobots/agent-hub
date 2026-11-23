@@ -82,7 +82,7 @@ Each target has two sync domains: **`links`** (its rules file and skill symlinks
 
 ### Upgrading from a three-target version
 
-Earlier versions synced MCP servers only to Claude, Codex, and Antigravity, though they already linked rules and skills into `~/.cursor` and `~/.config/opencode`. After upgrading, the first unscoped run also writes your hub's MCP servers into `~/.cursor/mcp.json` and `~/.config/opencode/opencode.json`, and `--check` reports that as pending work until it happens. That run is refused, with nothing written, if either file has a personal server with the same name as a hub server, or if an `opencode.jsonc` exists. To keep the old behavior exactly (links into both tools, MCP only for the original three), set `"disabledTargets": ["cursor:mcp", "opencode:mcp"]` before the first run.
+Earlier versions synced MCP servers only to Claude, Codex, and Antigravity, though they already linked rules and skills into `~/.cursor` and `~/.config/opencode`. After upgrading, the first unscoped run also writes your hub's MCP servers into `~/.cursor/mcp.json` and `~/.config/opencode/opencode.json`, and `--check` reports that as pending work until it happens. That run is refused, with no Phase 2 change applied, if either file has a personal server with the same name as a hub server, or if either config is refused under the strict JSON rules above (for example an `opencode.jsonc` exists). To keep the old behavior exactly (links into both tools, MCP only for the original three), set `"disabledTargets": ["cursor:mcp", "opencode:mcp"]` before the first run.
 
 ---
 

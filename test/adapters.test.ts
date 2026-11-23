@@ -258,6 +258,7 @@ describe("Phase 1: Cursor & OpenCode adapters, --targets/disabledTargets, and un
     const rOcNull = runCmd([SYNC_BIN, "--targets", "opencode"], env);
     expect(rOcNull.exitCode).toBe(1);
     expect(rOcNull.stderr).toContain('"mcp" must be a JSON object (found null)');
+    expect(rOcNull.stderr).toContain('"disabledTargets": ["opencode:mcp"]');
     rmSync(join(home, ".config", "opencode", "opencode.json"));
 
     // 5. Valid JSON containing https:// URLs (contains `//`) succeeds cleanly across all 4 JSON adapters!
@@ -573,5 +574,51 @@ describe("Domain-scoped targets (<target>:mcp, <target>:links)", () => {
     const r2 = runCmd([SYNC_BIN], env);
     expect(r2.exitCode).toBe(1);
     expect(r2.stderr).toContain('unknown target "cursor:skills"');
+  });
+});
+
+describe("Link ownership is never inferred from an overlapping HOME (CodeRabbit PR #2, links.ts:557)", () => {
+  test("a Claude link recorded under an old HOME nested in ~/.cursor survives a --targets cursor run", () => {
+    const { home, hub, env } = makeSandbox();
+    mkdirSync(join(hub, "skills", "demo"), { recursive: true });
+    writeFileSync(join(hub, "skills", "demo", "SKILL.md"), "---\nname: demo\ndescription: d\n---\n");
+    // Old HOME is <home>/.cursor, with its own ~/.claude/skills.
+    const oldHome = join(home, ".cursor");
+    mkdirSync(join(oldHome, ".claude", "skills"), { recursive: true });
+    const r1 = runCmd([SYNC_BIN, "--dir", hub, "--targets", "claude:links"], { ...env, HOME: oldHome });
+    expect(r1.exitCode).toBe(0);
+    const oldClaudeLink = join(oldHome, ".claude", "skills", "demo");
+    expect(lstatSync(oldClaudeLink).isSymbolicLink()).toBe(true);
+
+    // New HOME is <home>; same hub and state dir; only Cursor selected.
+    const r2 = runCmd([SYNC_BIN, "--dir", hub, "--targets", "cursor"], env);
+    expect(r2.exitCode).toBe(0);
+    expect(lstatSync(oldClaudeLink).isSymbolicLink()).toBe(true);
+    const { statePath } = getStatePaths(hub, home, env.XDG_STATE_HOME);
+    expect(loadOwnershipState(statePath, hub).state.links[oldClaudeLink]).toBeDefined();
+  });
+});
+
+describe("Every whole-run MCP refusal names the opt-out", () => {
+  test("non-object JSON root, invalid TOML, and a non-table mcp_servers all carry the remedy", () => {
+    const { home, env } = makeSandbox();
+    writeFileSync(join(home, ".cursor", "mcp.json"), "[]\n");
+    const r1 = runCmd([SYNC_BIN, "--targets", "cursor"], env);
+    expect(r1.exitCode).toBe(1);
+    expect(r1.stderr).toContain("must contain a JSON object");
+    expect(r1.stderr).toContain('"disabledTargets": ["cursor:mcp"]');
+
+    const toml = join(home, ".codex", "config.toml");
+    writeFileSync(toml, "model = \n");
+    const r2 = runCmd([SYNC_BIN, "--targets", "codex"], env);
+    expect(r2.exitCode).toBe(1);
+    expect(r2.stderr).toContain("invalid TOML");
+    expect(r2.stderr).toContain('"disabledTargets": ["codex:mcp"]');
+
+    writeFileSync(toml, 'mcp_servers = "x"\n');
+    const r3 = runCmd([SYNC_BIN, "--targets", "codex"], env);
+    expect(r3.exitCode).toBe(1);
+    expect(r3.stderr).toContain('"disabledTargets": ["codex:mcp"]');
+    expect(readFileSync(toml, "utf8")).toBe('mcp_servers = "x"\n');
   });
 });

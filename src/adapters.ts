@@ -25,16 +25,25 @@ export const LINK_TARGETS: readonly LinkTargetDef[] = [
 ] as const;
 
 /**
- * Determine which target adapter owns a destination link path (used so untargeted
- * adapters are never pruned when `--targets` or `disabledTargets` is active).
+ * Determine which target owns a recorded link destination under the current HOME, so a
+ * scoped run never prunes an excluded target's links.
+ *
+ * Ownership is recognized only for an exact layout path: a target's rules file
+ * (`<root>/<rulesRel>`) or a direct child of its skills directory (`<root>/<skillsRel>/<name>`).
+ * A prefix match is not enough: a record written under an earlier HOME nested inside another
+ * target's root (for example HOME was `~/.cursor`, leaving `~/.cursor/.claude/skills/x`) would
+ * otherwise be attributed to the wrong target. Because no two targets' root directories share a
+ * basename, an exact layout match is unambiguous. Anything else returns null, and scoped runs
+ * keep records they cannot attribute.
  */
 export function resolveLinkTargetId(dstPath: string, homeDir: string): AgentId | null {
-  // Match longest rootRel first (e.g., .gemini/config before .gemini).
-  const ordered = [...LINK_TARGETS].sort((a, b) => b.rootRel.length - a.rootRel.length);
-  for (const target of ordered) {
+  for (const target of LINK_TARGETS) {
     const rootAbs = join(homeDir, target.rootRel);
-    if (dstPath === rootAbs || dstPath.startsWith(`${rootAbs}${sep}`)) {
-      return target.targetId;
+    if (target.rulesRel && dstPath === join(rootAbs, target.rulesRel)) return target.targetId;
+    if (target.skillsRel) {
+      const skillsAbs = join(rootAbs, target.skillsRel);
+      const name = dstPath.startsWith(`${skillsAbs}${sep}`) ? dstPath.slice(skillsAbs.length + 1) : "";
+      if (name.length > 0 && !name.includes(sep)) return target.targetId;
     }
   }
   return null;

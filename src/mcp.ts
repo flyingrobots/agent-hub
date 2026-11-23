@@ -1018,7 +1018,7 @@ function planSingleMcpTarget(
   const configPath = adapter.configPath(homeDir);
   const beforeSnapshot = captureFileSnapshot(configPath);
   if (beforeSnapshot.kind !== "absent" && beforeSnapshot.kind !== "file") {
-    throw new Error(`mcp-sync: expected regular file at ${configPath}`);
+    throw new Error(`mcp-sync: expected regular file at ${configPath}; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`);
   }
   const targetMode = beforeSnapshot.kind === "file" ? beforeSnapshot.mode : adapter.defaultMode;
   const rootKey = adapter.rootKey ?? "mcpServers";
@@ -1039,12 +1039,16 @@ function planSingleMcpTarget(
   if (beforeSnapshot.kind === "file") {
     if (adapter.format === "toml") {
       originalText = readFileSync(configPath, "utf8");
-      const parsed = originalText.trim()
-        ? (Bun.TOML.parse(originalText) as Record<string, unknown>)
-        : {};
+      let parsed: Record<string, unknown> = {};
+      try {
+        if (originalText.trim()) parsed = Bun.TOML.parse(originalText) as Record<string, unknown>;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`mcp-sync: ${configPath}: invalid TOML (${msg}); ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`);
+      }
       if (parsed.mcp_servers !== undefined && !isPlainObject(parsed.mcp_servers)) {
         throw new Error(
-          `mcp-sync: ${configPath}: "mcp_servers" must be a TOML table; refusing to overwrite`,
+          `mcp-sync: ${configPath}: "mcp_servers" must be a TOML table; refusing to overwrite; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`,
         );
       }
       existingMap = isPlainObject(parsed.mcp_servers)
@@ -1059,7 +1063,7 @@ function planSingleMcpTarget(
         throw new Error(`mcp-sync: ${msg}; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`);
       }
       if (!isPlainObject(parsed)) {
-        throw new Error(`mcp-sync: ${configPath} must contain a JSON object`);
+        throw new Error(`mcp-sync: ${configPath} must contain a JSON object; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`);
       }
       // Fail closed on corrupt root map (null, array, primitive) instead of silently clobbering!
       const rawMap = parsed[rootKey];
@@ -1070,7 +1074,7 @@ function planSingleMcpTarget(
             ? "null"
             : typeof rawMap;
         throw new Error(
-          `mcp-sync: ${configPath}: "${rootKey}" must be a JSON object (found ${foundType}); refusing to overwrite`,
+          `mcp-sync: ${configPath}: "${rootKey}" must be a JSON object (found ${foundType}); refusing to overwrite; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`,
         );
       }
       jsonDoc = parsed;
