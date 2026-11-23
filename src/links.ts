@@ -563,7 +563,16 @@ export function planLinkSync(
     recordedByPhysical.set(phys, primary);
     for (const k of keys) if (k !== primary) duplicateKeys.add(k);
   }
+  const scoped = opts.activeTargets !== undefined && opts.activeTargets.size < ALL_AGENTS.length;
   for (const dup of [...duplicateKeys].sort()) {
+    // A scoped run only retires duplicates it can attribute to an active target; the others are
+    // kept untouched (and are skipped by the prune loop below), like any excluded target's record.
+    if (scoped) {
+      const primary = recordedByPhysical.get(physicalPath(dup))!;
+      const owner =
+        resolveLinkTargetId(primary, homeDir, configBase) ?? resolveLinkTargetId(dup, homeDir, configBase);
+      if (owner === null || !opts.activeTargets!.has(owner)) continue;
+    }
     const rec = state.links[dup]!;
     plans.push({
       actionKind: "drop-duplicate-record",

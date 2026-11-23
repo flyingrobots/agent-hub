@@ -453,3 +453,27 @@ test("two ledger records for one physical link (two spellings) keep one; a later
   expect(Object.keys(loadOwnershipState(statePath, hub).state.links).some((k) => k.startsWith(alias))).toBe(false);
   expect(runSync({ ...base, checkOnly: true }).exitCode).toBe(0);
 });
+
+test("a scoped run never retires an excluded target's duplicate records (Baker Street PR #18 C-F-4)", () => {
+  const { home, hub, base } = sandbox({ cursor: true });
+  skill(hub, "keep");
+  expect(runSync(base).exitCode).toBe(0);
+  const alias = join(realpathSync(tmpdir()), `ah-dupscope-${Date.now()}`);
+  Bun.spawnSync(["ln", "-s", home, alias]);
+  tempRoots.push(alias);
+  const { statePath } = getStatePaths(hub, home, base.xdgStateHome);
+  const raw = JSON.parse(readFileSync(statePath, "utf8"));
+  for (const k of Object.keys(raw.links)) if (k.includes("/.claude/")) raw.links[k.replace(home, alias)] = raw.links[k];
+  writeFileSync(statePath, JSON.stringify(raw, null, 2) + "\n");
+  const before = readFileSync(statePath, "utf8");
+  const scoped = { ...base, targets: sel("cursor") };
+  const chk = runSync({ ...scoped, checkOnly: true });
+  expect(out(chk)).not.toContain("drop-duplicate-record");
+  expect(chk.exitCode).toBe(0);
+  expect(runSync(scoped).exitCode).toBe(0);
+  expect(readFileSync(statePath, "utf8")).toBe(before);
+  // A run scoped to the owning target retires them (the owner is read from the primary spelling).
+  const r = runSync({ ...base, targets: sel("claude") });
+  expect(out(r)).toContain("drop-duplicate-record");
+  expect(r.exitCode).toBe(0);
+});
