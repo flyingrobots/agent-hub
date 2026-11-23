@@ -23,6 +23,14 @@ _Avoid_: adapter, destination
 A definition in the hub's `agents/` directory that an agent can delegate work to.
 _Avoid_: agent, agent definition
 
+**Target override**:
+A variation of one MCP server for one target, written in the hub and so the same on every machine.
+_Avoid_: override, agent override
+
+**Machine override**:
+A variation of one MCP server for one machine, kept outside the hub on that machine.
+_Avoid_: override, local override, host override
+
 ### How configuration moves
 
 **Sync**:
