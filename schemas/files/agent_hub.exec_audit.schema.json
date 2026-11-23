@@ -78,6 +78,10 @@
     },
     "reason": {
       "type": "string"
+    },
+    "program": {
+      "type": "string",
+      "description": "The real path of the program exec checked against the grant (absent when argv[0] did not resolve)."
     }
   }
 }

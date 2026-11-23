@@ -338,7 +338,7 @@ export function compileAgentEntry(
 export type PlaintextSecretWarning = { server: string; field: string; reason: string; source: string };
 
 /** A server's use of a vault key, as `secret grant` records it: the argv exec will be given. */
-export type VaultInvocation = { server: string; agent: AgentId; env: string; key: string; argv: string[] };
+export type VaultInvocation = { server: string; agent: AgentId; env: string; key: string; argv: string[]; keep: string[] };
 
 export function loadCanonicalServers(
   canonicalHubPath: string,
@@ -444,8 +444,10 @@ export function loadCanonicalServers(
           const uses = vaultUses(resolved);
           if (uses.length > 0) {
             const argv = [resolved.command ?? "", ...(resolved.args ?? [])];
+            const vaultEnv = new Set(uses.map((u) => u.env));
+            const keep = Object.keys(resolved.env ?? {}).filter((k) => !vaultEnv.has(k)).sort();
             resolved = compileVaultSpec(resolved, vault?.execPath ?? defaultExecPath(homedir()));
-            for (const u of uses) vault?.invocations?.push({ server: name, agent, env: u.env, key: u.key, argv });
+            for (const u of uses) vault?.invocations?.push({ server: name, agent, env: u.env, key: u.key, argv, keep });
           } else {
             compileVaultSpec(resolved, "");
           }

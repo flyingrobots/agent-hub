@@ -12,8 +12,8 @@
  * edit the grants file; the vault keeps secrets out of config files on disk, nothing more.
  */
 import { spawnSync } from "node:child_process";
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { delimiter, isAbsolute, join } from "node:path";
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
+import { isAbsolute, join } from "node:path";
 import type { McpServerSpec } from "./types.ts";
 
 export const VAULT_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/;
@@ -68,6 +68,14 @@ export function compileVaultSpec(spec: McpServerSpec, execPath: string): McpServ
   (spec.args ?? []).forEach((a, i) => containsVaultRef(a) && elsewhere.push(`args[${i}]`));
   if (typeof spec.url === "string" && containsVaultRef(spec.url)) elsewhere.push("url");
   for (const [h, v] of Object.entries(spec.headers ?? {})) if (containsVaultRef(v)) elsewhere.push(`headers.${h}`);
+  // extra is passed to the agent as written, so a reference there would reach its config.
+  const walk = (v: unknown, path: string): void => {
+    if (typeof v === "string") {
+      if (containsVaultRef(v)) elsewhere.push(path);
+    } else if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${path}[${i}]`));
+    else if (v && typeof v === "object") for (const [k, x] of Object.entries(v)) walk(x, `${path}.${k}`);
+  };
+  if (spec.extra !== undefined) walk(spec.extra, "extra");
   if (elsewhere.length > 0) {
     throw new VaultError(`${elsewhere.join(", ")}: \${vault:KEY} is allowed only as the whole value of a stdio server's env entry`);
   }
@@ -75,6 +83,9 @@ export function compileVaultSpec(spec: McpServerSpec, execPath: string): McpServ
   if (uses.length === 0) return spec;
   if (typeof spec.command !== "string" || spec.command.length === 0) {
     throw new VaultError("${vault:KEY} needs a stdio server (a command): a remote server's agent connects directly");
+  }
+  if (!isAbsolute(spec.command)) {
+    throw new VaultError("a server with ${vault:KEY} needs an absolute command path: a grant binds the program itself, which a PATH lookup could change");
   }
   const argv = [spec.command, ...(spec.args ?? [])];
   if (argv.some((a) => a.includes("${") || a.includes("{env:"))) {
@@ -98,7 +109,12 @@ export function defaultExecPath(homeDir: string, env: NodeJS.ProcessEnv = proces
 
 // ---------------------------------------------------------------- grants and audit
 
-export type Grant = { key: string; env: string; argv: string[]; server?: string };
+/**
+ * A grant binds the key and variable to everything that decides what runs with the secret: the
+ * exact argv, the real path of the program (argv[0] resolved through symlinks at grant time), and
+ * the exact set of --keep variables passed through from the agent.
+ */
+export type Grant = { key: string; env: string; argv: string[]; program: string; keep: string[]; server?: string };
 
 export function vaultStateDir(homeDir: string, xdgStateHome?: string): string {
   const base = xdgStateHome && isAbsolute(xdgStateHome) ? xdgStateHome : join(homeDir, ".local", "state");
@@ -121,9 +137,11 @@ export function loadGrants(stateDir: string): Grant[] {
     if (
       typeof x?.key !== "string" || !VAULT_KEY.test(x.key) ||
       typeof x.env !== "string" || !ENV_NAME.test(x.env) ||
-      !Array.isArray(x.argv) || x.argv.length === 0 || !x.argv.every((a) => typeof a === "string")
+      !Array.isArray(x.argv) || x.argv.length === 0 || !x.argv.every((a) => typeof a === "string") ||
+      typeof x.program !== "string" || !isAbsolute(x.program) ||
+      !Array.isArray(x.keep) || !x.keep.every((k) => typeof k === "string" && ENV_NAME.test(k))
     ) {
-      throw new VaultError(`${p}: grants[${i}] is not a {key, env, argv} grant`);
+      throw new VaultError(`${p}: grants[${i}] is not a {key, env, argv, program, keep} grant`);
     }
     return x;
   });
@@ -139,15 +157,35 @@ export function saveGrants(stateDir: string, grants: Grant[]): void {
 
 const sameArgv = (a: readonly string[], b: readonly string[]) => a.length === b.length && a.every((x, i) => x === b[i]);
 
-export function findGrant(grants: readonly Grant[], use: VaultUse, argv: readonly string[]): Grant | undefined {
-  return grants.find((g) => g.key === use.key && g.env === use.env && sameArgv(g.argv, argv));
+const sameSet = (a: readonly string[], b: readonly string[]) => sameArgv([...a].sort(), [...b].sort());
+
+export function findGrant(
+  grants: readonly Grant[],
+  use: VaultUse,
+  argv: readonly string[],
+  program: string,
+  keep: readonly string[],
+): Grant | undefined {
+  return grants.find(
+    (g) => g.key === use.key && g.env === use.env && sameArgv(g.argv, argv) && g.program === program && sameSet(g.keep, keep),
+  );
+}
+
+/** The real path of a program, or null when it does not exist. */
+export function realProgram(cmd: string): string | null {
+  if (!isAbsolute(cmd)) return null;
+  try {
+    return realpathSync(cmd);
+  } catch {
+    return null;
+  }
 }
 
 export function addGrants(existing: Grant[], add: Grant[]): { grants: Grant[]; added: Grant[] } {
   const grants = [...existing];
   const added: Grant[] = [];
   for (const g of add) {
-    if (findGrant(grants, g, g.argv)) continue;
+    if (findGrant(grants, g, g.argv, g.program, g.keep)) continue;
     grants.push(g);
     added.push(g);
   }
@@ -245,17 +283,6 @@ export function parseExecArgs(args: readonly string[]): ExecRequest {
   return { keep, vault, argv };
 }
 
-/** Resolve the program the way execvp would, using the scrubbed PATH. */
-export function resolveProgram(cmd: string, path: string | undefined): string {
-  if (cmd.includes("/")) return cmd;
-  for (const dir of (path ?? "/usr/bin:/bin").split(delimiter)) {
-    if (!dir) continue;
-    const p = join(dir, cmd);
-    if (existsSync(p)) return p;
-  }
-  throw new VaultError(`command not found on PATH: ${cmd}`);
-}
-
 /** Replace this process. Returns only on failure. */
 export function execve(path: string, argv: readonly string[], envp: Record<string, string>): number {
   // Loaded lazily: only exec needs FFI.
@@ -279,4 +306,24 @@ export function execve(path: string, argv: readonly string[], envp: Record<strin
   const rc = lib.symbols.execve(ptr(cstr(path)), ptr(argvArr), ptr(envArr));
   void keepAlive;
   return rc;
+}
+
+/** Serialize read-modify-write of grants.json (flock; waits up to ~3 s for another writer). */
+export function withGrantsLock<T>(stateDir: string, fn: () => T): T {
+  const { acquireApplyLock, releaseApplyLock } = require("./lock.ts") as typeof import("./lock.ts");
+  let handle;
+  for (let i = 0; ; i++) {
+    try {
+      handle = acquireApplyLock(join(stateDir, "grants.lock"), stateDir);
+      break;
+    } catch (err) {
+      if (i >= 60) throw new VaultError(`grants.json is locked by another sync-agents secret run (${(err as Error).message})`);
+      Bun.sleepSync(50);
+    }
+  }
+  try {
+    return fn();
+  } finally {
+    releaseApplyLock(handle);
+  }
 }
