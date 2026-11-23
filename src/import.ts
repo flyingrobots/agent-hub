@@ -7,6 +7,7 @@
 import { applyExtra, MCP_ADAPTER_BY_ID, managedKeys } from "./adapters.ts";
 import { ENV_NAME, detectPlaintextSecrets, rewriteEnvRefs, specFields } from "./env-refs.ts";
 import { mergeSpec } from "./mcp.ts";
+import { renderCodexSection } from "./toml-edit.ts";
 import { isPlainObject, stableJson } from "./paths.ts";
 import { ALL_AGENTS, type AgentId, type McpServerSpec, type McpTransport } from "./types.ts";
 
@@ -58,7 +59,7 @@ const strRecord = (v: unknown, where: string): Record<string, string> => {
 function fromNative(agent: AgentId, value: string, where: string): string {
   if (agent === "claude") {
     const out = value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g, (_m, name: string) => {
-      if (!ENV_NAME.test(name)) throw new ImportError(`${where}: \${${name}} is not a portable variable name`);
+      if (!ENV_NAME.test(name)) throw new ImportError(`${where}: a \${...} reference whose name is not a portable variable name`);
       return `\${env:${name}}`;
     });
     if (/\$\{(?!env:)/.test(out)) throw new ImportError(`${where}: Claude-specific \${...} syntax cannot be imported`);
@@ -68,7 +69,7 @@ function fromNative(agent: AgentId, value: string, where: string): string {
   if (agent === "opencode") {
     if (value.includes("${")) throw new ImportError(`${where}: literal \${...} text in an OpenCode entry cannot be imported`);
     return value.replace(/\{env:([^}]*)\}/g, (_m, name: string) => {
-      if (!ENV_NAME.test(name)) throw new ImportError(`${where}: {env:${name}} is not a portable variable name`);
+      if (!ENV_NAME.test(name)) throw new ImportError(`${where}: an {env:...} reference whose name is not a portable variable name`);
       return `\${env:${name}}`;
     });
   }
@@ -142,7 +143,7 @@ export function decompileEntry(agent: AgentId, raw: unknown, where = `${agent} e
         const env: Record<string, string> = e.env === undefined ? {} : convAll(strRecord(e.env, `${where}.env`), `${where}.env`);
         if (e.env_vars !== undefined) {
           for (const name of strArray(e.env_vars, `${where}.env_vars`)) {
-            if (!ENV_NAME.test(name)) throw new ImportError(`${where}.env_vars: "${name}" is not a portable variable name`);
+            if (!ENV_NAME.test(name)) throw new ImportError(`${where}.env_vars: an entry is not a portable variable name (it should name a variable, not hold its value)`);
             if (name in env) throw new ImportError(`${where}: ${name} is both in env and env_vars`);
             env[name] = `\${env:${name}}`;
           }
@@ -155,7 +156,7 @@ export function decompileEntry(agent: AgentId, raw: unknown, where = `${agent} e
           e.http_headers === undefined ? {} : convAll(strRecord(e.http_headers, `${where}.http_headers`), `${where}.http_headers`);
         if (e.bearer_token_env_var !== undefined) {
           const name = str(e.bearer_token_env_var, `${where}.bearer_token_env_var`);
-          if (!ENV_NAME.test(name)) throw new ImportError(`${where}.bearer_token_env_var: "${name}" is not a portable variable name`);
+          if (!ENV_NAME.test(name)) throw new ImportError(`${where}.bearer_token_env_var is not a portable variable name (it should name a variable, not hold its value)`);
           if (Object.keys(headers).some((h) => h.toLowerCase() === "authorization")) {
             throw new ImportError(`${where}: both bearer_token_env_var and an Authorization header`);
           }
@@ -163,7 +164,7 @@ export function decompileEntry(agent: AgentId, raw: unknown, where = `${agent} e
         }
         if (e.env_http_headers !== undefined) {
           for (const [h, name] of Object.entries(strRecord(e.env_http_headers, `${where}.env_http_headers`))) {
-            if (!ENV_NAME.test(name)) throw new ImportError(`${where}.env_http_headers.${h}: "${name}" is not a portable variable name`);
+            if (!ENV_NAME.test(name)) throw new ImportError(`${where}.env_http_headers.${h} is not a portable variable name (it should name a variable, not hold its value)`);
             if (h in headers) throw new ImportError(`${where}: header ${h} is set twice`);
             headers[h] = `\${env:${name}}`;
           }
@@ -224,6 +225,14 @@ export function roundTripDiff(agent: AgentId, raw: unknown, d: Decompiled): stri
     compiled = compileWithExtra(agent, d.transport, d.spec, d.extra);
   } catch (err) {
     return [`compile: ${err instanceof Error ? err.message : String(err)}`];
+  }
+  if (agent === "codex") {
+    // An entry the TOML editor cannot write back (nested tables in extra) is not lossless.
+    try {
+      renderCodexSection("server", compiled);
+    } catch (err) {
+      return [`config.toml: cannot be written back (${err instanceof Error ? err.message : String(err)})`];
+    }
   }
   const a = adapter.normalizeComparable(compiled);
   const b = adapter.normalizeComparable(raw);
@@ -418,6 +427,15 @@ export function rewritePlaintextSecrets(
     out.overrides = {};
     for (const [agent, ov] of Object.entries(doc.overrides)) {
       const { extra, ...rest } = ov as Record<string, unknown>;
+      if (extra !== undefined) {
+        const inExtra = detectPlaintextSecrets({ extra } as McpServerSpec).map((w) => w.field);
+        if (inExtra.length > 0) {
+          // extra is passed to the agent verbatim, so a reference there would not be expanded.
+          throw new ImportError(
+            `overrides.${agent}: ${inExtra.join(", ")} hold literals that look like credentials in native fields sync-agents passes through as written; they cannot be rewritten to references. Remove them from the agent's entry, then import again`,
+          );
+        }
+      }
       const fixed = fix(rest, `overrides.${agent}`);
       out.overrides[agent] = extra === undefined ? fixed : { ...fixed, extra };
     }

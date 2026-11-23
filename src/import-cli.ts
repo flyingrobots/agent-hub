@@ -4,7 +4,7 @@
  * contract as a sync (docs/topics/output).
  */
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, readlinkSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
 import { homedir } from "node:os";
 import { LINK_TARGETS, linkTargetRoot, MCP_ADAPTER_BY_ID, xdgConfigBase } from "./adapters.ts";
@@ -128,7 +128,7 @@ function treeDigest(dir: string): string {
       const st = lstatSync(p);
       h.update(`${relative(dir, p)}\0${st.mode & 0o777}\0`);
       if (st.isDirectory()) walk(p);
-      else if (st.isSymbolicLink()) h.update(`link\0`);
+      else if (st.isSymbolicLink()) h.update(`link\0${readlinkSync(p)}\0`);
       else h.update(readFileSync(p));
     }
   };
@@ -178,6 +178,12 @@ export function runImport(opts: ImportOptions): Run {
     const installed = new Set<AgentId>();
     const native = new Map<AgentId, Map<string, unknown>>();
     for (const agent of ALL_AGENTS) {
+      // Agents not being imported from count as installed (for disabling) but are not read, so
+      // a broken config elsewhere cannot block --from.
+      if (!chooseAgents(opts.from).includes(agent)) {
+        if (existsSync(MCP_ADAPTER_BY_ID[agent].rootDir(home, configBase))) installed.add(agent);
+        continue;
+      }
       let m: Map<string, unknown> | null;
       try {
         m = readNativeMcp(agent, home, configBase);
@@ -189,8 +195,17 @@ export function runImport(opts: ImportOptions): Run {
       if (m === null) continue;
       installed.add(agent);
       if (!chooseAgents(opts.from).includes(agent)) continue;
-      // Servers already in the hub are synced, not imported.
-      for (const name of [...m.keys()]) if (existsSync(join(hub, "mcp", name))) m.delete(name);
+      // Servers already in the hub are synced, not imported; a name that is not a valid hub
+      // directory name (path separators, "..") is refused, never used as a path.
+      for (const name of [...m.keys()]) {
+        if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || name.includes("..")) {
+          r.conflict(`${agent} mcp server name is not a valid hub server name; not importing it`, "rename it in the agent's config");
+          refusals++;
+          m.delete(name);
+          continue;
+        }
+        if (existsSync(join(hub, "mcp", name))) m.delete(name);
+      }
       if (m.size > 0) native.set(agent, m);
     }
     const agg = aggregateServers(native, installed);
@@ -209,7 +224,14 @@ export function runImport(opts: ImportOptions): Run {
           }
           continue;
         }
-        const rw = rewritePlaintextSecrets(name, doc);
+        let rw;
+        try {
+          rw = rewritePlaintextSecrets(name, doc);
+        } catch (err) {
+          r.conflict(`mcp server "${name}": ${err instanceof Error ? err.message : String(err)}`);
+          refusals++;
+          continue;
+        }
         doc = rw.doc;
         for (const x of rw.rewritten) {
           rewrittenVars.add(x.variable);
@@ -319,6 +341,14 @@ export function runImport(opts: ImportOptions): Run {
     }
   }
 
+  // Skill sources are checked (unsafe symlinks, bad SKILL.md) before anything is written.
+  if (skillSources.length > 0) {
+    const check = runSync({ hubDir: hub, homeDir: home, xdgConfigHome: opts.xdgConfigHome, xdgStateHome: opts.xdgStateHome, skillSources, skillOnly: true, dryRun: true } as SyncOptions);
+    if (check.exitCode !== 0) {
+      for (const e of check.events) if (e.id === "agent_hub.error" || e.id === "agent_hub.conflict") r.conflict(`a skill cannot be imported: ${e.message}`);
+      refusals++;
+    }
+  }
   if (refusals > 0) {
     r.emit("stderr", "agent_hub.summary", `sync-agents: ${refusals} item(s) cannot be imported; nothing was written.`, { status: "conflicts", conflicts: refusals });
     return { exitCode: 1, events: r.events };
@@ -394,8 +424,11 @@ export function runPull(opts: PullOptions): Run {
       const base = parseSpecSnippet(existing, join(hub, "mcp", name, "mcp.json"));
       const ovIn = isPlainObject(existing.overrides) ? (existing.overrides as Record<string, unknown>)[opts.from] : undefined;
       const current = ovIn === undefined ? base : mergeSpec(base, parseSpecSnippet({ mcp: ovIn }, "overrides", true), "overrides");
-      const { extra: _e, ...currentPortable } = current;
-      if (stableJson(orderedSpec(currentPortable)) === stableJson(orderedSpec(d.spec))) {
+      const { extra: currentExtra, ...currentPortable } = current;
+      if (
+        stableJson(orderedSpec(currentPortable)) === stableJson(orderedSpec(d.spec)) &&
+        stableJson(currentExtra ?? {}) === stableJson(d.extra)
+      ) {
         r.emit("stdout", "agent_hub.summary", `sync-agents: mcp/${name} already matches ${opts.from}; nothing to pull.`, { status: "in_sync", changes: 0 });
         return { exitCode: 0, events: r.events };
       }
@@ -410,7 +443,12 @@ export function runPull(opts: PullOptions): Run {
       if (!opts.rewriteSecrets) {
         return fail(`mcp/${name}: ${secrets.join(", ")} hold literals that look like credentials`, "pass --rewrite-secrets to replace them with ${env:NAME}");
       }
-      const rw = rewritePlaintextSecrets(name, doc);
+      let rw;
+      try {
+        rw = rewritePlaintextSecrets(name, doc);
+      } catch (err) {
+        return fail(`mcp/${name}: ${err instanceof Error ? err.message : String(err)}`);
+      }
       doc = rw.doc;
       for (const x of rw.rewritten) r.emit("stdout", "agent_hub.op", `[${phase}] import-rewrite-secret mcp/${name} ${x.where}.${x.field} -> \${env:${x.variable}}`, {
         phase,
@@ -547,7 +585,9 @@ export function parseSubcommand(cmd: "import" | "pull", argv: string[]): ParsedS
     else if (cmd === "pull" && !a.startsWith("-") && item === undefined) item = a;
     else throw new Error(`unknown ${cmd} option: ${a}`);
   }
-  if (o.apply && argv.includes("--dry-run")) throw new Error("--apply cannot be combined with --dry-run");
+  if (argv.includes("--apply") && (argv.includes("--dry-run") || argv.includes("-n"))) {
+    throw new Error("--apply cannot be combined with --dry-run");
+  }
   if (cmd === "import") return { kind: "import", opts: o as Omit<ImportOptions, "hubDir"> & { hubDir?: string } };
   if (!o.from) throw new Error("pull needs --from <agent>");
   const m = /^(mcp|skill)\/([A-Za-z0-9._-]+)$/.exec(item ?? "");

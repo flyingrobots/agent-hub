@@ -217,3 +217,89 @@ describe("sync-agents pull (flyingrobots/agent-hub#7)", () => {
     expect(existsSync(join(hub, "mcp", "s"))).toBe(false);
   });
 });
+
+describe("import and pull repairs (Baker Street PR #34 Moriarty)", () => {
+  test("a secret in extra is refused even with --rewrite-secrets, and never printed", () => {
+    const { home, hub, env, writeJson } = machine();
+    mkdirSync(join(home, ".config", "opencode"), { recursive: true });
+    const token = "sk-FAKE3333abcdefghijklmnopqrstuvwxyz";
+    writeJson(join(home, ".config", "opencode", "opencode.json"), { mcp: { servers: { oc: { type: "remote", url: "https://o.invalid", oauth: { clientSecret: token } } } } });
+    const r = run(["import", "--dir", hub, "--from", "opencode", "--only", "mcp", "--rewrite-secrets", "--apply"], env);
+    expect(r.exitCode).toBe(1);
+    expect(r.raw).not.toContain(token);
+    expect(existsSync(join(hub, "mcp", "oc"))).toBe(false);
+  });
+
+  test("a token pasted into bearer_token_env_var is refused without being printed", () => {
+    const { home, hub, env } = machine();
+    const token = "sk-ant-FAKE1111abcdefghijklmnop";
+    writeFileSync(join(home, ".codex", "config.toml"), `[mcp_servers.s]\nurl = "https://h.invalid"\nbearer_token_env_var = "${token}"\n`);
+    const r = run(["import", "--dir", hub, "--only", "mcp", "--apply"], env);
+    expect(r.exitCode).toBe(1);
+    expect(r.raw).not.toContain(token);
+  });
+
+  test("Codex extra that config.toml cannot hold (nested tables) is refused at import", () => {
+    const { home, hub, env } = machine();
+    writeFileSync(join(home, ".codex", "config.toml"), `[mcp_servers.nest]\ncommand = "/x"\n\n[mcp_servers.nest.tools.foo]\napprove = true\n`);
+    const r = run(["import", "--dir", hub, "--only", "mcp", "--from", "codex", "--apply"], env);
+    expect(r.exitCode).toBe(1);
+    expect(existsSync(join(hub, "mcp", "nest"))).toBe(false);
+  });
+
+  test("a broken config in another agent does not block --from", () => {
+    const { home, hub, env, writeJson } = machine();
+    writeFileSync(join(home, ".claude.json"), "{ not json");
+    writeJson(join(home, ".cursor", "mcp.json"), { mcpServers: { s: { type: "stdio", command: "/s" } } });
+    expect(run(["import", "--dir", hub, "--only", "mcp", "--from", "cursor", "--apply"], env).exitCode).toBe(0);
+    expect(existsSync(join(hub, "mcp", "s", "mcp.json"))).toBe(true);
+  });
+
+  test("server names that are not valid hub names are refused; nothing is written outside the hub", () => {
+    const { home, hub, env, writeJson } = machine();
+    writeJson(join(home, ".cursor", "mcp.json"), { mcpServers: { "../../escaped": { type: "stdio", command: "/x" }, "a/b": { type: "stdio", command: "/y" } } });
+    const r = run(["import", "--dir", hub, "--only", "mcp", "--from", "cursor", "--apply"], env);
+    expect(r.exitCode).toBe(1);
+    expect(existsSync(join(home, "escaped"))).toBe(false);
+    expect(existsSync(join(hub, "mcp"))).toBe(false);
+  });
+
+  test("pull --as-override sees a difference only in extra", () => {
+    const { home, hub, env, writeJson } = machine();
+    mkdirSync(join(hub, "mcp", "s"), { recursive: true });
+    writeFileSync(join(hub, "mcp", "s", "mcp.json"), JSON.stringify({ mcp: { command: "/x", env: { A: "1" } } }));
+    writeJson(join(home, ".cursor", "mcp.json"), { mcpServers: { s: { type: "stdio", command: "/x", env: { A: "1" }, envFile: "/e" } } });
+    const r = run(["pull", "--from", "cursor", "mcp/s", "--dir", hub, "--as-override", "--apply"], env);
+    expect(r.exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(join(hub, "mcp", "s", "mcp.json"), "utf8")).overrides.cursor.extra).toEqual({ envFile: "/e" });
+    expect(run(["--dir", hub, "--check"], env).exitCode).toBe(0);
+  });
+
+  test("a skill unsafe to install is refused before anything is written; differing symlink targets differ", () => {
+    const { home, hub, env } = machine();
+    writeFileSync(join(home, ".claude", "CLAUDE.md"), "# r\n");
+    for (const [a, target] of [[".claude", "/etc/hosts"], [".codex", "/etc/passwd"]] as const) {
+      mkdirSync(join(home, a, "skills", "s"), { recursive: true });
+      writeFileSync(join(home, a, "skills", "s", "SKILL.md"), "---\nname: s\ndescription: d\n---\n");
+      require("node:fs").symlinkSync(target, join(home, a, "skills", "s", "l"));
+    }
+    const r = run(["import", "--dir", hub, "--apply"], env);
+    expect(r.exitCode).toBe(1);
+    expect(existsSync(join(hub, "AGENTS.md"))).toBe(false);
+    const one = machine();
+    writeFileSync(join(one.home, ".claude", "CLAUDE.md"), "# r\n");
+    mkdirSync(join(one.home, ".claude", "skills", "s"), { recursive: true });
+    writeFileSync(join(one.home, ".claude", "skills", "s", "SKILL.md"), "---\nname: s\ndescription: d\n---\n");
+    require("node:fs").symlinkSync("/etc/hosts", join(one.home, ".claude", "skills", "s", "l"));
+    const r1 = run(["import", "--dir", one.hub, "--apply"], one.env);
+    expect(r1.exitCode).toBe(1);
+    expect(existsSync(join(one.hub, "AGENTS.md"))).toBe(false);
+  });
+
+  test("--apply with --dry-run or -n is refused in either order", () => {
+    const { hub, env } = machine();
+    for (const args of [["--dry-run", "--apply"], ["--apply", "--dry-run"], ["--apply", "-n"], ["-n", "--apply"]]) {
+      expect(run(["import", "--dir", hub, ...args], env).exitCode).toBe(2);
+    }
+  });
+});

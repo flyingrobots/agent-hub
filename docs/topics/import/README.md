@@ -23,7 +23,12 @@ What `import` reads, for each installed agent (its root directory exists):
 - **Skills**: an agent's own skill directories (with a `SKILL.md`, not symlinks) whose name the
   hub does not have; copies with the same name in several agents must be identical.
 
-Options: `--from <agent>` reads one agent only; `--only rules|skills|mcp` imports one kind;
+A server whose name is not a valid hub name (`^[A-Za-z0-9][A-Za-z0-9._-]*$`, no `..`) is
+refused and never used as a path. Skills are checked for unsafe content (such as symlinks out of
+the skill) before anything is written.
+
+Options: `--from <agent>` reads one agent only (others' configs are not read, so a broken one
+elsewhere does not get in the way); `--only rules|skills|mcp` imports one kind;
 `--rewrite-secrets` is described below.
 
 ## How servers are combined
@@ -55,7 +60,11 @@ the hub would spread it further. Pass `--rewrite-secrets` to write each such val
 `${env:NAME}` instead. Only the variable names are printed, never the values. Then set those
 variables where your agents run, and run `sync-agents --force` to replace the literal values in
 the agents' own configs with the references (the entries differ from the hub now, so a plain
-sync stops on them).
+sync stops on them). A credential in an agent's native fields that sync-agents passes through as
+written (`overrides.<agent>.extra`, such as OpenCode's `oauth.clientSecret`) cannot become a
+reference, so it is refused even with `--rewrite-secrets`: remove it from the agent's entry
+first. A Codex entry `config.toml` could not hold again (nested tables in its native fields) is
+refused as not lossless.
 
 ## Pull one item
 
