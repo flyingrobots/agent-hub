@@ -589,6 +589,33 @@ export function verifyTomlPreservation(
   }
 }
 
+/**
+ * Offset just past the last line in [start, end) that is neither blank nor a comment, so the
+ * trailing blank and comment lines of a table's span are left in place.
+ */
+function contentEnd(src: string, start: number, end: number): number {
+  let lineEnd = end;
+  while (lineEnd > start) {
+    let lineStart = lineEnd;
+    // Step back over the terminator of the previous line, then to that line's start.
+    if (src[lineStart - 1] === "\n") lineStart--;
+    if (src[lineStart - 1] === "\r") lineStart--;
+    while (lineStart > start && src[lineStart - 1] !== "\n") lineStart--;
+    const text = src.slice(lineStart, lineEnd).trim();
+    if (text.length > 0 && !text.startsWith("#")) return lineEnd;
+    if (lineStart === lineEnd) break;
+    lineEnd = lineStart;
+  }
+  return end;
+}
+
+/** contentEnd, except a tail that could hold the end of a multiline string is never split off. */
+function safeContentEnd(src: string, start: number, end: number): number {
+  const cut = contentEnd(src, start, end);
+  const tail = src.slice(cut, end);
+  return tail.includes('"""') || tail.includes("'''") ? end : cut;
+}
+
 export function rewriteCodexToml(
   original: string,
   updates: Map<string, Record<string, unknown> | null>,
@@ -622,34 +649,43 @@ export function rewriteCodexToml(
     }
   }
 
-  const spansToRemove: Array<{ start: number; end: number }> = [];
+  // Each managed section's span runs from its header to the next header. Trailing blank and
+  // comment lines inside that span belong, to a reader, to whatever follows (usually the next
+  // table's leading comment), so a span is cut only up to its last content line. An updated
+  // section is rendered where the first of its sections stood; only new servers are appended.
+  const spans: Array<{ start: number; end: number; name: string }> = [];
   for (const sec of scan.sections) {
     if (
       sec.headerPath[0] === "mcp_servers" &&
       sec.headerPath.length >= 2 &&
       updates.has(sec.headerPath[1]!)
     ) {
-      spansToRemove.push({ start: sec.startOffset, end: sec.endOffset });
+      spans.push({
+        start: sec.startOffset,
+        end: safeContentEnd(original, sec.startOffset, sec.endOffset),
+        name: sec.headerPath[1]!,
+      });
     }
   }
-  spansToRemove.sort((a, b) => a.start - b.start);
+  spans.sort((a, b) => a.start - b.start);
 
-  let remaining = "";
+  let out = "";
   let cursor = 0;
-  for (const span of spansToRemove) {
-    if (span.start > cursor) {
-      remaining += original.slice(cursor, span.start);
+  const placed = new Set<string>();
+  for (const span of spans) {
+    if (span.start > cursor) out += original.slice(cursor, span.start);
+    const entry = updates.get(span.name);
+    if (entry && !placed.has(span.name)) {
+      out += renderCodexSection(span.name, entry, eol) + eol;
+      placed.add(span.name);
     }
     cursor = Math.max(cursor, span.end);
   }
-  if (cursor < original.length) {
-    remaining += original.slice(cursor);
-  }
+  if (cursor < original.length) out += original.slice(cursor);
 
-  remaining = remaining.replace(/(?:\r?\n[ \t]*)+$/, "");
-
+  const remaining = out.replace(/(?:\r?\n[ \t]*)+$/, "");
   const additions = [...updates.entries()]
-    .filter(([, v]) => v !== null)
+    .filter(([name, v]) => v !== null && !placed.has(name))
     .sort(([a], [b]) => a.localeCompare(b));
 
   const chunks: string[] = [];

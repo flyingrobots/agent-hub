@@ -160,3 +160,58 @@ describe("toml-edit: lexical scanner, refusal, and semantic preservation", () =>
     ).toThrow(TomlPreservationError);
   });
 });
+
+describe("toml-edit: comments and placement around managed sections (flyingrobots/agent-hub#15)", () => {
+  const src = [
+    'model = "gpt-5"',
+    "",
+    "[mcp_servers.x]",
+    'command = "/bin/x"',
+    "",
+    "# my note about profiles",
+    "[profiles.fast]",
+    'model = "o3"',
+    "",
+  ].join("\n");
+
+  test("updating a managed section keeps the comment after it and keeps its position", () => {
+    const out = rewriteCodexToml(src, new Map([["x", { command: "/bin/x2" }]]));
+    expect(out).toContain("# my note about profiles\n[profiles.fast]");
+    expect(out.indexOf("[mcp_servers.x]")).toBeLessThan(out.indexOf("[profiles.fast]"));
+    expect(out).toContain('command = "/bin/x2"');
+  });
+
+  test("pruning a managed section keeps the comment after it", () => {
+    const out = rewriteCodexToml(src, new Map([["x", null]]));
+    expect(out).not.toContain("[mcp_servers.x]");
+    expect(out).toContain("# my note about profiles\n[profiles.fast]");
+  });
+
+  test("a trailing comment at end of file after a managed section survives", () => {
+    const tail = '[mcp_servers.x]\ncommand = "/bin/x"\n\n# end-of-file note\n';
+    const out = rewriteCodexToml(tail, new Map([["x", { command: "/bin/y" }]]));
+    expect(out).toContain("# end-of-file note");
+    expect(out).toContain('command = "/bin/y"');
+  });
+
+  test("CRLF documents keep CRLF and the following comment", () => {
+    const crlf = src.replace(/\n/g, "\r\n");
+    const out = rewriteCodexToml(crlf, new Map([["x", { command: "/bin/x2" }]]));
+    expect(out).toContain("# my note about profiles\r\n[profiles.fast]");
+    expect(out.replace(/\r\n/g, "")).not.toContain("\n");
+  });
+
+  test("a new server is appended after existing content", () => {
+    const out = rewriteCodexToml(src, new Map([["z", { command: "/bin/z" }]]));
+    expect(out.indexOf("[mcp_servers.z]")).toBeGreaterThan(out.indexOf("[profiles.fast]"));
+    expect(out).toContain("# my note about profiles");
+  });
+
+  test("a multiline string whose last line starts with # is never split from its section", () => {
+    const ml = '[mcp_servers.x]\ncommand = "/bin/x"\nargs = ["""\n# not a comment"""]\n\n[profiles.fast]\nmodel = "o3"\n';
+    const out = rewriteCodexToml(ml, new Map([["x", { command: "/bin/y" }]]));
+    expect(() => Bun.TOML.parse(out)).not.toThrow();
+    expect(out).not.toContain("# not a comment");
+    expect(out).toContain("[profiles.fast]");
+  });
+});
