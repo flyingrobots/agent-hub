@@ -302,7 +302,10 @@ export function compileAgentEntry(
   return MCP_ADAPTER_BY_ID[agent].compile(transport, spec, serverName, sourceLabel);
 }
 
-export function loadCanonicalServers(canonicalHubPath: string): CompiledServerMap {
+export function loadCanonicalServers(
+  canonicalHubPath: string,
+  activeTargets?: ReadonlySet<AgentId>,
+): CompiledServerMap {
   const result: CompiledServerMap = new Map();
   const mcpRoot = join(canonicalHubPath, "mcp");
   if (!existsSync(mcpRoot)) return result;
@@ -351,6 +354,13 @@ export function loadCanonicalServers(canonicalHubPath: string): CompiledServerMa
     const compiled = {} as Record<AgentId, Record<string, unknown> | null>;
 
     for (const agent of ALL_AGENTS) {
+      // Inactive targets are never planned, so skip compiling for them: an adapter that is
+      // excluded by --targets/disabledTargets must not reject a transport it does not support.
+      // The null placeholder is never read, because planMcpSync skips inactive adapters.
+      if (activeTargets && !activeTargets.has(agent)) {
+        compiled[agent] = null;
+        continue;
+      }
       let resolved: McpServerSpec = { ...baseSpec };
 
       if (rawDoc.overrides && rawDoc.overrides[agent] !== undefined) {
@@ -1004,9 +1014,10 @@ function planSingleMcpTarget(
 
   // Universal JSONC sibling guard across all JSON adapters: refuse to silently create
   // a competing .json file when a .jsonc file already exists (e.g. opencode.jsonc).
-  if (adapter.format === "json" && beforeSnapshot.kind === "absent" && existsSync(`${configPath}c`)) {
+  // Checked whether or not the .json exists: with both present, the tool's effective config is ambiguous.
+  if (adapter.format === "json" && existsSync(`${configPath}c`)) {
     throw new Error(
-      `mcp-sync: ${configPath}c exists: JSONC files with comments are unsupported until a comment-preserving editor is added; refusing to create a separate ${configPath}`,
+      `mcp-sync: ${configPath}c exists: JSONC files with comments are unsupported until a comment-preserving editor is added; refusing to ${beforeSnapshot.kind === "absent" ? "create a separate" : "modify"} ${configPath}`,
     );
   }
 
@@ -1138,7 +1149,7 @@ export function planMcpSync(
     disownLegacy: Array<{ agent: AgentId; name: string }>;
   },
 ): { targets: PlannedMcpTarget[]; globalOps: PlannedOp[] } {
-  const servers = loadCanonicalServers(canonicalHubPath);
+  const servers = loadCanonicalServers(canonicalHubPath, opts.activeTargets);
   const now = new Date().toISOString();
   const { disownByAgent, globalOps } = validateDisownRequests(opts.disownLegacy, legacyV1, servers);
 

@@ -27,6 +27,7 @@ import {
   saveOwnershipState,
   writeJournal,
 } from "./state.ts";
+import { ALL_AGENTS } from "./types.ts";
 import type {
   AgentId,
   ApplyHooks,
@@ -547,12 +548,13 @@ export function planLinkSync(
   }
 
   // Prune ONLY verified v2 state.links records for ACTIVE targets.
-  // Untargeted adapters are never pruned!
+  // Untargeted adapters are never pruned. A record whose owner cannot be resolved under the
+  // current HOME is kept too: a restricted run cannot prove it belongs to an active target.
   for (const dst of Object.keys(state.links).sort()) {
     if (desired.has(dst)) continue;
-    if (opts.activeTargets) {
+    if (opts.activeTargets && opts.activeTargets.size < ALL_AGENTS.length) {
       const ownerTarget = resolveLinkTargetId(dst, homeDir);
-      if (ownerTarget !== null && !opts.activeTargets.has(ownerTarget)) continue;
+      if (ownerTarget === null || !opts.activeTargets.has(ownerTarget)) continue;
     }
     plans.push(planPruneLinkOp(dst, state.links[dst]!));
   }

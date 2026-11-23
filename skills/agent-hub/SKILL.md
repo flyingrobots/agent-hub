@@ -141,7 +141,7 @@ Edit `<hub>/AGENTS.md` directly. Run `sync-agents --check` to confirm all manage
 | --- | --- |
 | `sync-agents` | Recover any pending journal (Phase 0), preflight-plan (Phase 1), and apply (Phase 2) |
 | `sync-agents --dir <path>` | Target a different canonical hub directory (normalized to real absolute path) |
-| `sync-agents --targets <csv>` | Restrict sync/check to specific adapter(s) (`antigravity`, `claude`, `codex`, `cursor`, `opencode`); untargeted adapters are never pruned |
+| `sync-agents --targets <csv>` | Restrict sync/check to specific adapter(s) (`antigravity`, `claude`, `codex`, `cursor`, `opencode`); untargeted adapters are never pruned. An explicit `--targets` list replaces `disabledTargets` for that run |
 | `sync-agents --explain` | Show observed state, intended state, ownership basis, reason, and next step (read-only) |
 | `sync-agents --dry-run` (`-n`) | Show `[plan]` actions without modifying final destinations, state, journals, or locks |
 | `sync-agents --check` | Exit `0` iff targets, ownership ledger, and recovery state all require zero work |

@@ -16,7 +16,7 @@ Keep your personal `~/.agents/` directory in its own private git repo while inst
 | **Cursor** | `~/.cursor/AGENTS.md` *(unverified / experimental)* | `~/.cursor/skills/<name>` | `~/.cursor/mcp.json` (`mcpServers`) | Supports `stdio`, `http`, `sse`. Global Cursor rules are settings-configured; `~/.cursor/AGENTS.md` effect is unverified |
 | **OpenCode** | `~/.config/opencode/AGENTS.md` | `~/.config/opencode/skills/<name>` | `~/.config/opencode/opencode.json` (`mcp`) | Supports `stdio` (`type: "local"`), `http`/`sse` (`type: "remote"`). Strict JSON only — `.jsonc` files with comments are refused until a comment-preserving editor is added |
 
-> **Strict JSON / JSONC notice:** All JSON MCP adapters (`antigravity`, `claude`, `cursor`, `opencode`) parse target configs strictly via `JSON.parse` and refuse to create a competing `.json` file if a `.jsonc` sibling exists (e.g., `opencode.jsonc`). Commented JSONC files are unsupported until a comment-preserving editor is added.
+> **Strict JSON / JSONC notice:** All JSON MCP adapters (`antigravity`, `claude`, `cursor`, `opencode`) parse target configs strictly via `JSON.parse` and refuse to touch a target whenever a `.jsonc` sibling exists (e.g., `opencode.jsonc`), whether or not the `.json` file also exists. Commented JSONC files are unsupported until a comment-preserving editor is added.
 
 > **Important:** Structural synchronization verifies filesystem links, serialized JSON/TOML, and ownership state — it does not prove that a downstream agent application loaded and honored the configuration at runtime.
 
@@ -126,8 +126,10 @@ sync-agents
 # Restrict sync/check to specific target(s) (untargeted adapters are never pruned)
 sync-agents --targets claude,codex
 
-# Opt out of specific targets permanently in ~/.config/agent-hub/config.json:
+# Opt out of specific targets by default in ~/.config/agent-hub/config.json:
 # { "agentsDir": "~/.agents", "disabledTargets": ["cursor", "opencode"] }
+# Precedence: an explicit --targets list replaces disabledTargets for that run, so
+# `--targets cursor` acts on Cursor even when "cursor" is listed in disabledTargets.
 
 # Inspect observed state, intended state, ownership basis, and reasons (read-only)
 sync-agents --explain

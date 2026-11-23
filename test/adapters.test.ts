@@ -300,3 +300,91 @@ describe("Phase 1: Cursor & OpenCode adapters, --targets/disabledTargets, and un
     expect(readFileSync(paths.statePath, "utf8")).toBe(legacy3AgentRaw);
   });
 });
+
+describe("Phase 1 review fixes (CodeRabbit PR #2)", () => {
+  function writeSseServer(hub: string) {
+    mkdirSync(join(hub, "mcp", "sse-only"), { recursive: true });
+    writeFileSync(
+      join(hub, "mcp", "sse-only", "mcp.json"),
+      JSON.stringify({ mcp: { transport: "sse", url: "https://example.invalid/sse" } }),
+    );
+  }
+
+  test("SSE server without per-agent overrides syncs when SSE-incapable adapters are excluded by --targets or disabledTargets", () => {
+    const { home, hub, env } = makeSandbox();
+    writeSseServer(hub);
+    const cursorPath = join(home, ".cursor", "mcp.json");
+
+    const rTargets = runCmd([SYNC_BIN, "--targets", "cursor"], env);
+    expect(rTargets.stderr).toBe("");
+    expect(rTargets.exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(cursorPath, "utf8")).mcpServers["sse-only"].url).toBe(
+      "https://example.invalid/sse",
+    );
+
+    mkdirSync(join(home, ".config", "agent-hub"), { recursive: true });
+    writeFileSync(
+      join(home, ".config", "agent-hub", "config.json"),
+      JSON.stringify({ disabledTargets: ["codex", "antigravity"] }),
+    );
+    const rDisabled = runCmd([SYNC_BIN], env);
+    expect(rDisabled.stderr).toBe("");
+    expect(rDisabled.exitCode).toBe(0);
+    expect(runCmd([SYNC_BIN, "--check"], env).exitCode).toBe(0);
+
+    // An active SSE-incapable adapter still rejects the transport.
+    const rCodex = runCmd([SYNC_BIN, "--targets", "codex"], env);
+    expect(rCodex.exitCode).toBe(1);
+    expect(rCodex.stderr).toContain("sse");
+  });
+
+  test("JSONC guard fails closed when both <name>.json and <name>.jsonc exist, leaving the .json untouched", () => {
+    const { home, hub, env } = makeSandbox();
+    mkdirSync(join(hub, "mcp", "remote-srv"), { recursive: true });
+    writeFileSync(
+      join(hub, "mcp", "remote-srv", "mcp.json"),
+      JSON.stringify({ mcp: { transport: "http", url: "https://api.example.invalid/mcp" } }),
+    );
+    const cases: Array<[string, string]> = [
+      ["opencode", join(home, ".config", "opencode", "opencode.json")],
+      ["cursor", join(home, ".cursor", "mcp.json")],
+      ["claude", join(home, ".claude.json")],
+      ["antigravity", join(home, ".gemini", "config", "mcp_config.json")],
+    ];
+    for (const [target, jsonPath] of cases) {
+      const original = JSON.stringify({ keep: true }, null, 2) + "\n";
+      writeFileSync(jsonPath, original);
+      writeFileSync(`${jsonPath}c`, "// comment\n{}\n");
+      const r = runCmd([SYNC_BIN, "--targets", target], env);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain("JSONC");
+      expect(readFileSync(jsonPath, "utf8")).toBe(original);
+      rmSync(`${jsonPath}c`);
+    }
+  });
+
+  test("restricted --targets sync never prunes link records whose owning target cannot be resolved", () => {
+    const { home, hub, env } = makeSandbox();
+    mkdirSync(join(hub, "skills", "demo"), { recursive: true });
+    writeFileSync(join(hub, "skills", "demo", "SKILL.md"), "---\nname: demo\ndescription: d\n---\n");
+    mkdirSync(join(home, ".config", "agent-hub"), { recursive: true });
+    writeFileSync(
+      join(home, ".config", "agent-hub", "config.json"),
+      JSON.stringify({ agentsDir: hub }),
+    );
+    expect(runCmd([SYNC_BIN], env).exitCode).toBe(0);
+    const cursorLink = join(home, ".cursor", "skills", "demo");
+    expect(lstatSync(cursorLink).isSymbolicLink()).toBe(true);
+
+    // Same hub + same state/config dirs, but a different HOME: old destinations no longer
+    // resolve to any target root under the new HOME.
+    const otherHome = realpathSync(mkdtempSync(join(tmpdir(), "agent-hub-p1-other-")));
+    tempRoots.push(otherHome);
+    mkdirSync(join(otherHome, ".claude", "skills"), { recursive: true });
+    const r = runCmd([SYNC_BIN, "--targets", "claude"], { ...env, HOME: otherHome });
+    expect(r.exitCode).toBe(0);
+    expect(lstatSync(cursorLink).isSymbolicLink()).toBe(true);
+    const { statePath } = getStatePaths(hub, home, env.XDG_STATE_HOME);
+    expect(loadOwnershipState(statePath, hub).state.links[cursorLink]).toBeDefined();
+  });
+});
