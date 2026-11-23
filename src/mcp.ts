@@ -13,6 +13,7 @@ import {
   captureFileSnapshot,
   isPlainObject,
   parseJsonFile,
+  parseStrictJsonTargetFile,
   predictNewEntryOwner,
   sha256Hex,
   snapshotsEqual,
@@ -79,7 +80,7 @@ type TargetPlanCtx = {
   ledgerMutation: boolean;
   basisUsed: OwnershipBasis | "managed";
   now: string;
-  opts: { adopt: boolean; force: boolean };
+  opts: { adopt: boolean; force: boolean; configPath: string };
 };
 
 function detectFamily(spec: McpServerSpec): TransportFamily {
@@ -301,7 +302,10 @@ export function compileAgentEntry(
   return MCP_ADAPTER_BY_ID[agent].compile(transport, spec, serverName, sourceLabel);
 }
 
-export function loadCanonicalServers(canonicalHubPath: string): CompiledServerMap {
+export function loadCanonicalServers(
+  canonicalHubPath: string,
+  activeTargets?: ReadonlySet<AgentId>,
+): CompiledServerMap {
   const result: CompiledServerMap = new Map();
   const mcpRoot = join(canonicalHubPath, "mcp");
   if (!existsSync(mcpRoot)) return result;
@@ -350,6 +354,13 @@ export function loadCanonicalServers(canonicalHubPath: string): CompiledServerMa
     const compiled = {} as Record<AgentId, Record<string, unknown> | null>;
 
     for (const agent of ALL_AGENTS) {
+      // Inactive targets are never planned, so skip compiling for them: an adapter that is
+      // excluded by --targets/disabledTargets must not reject a transport it does not support.
+      // The null placeholder is never read, because planMcpSync skips inactive adapters.
+      if (activeTargets && !activeTargets.has(agent)) {
+        compiled[agent] = null;
+        continue;
+      }
       let resolved: McpServerSpec = { ...baseSpec };
 
       if (rawDoc.overrides && rawDoc.overrides[agent] !== undefined) {
@@ -382,11 +393,8 @@ function validateDisownRequests(
   servers: CompiledServerMap,
 ): { disownByAgent: Record<AgentId, Set<string>>; globalOps: PlannedOp[] } {
   const globalOps: PlannedOp[] = [];
-  const disownByAgent: Record<AgentId, Set<string>> = {
-    antigravity: new Set(),
-    claude: new Set(),
-    codex: new Set(),
-  };
+  const disownByAgent = {} as Record<AgentId, Set<string>>;
+  for (const agent of ALL_AGENTS) disownByAgent[agent] = new Set();
 
   for (const req of disownLegacy) {
     const inLegacy = legacyV1?.managed[req.agent].has(req.name) ?? false;
@@ -983,6 +991,17 @@ function planRemovedLegacyOp(
   }
 }
 
+/**
+ * Remedy appended to every refusal or conflict that is specific to one target. Planning
+ * covers all active targets before anything is applied, so one target's refusal stops the
+ * whole run; excluding that target is how an operator syncs the rest.
+ */
+export function targetOptOutHint(agent: AgentId, configPath: string): string {
+  return `to sync everything else and leave ${agent}'s MCP config alone, add "disabledTargets": ["${agent}:mcp"] to ${configPath}, or pass --targets naming what to sync (${agent}:links keeps its rules and skill links)`;
+}
+
+const NOT_APPLIED = "no Phase 2 target or ledger changes were applied in this run";
+
 function planSingleMcpTarget(
   adapter: McpAdapterDef,
   homeDir: string,
@@ -991,7 +1010,7 @@ function planSingleMcpTarget(
   legacyV1: LegacyManifestV1 | null,
   disownSet: Set<string>,
   now: string,
-  opts: { adopt: boolean; force: boolean },
+  opts: { adopt: boolean; force: boolean; configPath: string },
 ): PlannedMcpTarget | null {
   const rootDir = adapter.rootDir(homeDir);
   if (!existsSync(rootDir) || !statSync(rootDir).isDirectory()) return null;
@@ -999,9 +1018,19 @@ function planSingleMcpTarget(
   const configPath = adapter.configPath(homeDir);
   const beforeSnapshot = captureFileSnapshot(configPath);
   if (beforeSnapshot.kind !== "absent" && beforeSnapshot.kind !== "file") {
-    throw new Error(`mcp-sync: expected regular file at ${configPath}`);
+    throw new Error(`mcp-sync: expected regular file at ${configPath}; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`);
   }
   const targetMode = beforeSnapshot.kind === "file" ? beforeSnapshot.mode : adapter.defaultMode;
+  const rootKey = adapter.rootKey ?? "mcpServers";
+
+  // Universal JSONC sibling guard across all JSON adapters: refuse to silently create
+  // a competing .json file when a .jsonc file already exists (e.g. opencode.jsonc).
+  // Checked whether or not the .json exists: with both present, the tool's effective config is ambiguous.
+  if (adapter.format === "json" && existsSync(`${configPath}c`)) {
+    throw new Error(
+      `mcp-sync: ${configPath}c exists: JSONC files with comments are unsupported until a comment-preserving editor is added; refusing to ${beforeSnapshot.kind === "absent" ? "create a separate" : "modify"} ${configPath}; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`,
+    );
+  }
 
   let originalText = "";
   let jsonDoc: Record<string, unknown> = {};
@@ -1010,35 +1039,46 @@ function planSingleMcpTarget(
   if (beforeSnapshot.kind === "file") {
     if (adapter.format === "toml") {
       originalText = readFileSync(configPath, "utf8");
-      const parsed = originalText.trim()
-        ? (Bun.TOML.parse(originalText) as Record<string, unknown>)
-        : {};
+      let parsed: Record<string, unknown> = {};
+      try {
+        if (originalText.trim()) parsed = Bun.TOML.parse(originalText) as Record<string, unknown>;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`mcp-sync: ${configPath}: invalid TOML (${msg}); ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`);
+      }
       if (parsed.mcp_servers !== undefined && !isPlainObject(parsed.mcp_servers)) {
         throw new Error(
-          `mcp-sync: ${configPath}: "mcp_servers" must be a TOML table; refusing to overwrite`,
+          `mcp-sync: ${configPath}: "mcp_servers" must be a TOML table; refusing to overwrite; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`,
         );
       }
       existingMap = isPlainObject(parsed.mcp_servers)
         ? { ...(parsed.mcp_servers as Record<string, unknown>) }
         : {};
     } else {
-      const parsed = parseJsonFile(configPath);
-      if (!isPlainObject(parsed)) {
-        throw new Error(`mcp-sync: ${configPath} must contain a JSON object`);
+      let parsed: unknown;
+      try {
+        parsed = parseStrictJsonTargetFile(configPath);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`mcp-sync: ${msg}; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`);
       }
-      // Fail closed on corrupt mcpServers (null, array, primitive) instead of silently clobbering!
-      if (parsed.mcpServers !== undefined && !isPlainObject(parsed.mcpServers)) {
-        const foundType = Array.isArray(parsed.mcpServers)
+      if (!isPlainObject(parsed)) {
+        throw new Error(`mcp-sync: ${configPath} must contain a JSON object; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`);
+      }
+      // Fail closed on corrupt root map (null, array, primitive) instead of silently clobbering!
+      const rawMap = parsed[rootKey];
+      if (rawMap !== undefined && !isPlainObject(rawMap)) {
+        const foundType = Array.isArray(rawMap)
           ? "array"
-          : parsed.mcpServers === null
+          : rawMap === null
             ? "null"
-            : typeof parsed.mcpServers;
+            : typeof rawMap;
         throw new Error(
-          `mcp-sync: ${configPath}: "mcpServers" must be a JSON object (found ${foundType}); refusing to overwrite`,
+          `mcp-sync: ${configPath}: "${rootKey}" must be a JSON object (found ${foundType}); refusing to overwrite; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`,
         );
       }
       jsonDoc = parsed;
-      existingMap = isPlainObject(jsonDoc.mcpServers) ? { ...jsonDoc.mcpServers } : {};
+      existingMap = isPlainObject(rawMap) ? { ...rawMap } : {};
     }
   }
 
@@ -1091,12 +1131,19 @@ function planSingleMcpTarget(
     planRemovedLegacyOp(ctx, legacyName, disownSet);
   }
 
+  for (const op of ctx.ops) {
+    if (op.status === "conflict") {
+      const hint = targetOptOutHint(adapter.id, opts.configPath);
+      op.nextStep = op.nextStep ? `${op.nextStep}; or ${hint}` : hint;
+    }
+  }
+
   let renderedContent: string | undefined;
   if (ctx.targetMutation) {
     if (adapter.format === "toml") {
       renderedContent = rewriteCodexToml(originalText, ctx.codexUpdates);
     } else {
-      const nextDoc = { ...jsonDoc, mcpServers: ctx.existingMap };
+      const nextDoc = { ...jsonDoc, [rootKey]: ctx.existingMap };
       renderedContent = `${JSON.stringify(nextDoc, null, 2)}\n`;
     }
   }
@@ -1126,15 +1173,19 @@ export function planMcpSync(
   opts: {
     adopt: boolean;
     force: boolean;
+    activeTargets?: ReadonlySet<AgentId>;
+    /** Resolved agent-hub config.json path, quoted in opt-out remedies. */
+    configPath?: string;
     disownLegacy: Array<{ agent: AgentId; name: string }>;
   },
 ): { targets: PlannedMcpTarget[]; globalOps: PlannedOp[] } {
-  const servers = loadCanonicalServers(canonicalHubPath);
+  const servers = loadCanonicalServers(canonicalHubPath, opts.activeTargets);
   const now = new Date().toISOString();
   const { disownByAgent, globalOps } = validateDisownRequests(opts.disownLegacy, legacyV1, servers);
 
   const targets: PlannedMcpTarget[] = [];
   for (const adapter of MCP_ADAPTERS) {
+    if (opts.activeTargets && !opts.activeTargets.has(adapter.id)) continue;
     const plan = planSingleMcpTarget(
       adapter,
       homeDir,
@@ -1143,7 +1194,11 @@ export function planMcpSync(
       legacyV1,
       disownByAgent[adapter.id],
       now,
-      opts,
+      {
+        adopt: opts.adopt,
+        force: opts.force,
+        configPath: opts.configPath ?? "~/.config/agent-hub/config.json",
+      },
     );
     if (plan) targets.push(plan);
   }

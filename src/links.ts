@@ -12,7 +12,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { LINK_TARGETS } from "./adapters.ts";
+import { LINK_TARGETS, resolveLinkTargetId } from "./adapters.ts";
 import {
   captureSymlinkOrAbsentSnapshot,
   captureTreeSnapshot,
@@ -27,7 +27,9 @@ import {
   saveOwnershipState,
   writeJournal,
 } from "./state.ts";
+import { ALL_AGENTS } from "./types.ts";
 import type {
+  AgentId,
   ApplyHooks,
   ManagedLinkRecord,
   OwnershipBasis,
@@ -496,7 +498,12 @@ export function planLinkSync(
   homeDir: string,
   state: OwnershipStateV2,
   plannedSkillNames: string[],
-  opts: { adopt: boolean; force: boolean; plannedSkillSources?: Map<string, string> },
+  opts: {
+    adopt: boolean;
+    force: boolean;
+    activeTargets?: ReadonlySet<AgentId>;
+    plannedSkillSources?: Map<string, string>;
+  },
 ): PlannedLinkOp[] {
   const plans: PlannedLinkOp[] = [];
   const canonicalRules = join(canonicalHubPath, "AGENTS.md");
@@ -510,6 +517,7 @@ export function planLinkSync(
   const desired = new Map<string, { src: string; kind: "rules" | "skill"; skillName?: string }>();
 
   for (const target of LINK_TARGETS) {
+    if (opts.activeTargets && !opts.activeTargets.has(target.targetId)) continue;
     const rootDir = join(homeDir, target.rootRel);
     if (!existsSync(rootDir) || !statSync(rootDir).isDirectory()) continue;
 
@@ -539,9 +547,15 @@ export function planLinkSync(
     );
   }
 
-  // Prune ONLY verified v2 state.links records (never scan skills/ by path prefix).
+  // Prune ONLY verified v2 state.links records for ACTIVE targets.
+  // Untargeted adapters are never pruned. A record whose owner cannot be resolved under the
+  // current HOME is kept too: a restricted run cannot prove it belongs to an active target.
   for (const dst of Object.keys(state.links).sort()) {
     if (desired.has(dst)) continue;
+    if (opts.activeTargets && opts.activeTargets.size < ALL_AGENTS.length) {
+      const ownerTarget = resolveLinkTargetId(dst, homeDir);
+      if (ownerTarget === null || !opts.activeTargets.has(ownerTarget)) continue;
+    }
     plans.push(planPruneLinkOp(dst, state.links[dst]!));
   }
 

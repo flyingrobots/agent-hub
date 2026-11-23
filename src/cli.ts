@@ -28,7 +28,12 @@ import {
 } from "./state.ts";
 import {
   ALL_AGENTS,
+  parseTargetSelector,
+  resolveTargetScope,
+  targetSelectorNames,
   type AgentId,
+  type TargetScope,
+  type TargetSelector,
   type ApplyHooks,
   type OwnershipStateV2,
   type PlannedOp,
@@ -65,23 +70,57 @@ Options:
                                    modifying the target config (requires canonical server removed)
       --explain                    Print observed state, intended state, ownership basis, reason,
                                    and next step for each object without modifying disk
+      --targets <csv>              Restrict sync/check/dry-run/explain to specific target(s):
+                                   antigravity, claude, codex, cursor, opencode, or one
+                                   domain of one, e.g. opencode:mcp or cursor:links
+                                   (excluded targets are never pruned). Replaces the
+                                   config.json "disabledTargets" list for this run
       --print-dir                  Print the canonical resolved hub directory and exit
   -h, --help                       Show this help`;
 
-function readConfigAgentsDir(homeDir: string, xdgConfigHome?: string): string | null {
+type HubUserConfig = {
+  agentsDir?: string;
+  disabledTargets: TargetSelector[];
+  configPath: string;
+};
+
+function readUserConfig(homeDir: string, xdgConfigHome?: string): HubUserConfig {
   const cfgBase =
     xdgConfigHome && xdgConfigHome.length > 0 ? xdgConfigHome : join(homeDir, ".config");
   const cfgPath = join(cfgBase, "agent-hub", "config.json");
-  if (!existsSync(cfgPath)) return null;
-  try {
-    const parsed = parseJsonFile(cfgPath);
-    if (isPlainObject(parsed) && typeof parsed.agentsDir === "string" && parsed.agentsDir.length > 0) {
-      return parsed.agentsDir;
-    }
-  } catch {
-    // ignore malformed config in fallback lookup
+  if (!existsSync(cfgPath)) return { disabledTargets: [], configPath: cfgPath };
+  const parsed = parseJsonFile(cfgPath);
+  if (!isPlainObject(parsed)) {
+    throw new Error(`${cfgPath}: config.json must contain a JSON object`);
   }
-  return null;
+  const agentsDir =
+    typeof parsed.agentsDir === "string" && parsed.agentsDir.length > 0
+      ? parsed.agentsDir
+      : undefined;
+  const disabledTargets: TargetSelector[] = [];
+  if (parsed.disabledTargets !== undefined) {
+    if (!Array.isArray(parsed.disabledTargets)) {
+      throw new Error(`${cfgPath}: "disabledTargets" must be an array of target names`);
+    }
+    for (const item of parsed.disabledTargets) {
+      const sel = typeof item === "string" ? parseTargetSelector(item) : null;
+      if (!sel) {
+        throw new Error(
+          `${cfgPath}: unknown target "${String(item)}" in disabledTargets (expected: ${targetSelectorNames()})`,
+        );
+      }
+      disabledTargets.push(sel);
+    }
+  }
+  return { agentsDir, disabledTargets, configPath: cfgPath };
+}
+
+function readConfigAgentsDir(homeDir: string, xdgConfigHome?: string): string | null {
+  try {
+    return readUserConfig(homeDir, xdgConfigHome).agentsDir ?? null;
+  } catch {
+    return null;
+  }
 }
 
 export function resolveCanonicalHubDir(opts: {
@@ -144,6 +183,8 @@ function buildSyncPlan(
     force: boolean;
     forceSkill: boolean;
     adopt: boolean;
+    scope: TargetScope;
+    configPath: string;
     disownLegacy: Array<{ agent: AgentId; name: string }>;
   },
 ): BuiltSyncPlan {
@@ -169,6 +210,7 @@ function buildSyncPlan(
         : planLinkSync(canonicalHubPath, homeDir, state, stagedSkills.plannedSkillNames, {
             adopt: opts.adopt,
             force: opts.force,
+            activeTargets: opts.scope.links,
             plannedSkillSources: stagedSkills.plannedSkillSources,
           });
 
@@ -177,6 +219,8 @@ function buildSyncPlan(
       : planMcpSync(canonicalHubPath, homeDir, state, legacyV1, {
           adopt: opts.adopt,
           force: opts.force,
+          activeTargets: opts.scope.mcp,
+          configPath: opts.configPath,
           disownLegacy: opts.disownLegacy,
         });
 
@@ -228,6 +272,17 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
   if (checkOnly && disownLegacy.length > 0) {
     stderr.push(`${cmdLabel}: --check cannot be combined with --disown-legacy`);
     return { exitCode: 2, stdout, stderr };
+  }
+
+  let scope: TargetScope;
+  let configPath: string;
+  try {
+    const userCfg = readUserConfig(homeDir, xdgConfigHome);
+    scope = resolveTargetScope(options.targets, userCfg.disabledTargets);
+    configPath = userCfg.configPath;
+  } catch (err) {
+    stderr.push(`${cmdLabel}: ${err instanceof Error ? err.message : String(err)}`);
+    return { exitCode: 1, stdout, stderr };
   }
 
   const canonicalHubPath = resolveCanonicalHubDir({
@@ -296,6 +351,8 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
         force,
         forceSkill,
         adopt,
+        scope,
+        configPath,
         disownLegacy,
       });
 
@@ -378,6 +435,8 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       force,
       forceSkill,
       adopt,
+      scope,
+      configPath,
       disownLegacy,
     });
 
@@ -549,6 +608,13 @@ export function parseCliArgs(argv: string[]): {
       options.adopt = true;
     } else if (arg === "--explain") {
       options.explain = true;
+    } else if (arg === "--targets") {
+      if (i + 1 >= argv.length) {
+        throw new Error("--targets requires a comma-separated list of targets");
+      }
+      options.targets = parseTargetsArg(argv[++i]!);
+    } else if (arg.startsWith("--targets=")) {
+      options.targets = parseTargetsArg(arg.slice("--targets=".length));
     } else if (arg === "--disown-legacy") {
       if (i + 1 >= argv.length) {
         throw new Error("--disown-legacy requires an <agent>:<name> argument");
@@ -566,6 +632,27 @@ export function parseCliArgs(argv: string[]): {
   }
 
   return { options, printDir, showHelp };
+}
+
+function parseTargetsArg(raw: string): TargetSelector[] {
+  const parts = raw
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  if (parts.length === 0) {
+    throw new Error(
+      `--targets requires at least one target (expected one or more of: ${targetSelectorNames()})`,
+    );
+  }
+  const out: TargetSelector[] = [];
+  for (const p of parts) {
+    const sel = parseTargetSelector(p);
+    if (!sel) {
+      throw new Error(`unknown target "${p}" in --targets (expected: ${targetSelectorNames()})`);
+    }
+    out.push(sel);
+  }
+  return out;
 }
 
 function parseDisownArg(raw: string): { agent: AgentId; name: string } {

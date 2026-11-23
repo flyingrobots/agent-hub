@@ -1,6 +1,6 @@
 ---
 name: agent-hub
-description: Manage local AI coding agent configuration through a canonical agents hub directory (default ~/.agents/) and the sync-agents CLI. Use whenever the user asks to install, update, create, or remove an agent skill; add, override, disable, or remove an MCP server; edit global agent instructions; or sync/check drift across Claude Code, Codex, and Antigravity.
+description: Manage local AI coding agent configuration through a canonical agents hub directory (default ~/.agents/) and the sync-agents CLI. Use whenever the user asks to install, update, create, or remove an agent skill; add, override, disable, or remove an MCP server; edit global agent instructions; or sync/check drift across Claude Code, Codex, Antigravity, Cursor, and OpenCode.
 ---
 
 # Agent Hub (`sync-agents`)
@@ -16,7 +16,7 @@ Run `sync-agents --print-dir` to confirm the canonical resolved hub path.
 1. **Always edit inside the canonical hub (`~/.agents/`)** — never edit per-agent synced targets directly:
    - Instructions symlinks: `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, `~/.gemini/config/AGENTS.md`, `~/.config/opencode/AGENTS.md`, `~/.cursor/AGENTS.md` *(unverified)*
    - Per-skill symlinks: `~/.claude/skills/<name>`, `~/.codex/skills/<name>`, `~/.gemini/skills/<name>`, `~/.config/opencode/skills/<name>`, `~/.cursor/skills/<name>`
-   - Compiled MCP entries: `~/.gemini/config/mcp_config.json` (`antigravity`), `mcpServers` in `~/.claude.json` (`claude`), `[mcp_servers.*]` in `~/.codex/config.toml` (`codex`)
+   - Compiled MCP entries: `~/.gemini/config/mcp_config.json` (`antigravity`), `mcpServers` in `~/.claude.json` (`claude`), `[mcp_servers.*]` in `~/.codex/config.toml` (`codex`), `mcpServers` in `~/.cursor/mcp.json` (`cursor`), `mcp` in `~/.config/opencode/opencode.json` (`opencode`)
 2. **Always finish with `sync-agents` and verify with `sync-agents --check`.**
 
 ---
@@ -100,10 +100,12 @@ Adapter transport support:
 - `claude`: `stdio`, `http`, `sse`
 - `codex`: `stdio`, `http` (rejects active `sse` unless disabled or overridden)
 - `antigravity`: `stdio`, `http` (`serverUrl`) (rejects active `sse` unless disabled or overridden)
+- `cursor`: `stdio`, `http`, `sse`
+- `opencode`: `stdio` (`type: "local"`), `http`, `sse` (`type: "remote"`)
 
 > **Tip:** Prefer absolute paths for `"command"` so GUI and non-login shells resolve binaries reliably.
 
-**Per-agent overrides** (`antigravity`, `claude`, `codex`) apply in precedence order:
+**Per-agent overrides** (`antigravity`, `claude`, `codex`, `cursor`, `opencode`) apply in precedence order:
 1. Base `mcp` in `<hub>/mcp/<name>/mcp.json`
 2. Inline `"overrides": { "<agent>": { ... } }` in `<hub>/mcp/<name>/mcp.json`
 3. Dedicated `<hub>/mcp/<name>/<agent>/mcp.json`
@@ -139,12 +141,26 @@ Edit `<hub>/AGENTS.md` directly. Run `sync-agents --check` to confirm all manage
 | --- | --- |
 | `sync-agents` | Recover any pending journal (Phase 0), preflight-plan (Phase 1), and apply (Phase 2) |
 | `sync-agents --dir <path>` | Target a different canonical hub directory (normalized to real absolute path) |
+| `sync-agents --targets <csv>` | Restrict sync/check/dry-run/explain to specific selector(s): a target (`antigravity`, `claude`, `codex`, `cursor`, `opencode`) or `<target>:mcp` / `<target>:links`; excluded targets are never pruned. An explicit `--targets` list replaces `disabledTargets` for that run |
 | `sync-agents --explain` | Show observed state, intended state, ownership basis, reason, and next step (read-only) |
 | `sync-agents --dry-run` (`-n`) | Show `[plan]` actions without modifying final destinations, state, journals, or locks |
-| `sync-agents --check` | Exit `0` iff targets, ownership ledger, and recovery state all require zero work |
+| `sync-agents --check` | Exit `0` iff the active targets, ownership ledger, and recovery state all require zero work (excluded targets and domains are not checked; a pending recovery journal always is) |
 | `sync-agents --adopt` | Adopt unmanaged identical symlinks/MCP entries or strictly equivalent files/dirs (checks `.git`, bytes, mode bits, owner/group, raw xattr values, ACLs) |
 | `sync-agents --force-skill` | Allow `--skill` to replace differing canonical skill(s) ONLY |
 | `sync-agents --force` (`-f`) | Allow replacing differing canonical skills, unmanaged/modified symlinks, and differing/disabled unmanaged MCP entries |
 | `sync-agents --disown-legacy <agent>:<name>` | Retire an unverified legacy v1 claim without modifying the target config |
 
 **Safety rule on conflicts:** `sync-agents` fails closed before Phase 2 when any conflict is detected (reporting any Phase 0 recovery separately). Always run `sync-agents --explain` before using `--adopt`, `--force-skill`, or `--force`.
+
+### Scoping and opting out of targets
+
+- **Selectors:** a target name (`antigravity`, `claude`, `codex`, `cursor`, `opencode`) means both of its domains; `<name>:mcp` means only its MCP config file; `<name>:links` means only its rules and skill symlinks.
+- **`disabledTargets`** lives in `${XDG_CONFIG_HOME:-~/.config}/agent-hub/config.json` as an array of selectors: `{ "disabledTargets": ["cursor", "opencode:mcp"] }`. An unknown selector or non-array value makes every run exit `1`.
+- **`--targets <csv>`** / **`--targets=<csv>`** picks selectors for one run (sync, `--check`, `--dry-run`, `--explain`); an unknown selector exits `2`. It **replaces** `disabledTargets` for that run.
+- **Excluded targets are never planned.** What agent-hub placed there earlier stays; hub removals stop reaching them until the target is active again. (Phase 0 recovery still finishes agent-hub's own interrupted write on any target.) `--check` covers active targets plus any pending recovery journal. When a user asks to stop syncing a tool, add it to `disabledTargets`; do not delete its links or entries unless they ask for that too.
+
+### Strict JSON refusals
+
+The four JSON adapters (`antigravity`, `claude`, `cursor`, `opencode`) refuse a target config when a `.jsonc` sibling exists (e.g. `~/.config/opencode/opencode.jsonc`), or when the `.json` has comments, trailing commas, or a key repeated in one object. **A refusal stops the whole run**: no Phase 2 target or ledger change is applied. The error names the target, the resolved `config.json` path, and the remedy.
+
+When you hit one: tell the user which file was refused and why, then offer to add `"<target>:mcp"` to `disabledTargets`, which leaves only that tool's MCP config alone and keeps its rules and skills syncing. **Never edit, rename, reformat, or strip comments from the user's `.jsonc`/`.json` yourself, and never reach for `--force`, unless the user explicitly asks.** The same goes for a `[conflict]` on a personal MCP entry in one tool's config: excluding that target is the non-destructive way to sync the rest.

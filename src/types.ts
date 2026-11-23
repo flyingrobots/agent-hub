@@ -1,5 +1,11 @@
-export type AgentId = "antigravity" | "claude" | "codex";
-export const ALL_AGENTS: readonly AgentId[] = ["antigravity", "claude", "codex"];
+export type AgentId = "antigravity" | "claude" | "codex" | "cursor" | "opencode";
+export const ALL_AGENTS: readonly AgentId[] = [
+  "antigravity",
+  "claude",
+  "codex",
+  "cursor",
+  "opencode",
+];
 
 export type McpTransport = "stdio" | "http" | "sse";
 
@@ -148,6 +154,7 @@ export type SyncOptions = {
   checkOnly?: boolean;
   adopt?: boolean;
   explain?: boolean;
+  targets?: TargetSelector[];
   disownLegacy?: Array<{ agent: AgentId; name: string }>;
 };
 
@@ -172,3 +179,52 @@ export type SyncRunResult = {
   stderr: string[];
   recovery?: RecoveryReport;
 };
+
+/**
+ * One entry of `--targets` or `disabledTargets`: a whole target (`"opencode"`) or one of its
+ * two sync domains (`"opencode:mcp"` for the MCP config, `"opencode:links"` for the rules and
+ * skill symlinks).
+ */
+export type TargetDomain = "links" | "mcp";
+export type TargetSelector = { agent: AgentId; domains: readonly TargetDomain[] };
+
+/** Which targets each domain acts on in one run. */
+export type TargetScope = { links: ReadonlySet<AgentId>; mcp: ReadonlySet<AgentId> };
+
+const DOMAINS: readonly TargetDomain[] = ["links", "mcp"];
+
+export function targetSelectorNames(): string {
+  return `${ALL_AGENTS.join(", ")}, optionally suffixed with :mcp or :links`;
+}
+
+/** Parse `claude`, `claude:mcp` or `claude:links`; returns null for anything else. */
+export function parseTargetSelector(raw: string): TargetSelector | null {
+  const [name, domain, extra] = raw.split(":");
+  if (extra !== undefined || !ALL_AGENTS.includes(name as AgentId)) return null;
+  if (domain === undefined) return { agent: name as AgentId, domains: DOMAINS };
+  if (!DOMAINS.includes(domain as TargetDomain)) return null;
+  return { agent: name as AgentId, domains: [domain as TargetDomain] };
+}
+
+/**
+ * Resolve the run's scope. An explicit `--targets` list replaces `disabledTargets`: it names
+ * exactly what to act on. Otherwise everything is active except what `disabledTargets` removes.
+ */
+export function resolveTargetScope(
+  explicit: readonly TargetSelector[] | undefined,
+  disabled: readonly TargetSelector[],
+): TargetScope {
+  const links = new Set<AgentId>();
+  const mcp = new Set<AgentId>();
+  const sets = { links, mcp };
+  if (explicit && explicit.length > 0) {
+    for (const sel of explicit) for (const d of sel.domains) sets[d].add(sel.agent);
+  } else {
+    for (const a of ALL_AGENTS) {
+      links.add(a);
+      mcp.add(a);
+    }
+    for (const sel of disabled) for (const d of sel.domains) sets[d].delete(sel.agent);
+  }
+  return { links, mcp };
+}
