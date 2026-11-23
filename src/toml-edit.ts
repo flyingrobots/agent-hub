@@ -609,11 +609,33 @@ function contentEnd(src: string, start: number, end: number): number {
   return end;
 }
 
-/** contentEnd, except a tail that could hold the end of a multiline string is never split off. */
+/**
+ * Where to cut a managed table's span. The candidate is its last content line (contentEnd); it
+ * is accepted only if the table alone parses to the same value as the whole span, so a cut can
+ * never fall inside a multiline string. Otherwise the cut moves forward a line at a time until
+ * the values agree (the line that closes the string), keeping what follows it.
+ */
 function safeContentEnd(src: string, start: number, end: number): number {
-  const cut = contentEnd(src, start, end);
-  const tail = src.slice(cut, end);
-  return tail.includes('"""') || tail.includes("'''") ? end : cut;
+  let parsedFull: unknown;
+  try {
+    parsedFull = Bun.TOML.parse(src.slice(start, end));
+  } catch {
+    return end;
+  }
+  const full = JSON.stringify(parsedFull);
+  const sameValue = (cut: number): boolean => {
+    try {
+      return JSON.stringify(Bun.TOML.parse(src.slice(start, cut))) === full;
+    } catch {
+      return false;
+    }
+  };
+  let cut = contentEnd(src, start, end);
+  while (cut < end && !sameValue(cut)) {
+    const nl = src.indexOf("\n", cut);
+    cut = nl === -1 || nl + 1 > end ? end : nl + 1;
+  }
+  return cut;
 }
 
 export function rewriteCodexToml(
@@ -672,8 +694,14 @@ export function rewriteCodexToml(
   let out = "";
   let cursor = 0;
   const placed = new Set<string>();
+  let previousName: string | null = null;
   for (const span of spans) {
-    if (span.start > cursor) out += original.slice(cursor, span.start);
+    const gap = span.start > cursor ? original.slice(cursor, span.start) : "";
+    // The blank lines between one server's own tables ([x] and [x.env]) are regenerated with it;
+    // re-emitting them would add a blank line on every rewrite.
+    const sameServerGap = previousName === span.name && gap.trim().length === 0;
+    if (gap && !sameServerGap) out += gap;
+    previousName = span.name;
     const entry = updates.get(span.name);
     if (entry && !placed.has(span.name)) {
       out += renderCodexSection(span.name, entry, eol) + eol;
