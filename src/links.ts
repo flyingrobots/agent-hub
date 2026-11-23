@@ -597,13 +597,35 @@ export function planLinkSync(
     });
   }
   const desiredPhysical = new Set<string>();
-  for (const dst of [...desired.keys()].sort()) {
+  // Two desired spellings can name one physical link (~/.codex/skills a symlink to
+  // ~/.claude/skills). It is one object: plan it once, under the spelling that holds its record,
+  // or else the first in order.
+  const plannedPhysical = new Set<string>();
+  const physicalOrder = [...desired.keys()].sort((a, b) => {
+    const ra = state.links[a] ? 0 : 1;
+    const rb = state.links[b] ? 0 : 1;
+    return ra - rb || a.localeCompare(b);
+  });
+  for (const dst of physicalOrder) {
     const entry = desired.get(dst)!;
     const phys = physicalPath(dst);
     desiredPhysical.add(phys);
+    if (plannedPhysical.has(phys)) continue;
+    plannedPhysical.add(phys);
     const recordedKey = state.links[dst] ? dst : (recordedByPhysical.get(phys) ?? dst);
     const stagedSrcDir =
       entry.skillName !== undefined ? opts.plannedSkillSources?.get(entry.skillName) : undefined;
+    // Re-key only a record that names this destination for the same target under a spelling no
+    // longer desired. A record held by another desired spelling, or attributed to another target
+    // (an excluded one included), stays where it is.
+    if (recordedKey !== dst) {
+      const recordedOwner = resolveLinkTargetId(recordedKey, homeDir, configBase);
+      const dstOwner = resolveLinkTargetId(dst, homeDir, configBase);
+      if (desired.has(recordedKey) || (recordedOwner !== null && recordedOwner !== dstOwner)) {
+        plans.push(planDesiredLinkOp(recordedKey, entry.src, entry.kind, stagedSrcDir, state.links[recordedKey], opts));
+        continue;
+      }
+    }
     if (recordedKey !== dst) {
       // The record names this destination under another spelling. Move it to the spelling that
       // resolves now (ledger only), so it still matches after the old spelling stops resolving.

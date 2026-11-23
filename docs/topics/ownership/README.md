@@ -24,7 +24,9 @@ Ownership is never inferred:
   not make anything owned.
 - An unmanaged entry is preserved and reported as a conflict. `--force` replaces it;
   `--adopt` records it as owned when it is equivalent to what `sync-agents` would write.
-- `--check` reports ledger-only work, such as retiring a legacy claim, as drift.
+- `--check` reports ledger-only work, such as retiring a legacy claim, as drift. The one
+  exception is re-keying a record to the spelling of the current run (`rekey-link-record`,
+  `rekey-mcp-record`), which any sync does and `--check` neither counts nor lists.
 
 ## Adoption
 

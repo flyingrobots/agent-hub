@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runSync } from "../src/cli.ts";
@@ -68,12 +68,12 @@ describe("ownership records follow the spelling of the last run (flyingrobots/ag
     const before = readFileSync(join(home, ".claude.json"), "utf8");
     const r = runSync(opts(home));
     expect(r.exitCode).toBe(0);
-    expect(out(r)).toContain("rekey");
+    expect(out(r)).toMatch(/rekey-(link|mcp)-record/);
     expect(readFileSync(join(home, ".claude.json"), "utf8")).toBe(before);
     // Once re-keyed, the next run under the same spelling has nothing to do.
     const again = runSync(opts(home));
     expect(again.exitCode).toBe(0);
-    expect(out(again)).not.toContain("rekey");
+    expect(out(again)).not.toMatch(/rekey-(link|mcp)-record/);
     expect(out(again)).toContain("everything is in sync");
   });
 
@@ -86,5 +86,68 @@ describe("ownership records follow the spelling of the last run (flyingrobots/ag
     expect(links.filter((k) => k.includes("/.cursor/")).every((k) => k.startsWith(alias))).toBe(true);
     expect(ledger().mcp.claude.alpha!.configPath.startsWith(home)).toBe(true);
     expect(ledger().mcp.cursor.alpha!.configPath.startsWith(alias)).toBe(true);
+  });
+
+  // ~/.codex/skills is a symlink to ~/.claude/skills: two desired links, one physical path.
+  function sharedSkills() {
+    const sb = sandbox();
+    mkdirSync(join(sb.home, ".claude", "skills"), { recursive: true });
+    mkdirSync(join(sb.home, ".codex"), { recursive: true });
+    symlinkSync(join(sb.home, ".claude", "skills"), join(sb.home, ".codex", "skills"));
+    const both = sb.opts(sb.home, ["claude:links", "codex:links"]);
+    return { ...sb, both };
+  }
+
+  test("two desired links with one physical path: the first run succeeds and later runs neither re-key nor churn", () => {
+    const { both, ledger } = sharedSkills();
+    expect(runSync(both).exitCode).toBe(0);
+    const keys = Object.keys(ledger().links).sort();
+    for (let i = 0; i < 3; i++) {
+      const r = runSync(both);
+      expect(r.exitCode).toBe(0);
+      expect(out(r)).not.toMatch(/rekey-(link|mcp)-record/);
+      expect(out(r)).toContain("everything is in sync");
+      expect(Object.keys(ledger().links).sort()).toEqual(keys);
+    }
+  });
+
+  test("after the shared directory is split, the link agent-hub made is still its own (no unmanaged conflict)", () => {
+    const { home, both } = sharedSkills();
+    for (let i = 0; i < 4; i++) expect(runSync(both).exitCode).toBe(0);
+    unlinkSync(join(home, ".codex", "skills"));
+    mkdirSync(join(home, ".codex", "skills"));
+    const r = runSync(both);
+    expect(out(r)).not.toContain("conflict");
+    expect(r.exitCode).toBe(0);
+    expect(lstatSync(join(home, ".codex", "skills", "demo")).isSymbolicLink()).toBe(true);
+    expect(lstatSync(join(home, ".claude", "skills", "demo")).isSymbolicLink()).toBe(true);
+  });
+
+  test("a scoped run never moves another target's record into its own spelling", () => {
+    const { home, opts, ledger } = sharedSkills();
+    expect(runSync(opts(home, ["claude:links"])).exitCode).toBe(0);
+    const claudeSkill = join(home, ".claude", "skills", "demo");
+    expect(ledger().links[claudeSkill]).toBeDefined();
+    const r = runSync(opts(home, ["codex:links"]));
+    expect(r.exitCode).toBe(0);
+    expect(out(r)).not.toMatch(/rekey-(link|mcp)-record/);
+    // codex gets its own rules link; the shared skill keeps claude's record.
+    expect(ledger().links[claudeSkill]).toBeDefined();
+    expect(ledger().links[join(home, ".codex", "skills", "demo")]).toBeUndefined();
+  });
+
+  test("--check prints no re-key lines; a record pruned in the same run is not reported as re-keyed", () => {
+    const { home, alias, hub, opts } = sandbox();
+    mkdirSync(join(hub, "mcp", "beta"), { recursive: true });
+    writeFileSync(join(hub, "mcp", "beta", "mcp.json"), JSON.stringify({ mcp: { command: "/bin/beta" } }));
+    expect(runSync(opts(alias)).exitCode).toBe(0);
+    const chk = runSync({ ...opts(home), checkOnly: true });
+    expect(chk.exitCode).toBe(0);
+    expect(out(chk)).not.toMatch(/rekey-(link|mcp)-record/);
+    rmSync(join(hub, "mcp", "beta"), { recursive: true });
+    const r = runSync(opts(home));
+    expect(r.exitCode).toBe(0);
+    expect(out(r)).not.toMatch(/rekey-mcp-record[^\n]*#beta/);
+    expect(out(r)).toMatch(/mcp-prune[^\n]*beta/);
   });
 });

@@ -1277,6 +1277,9 @@ function planSingleMcpTarget(
   }
 
   for (const [recName, oldPath] of rekeyed.sort(([a], [b]) => a.localeCompare(b))) {
+    // A record this run removes (server gone from the hub, or handled as a reserved name) is
+    // reported by that removal, not as a re-key.
+    if (!servers.has(recName) || !Object.prototype.hasOwnProperty.call(prevManaged, recName)) continue;
     ctx.ledgerMutation = true;
     ctx.changeSummaries.push(`rekey record ${recName} to ${configPath}`);
     ctx.ops.push({

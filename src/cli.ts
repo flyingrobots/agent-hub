@@ -393,7 +393,8 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
         if (explain) {
           stdout.push(...formatExplainBlock(op));
         }
-        if (op.status === "change" && !explain) {
+        // --check does not count a re-key as drift, so it does not list one either.
+        if (op.status === "change" && !explain && !(checkOnly && REKEY_ACTIONS.has(op.action))) {
           stdout.push(formatOpSummary("plan", op));
         } else if (op.status === "conflict" || op.status === "error") {
           const next = op.nextStep ? ` (${op.nextStep})` : "";

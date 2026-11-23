@@ -115,7 +115,9 @@ other, so switching between such spellings causes no conflict, duplicate or prun
 stores each record it plans under the spelling of that run (`rekey-link-record`,
 `rekey-mcp-record`: ledger only, no file changes), so a record keeps a spelling that resolved
 the last time you synced, and removing an old alias afterwards changes nothing. `--check` does
-not count a re-key as drift. A scoped run re-keys only the records of the targets it plans. If
+not count a re-key as drift. A record is re-keyed only to a spelling for the same target, and
+only when no other desired spelling holds it: when `~/.codex/skills` is a symlink to
+`~/.claude/skills`, the shared link is one object with one record, planned once. If
 you remove an alias *before* syncing under the new spelling, the old records no longer match:
 the run reports conflicts (and may describe MCP records as moved) and changes nothing;
 `--adopt` then records the current spelling.
