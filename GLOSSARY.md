@@ -38,7 +38,7 @@ Projecting the hub into the targets on one machine. It runs in one direction onl
 _Avoid_: bidirectional sync, push, deploy
 
 **Import**:
-Bringing everything the agents already have into the hub.
+Bringing the MCP servers, instructions and skills the agents already have into the hub.
 _Avoid_: reverse sync, sync back
 
 **Pull**:
@@ -50,11 +50,11 @@ Keeping the hubs on two machines alike is not an agent-hub operation. A hub is a
 ### What may be changed
 
 **Owned**:
-Recorded in the ledger as written by `sync-agents`, which is the only thing a sync may change or delete.
+Recorded in the ledger as written by `sync-agents`. A sync changes or deletes only what is owned, unless a person forces it.
 _Avoid_: managed, tracked
 
 **Unowned**:
-Present in a target but not recorded in the ledger, and so left alone.
+Present in a target but not recorded in the ledger, and so left alone unless a person forces a replacement.
 _Avoid_: unmanaged, personal, foreign
 
 **Adopt**:

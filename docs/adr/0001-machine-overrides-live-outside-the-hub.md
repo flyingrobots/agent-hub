@@ -23,6 +23,6 @@ Decided with the maintainer on 2026-11-23 (flyingrobots/agent-hub#55). Not yet i
 - **In sync means hub plus machine overrides.** `--check` compares targets with the hub as modified on this machine. So that an override never hides silently, `--explain` and `--dry-run` name the machine override as the reason for each server it changes or omits, and the summary counts the overrides in effect.
 - **Import and pull never write a machine override.** `pull --as-override` still writes a target override into the hub. An agent entry that differs from the hub only by this machine's override is in sync, not something to pull.
 - **Project mode ignores machine overrides**, as it ignores `config.json`, so committed outputs are the same in every clone.
-- **Failure.** A malformed machine override file fails every run, like a malformed `config.json`. An override naming a server the hub does not have is a warning, not an error, so removing a server on one machine does not break the next sync on another.
+- **Failure.** A malformed machine override file fails every run that reads it, like a malformed `config.json`; project mode does not read it. An override naming a server the hub does not have is a warning, not an error, so removing a server on one machine does not break the next sync on another.
 - **Secrets.** The plaintext-secret check applies to machine overrides as it does to the hub.
 - **Invisible elsewhere.** A machine's overrides are not versioned with the hub and cannot be seen from another machine. `disabledTargets` stays as the coarser tool.
