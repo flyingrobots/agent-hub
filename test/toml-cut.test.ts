@@ -42,9 +42,11 @@ function referenceSafeContentEnd(src: string, start: number, end: number): numbe
 
 // Document generator from the PR #16 differential fuzz (Baker Street case agent-hub-pr16-r1).
 function generator(seed: number) {
+  // Math.imul keeps the LCG in 32-bit integers; a plain multiply loses precision in a double and
+  // collapses the sequence to a few hundred distinct documents.
   const rnd = () => {
-    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
-    return seed / 0x7fffffff;
+    seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+    return seed / 0x100000000;
   };
   const pick = <T,>(a: T[]) => a[Math.floor(rnd() * a.length)]!;
   const chance = (p: number) => rnd() < p;
@@ -98,10 +100,12 @@ describe("Codex TOML cut from the scanner's string state (flyingrobots/agent-hub
   test("cuts match the previous parse-equivalence search on the PR #16 fuzz corpus (seeds 1-3) with zero fallbacks", () => {
     const before = tomlCutFallbacks();
     let compared = 0;
+    const unique = new Set<string>();
     for (const seed of [1, 2, 3]) {
       const gen = generator(seed);
       for (let it = 0; it < 2000; it++) {
         const text = gen();
+        unique.add(text);
         try {
           Bun.TOML.parse(text);
         } catch {
@@ -114,6 +118,7 @@ describe("Codex TOML cut from the scanner's string state (flyingrobots/agent-hub
         }
       }
     }
+    expect(unique.size).toBeGreaterThan(5000);
     expect(compared).toBeGreaterThan(5000);
     expect(tomlCutFallbacks() - before).toBe(0);
   });
