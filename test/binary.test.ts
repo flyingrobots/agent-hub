@@ -14,6 +14,7 @@ import { afterAll, afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
+  readdirSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -49,13 +50,25 @@ function spawnText(cmd: string[], opts: { cwd?: string; env?: Record<string, str
   };
 }
 
+/**
+ * Bun 1.4.5 leaves an ~87 MB `.<hash>-00000000.bun-build` copy of itself in the working
+ * directory after a host-target `bun build --compile`. Every compile this suite runs
+ * directly uses suiteRoot as its cwd; build:bin must clean up after itself.
+ */
+function bunBuildLeftovers(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir).filter((n) => n.endsWith(".bun-build"));
+}
+
 // 1. Is `bun build --compile` usable here at all? Probe with a trivial program.
 function probeCompile(): string | null {
   const dir = join(suiteRoot, "probe");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "probe.ts"), 'console.log("compile-ok");\n');
   const out = join(dir, "probe-bin");
-  const build = spawnText(["bun", "build", join(dir, "probe.ts"), "--compile", "--outfile", out]);
+  const build = spawnText(["bun", "build", join(dir, "probe.ts"), "--compile", "--outfile", out], {
+    cwd: suiteRoot,
+  });
   if (build.exitCode !== 0) return `bun build --compile failed: ${build.stderr.trim() || build.stdout.trim()}`;
   const run = spawnText([out]);
   if (run.exitCode !== 0 || run.stdout.trim() !== "compile-ok") {
@@ -75,9 +88,17 @@ if (compileUnavailable) {
 // 2. Produce the binary under test exactly the way users do: `bun run build:bin`.
 const externalBinary = process.env.AGENT_HUB_BINARY ? resolve(process.env.AGENT_HUB_BINARY) : null;
 let buildResult: { exitCode: number | null; stdout: string; stderr: string } | null = null;
+const leftoversBefore = new Set([
+  ...bunBuildLeftovers(REPO_ROOT),
+  ...bunBuildLeftovers(join(REPO_ROOT, "dist")).map((n) => `dist/${n}`),
+]);
 if (!compileUnavailable && !externalBinary) {
   buildResult = spawnText(["bun", "run", "build:bin"], { cwd: REPO_ROOT });
 }
+const leakedByBuild = [
+  ...bunBuildLeftovers(REPO_ROOT),
+  ...bunBuildLeftovers(join(REPO_ROOT, "dist")).map((n) => `dist/${n}`),
+].filter((n) => !leftoversBefore.has(n));
 const BIN = externalBinary ?? DIST_BIN;
 
 const tempRoots: string[] = [];
@@ -168,7 +189,7 @@ describe.skipIf(compileUnavailable !== null)("compiled sync-agents binary", () =
   test("`bun run build:bin` produces a native dist/sync-agents executable", () => {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8"));
     expect(pkg.scripts?.["build:bin"]).toContain("--compile");
-    expect(pkg.scripts?.["build:bin"]).toContain("dist/sync-agents");
+    expect(pkg.scripts?.["build:bin"]).toContain("--outfile sync-agents");
     if (!externalBinary) {
       expect(buildResult?.stderr ?? "").not.toContain("error");
       expect(buildResult?.exitCode).toBe(0);
@@ -176,6 +197,11 @@ describe.skipIf(compileUnavailable !== null)("compiled sync-agents binary", () =
     expect(existsSync(BIN)).toBe(true);
     expect(isNativeExecutable(BIN)).toBe(true);
     expect(readFileSync(join(REPO_ROOT, ".gitignore"), "utf8").split("\n")).toContain("dist/");
+  });
+
+  test("`bun run build:bin` leaves no .bun-build temp files in the repo or dist/", () => {
+    if (externalBinary) return; // nothing was built here
+    expect(leakedByBuild).toEqual([]);
   });
 
   test("--help prints the CLI usage and exits 0; usage errors exit 2", () => {
@@ -330,7 +356,7 @@ describe.skipIf(compileUnavailable !== null)("compiled sync-agents binary", () =
         "--compile",
         "--outfile",
         harness,
-      ]);
+      ], { cwd: suiteRoot });
       expect(built.exitCode).toBe(0);
     }
     expect(isNativeExecutable(harness)).toBe(true);
