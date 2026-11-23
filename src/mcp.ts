@@ -1,4 +1,5 @@
 import { randomBytes } from "node:crypto";
+import { detectPlaintextSecrets } from "./env-refs.ts";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -307,9 +308,13 @@ export function compileAgentEntry(
   return MCP_ADAPTER_BY_ID[agent].compile(transport, spec, serverName, sourceLabel);
 }
 
+/** A literal that looks like a credential in a hub server spec (warning only, Phase 2). */
+export type PlaintextSecretWarning = { server: string; field: string; reason: string; source: string };
+
 export function loadCanonicalServers(
   canonicalHubPath: string,
   activeTargets?: ReadonlySet<AgentId>,
+  warnings?: PlaintextSecretWarning[],
 ): CompiledServerMap {
   const result: CompiledServerMap = new Map();
   const mcpRoot = join(canonicalHubPath, "mcp");
@@ -337,6 +342,17 @@ export function loadCanonicalServers(
 
     const rawDoc = parseJsonFile(basePath) as RawMcpDocument;
     const baseSpec = parseSpecSnippet(rawDoc, basePath);
+    const allowRaw = rawDoc.allowPlaintextFields;
+    if (
+      allowRaw !== undefined &&
+      (!Array.isArray(allowRaw) || !allowRaw.every((f) => typeof f === "string" && f.length > 0))
+    ) {
+      throw new Error(
+        `${basePath}: "allowPlaintextFields" must be an array of field paths such as "env.API_KEY" or "headers.Authorization"`,
+      );
+    }
+    const allowPlaintext = (allowRaw as string[] | undefined) ?? [];
+    const warnedFields = new Set<string>();
 
     if (rawDoc.overrides !== undefined) {
       if (!isPlainObject(rawDoc.overrides)) {
@@ -379,6 +395,13 @@ export function loadCanonicalServers(
         resolved = mergeSpec(resolved, subOv, subPath);
       }
 
+      if (warnings) {
+        for (const w of detectPlaintextSecrets(resolved, allowPlaintext)) {
+          if (warnedFields.has(w.field)) continue;
+          warnedFields.add(w.field);
+          warnings.push({ server: name, field: w.field, reason: w.reason, source: basePath });
+        }
+      }
       compiled[agent] = compileAgentEntry(agent, name, resolved, basePath);
     }
 

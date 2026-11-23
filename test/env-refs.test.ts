@@ -185,3 +185,34 @@ describe("plaintext secret detector (flyingrobots/agent-hub#6)", () => {
     expect(detectPlaintextSecrets(spec, ["env.API_KEY"]).map((w) => w.field)).toEqual(["env.DB_PASSWORD"]);
   });
 });
+
+describe("hub mcp.json: allowPlaintextFields and detector wiring (flyingrobots/agent-hub#6)", () => {
+  const { mkdtempSync, mkdirSync, writeFileSync, realpathSync } = require("node:fs") as typeof import("node:fs");
+  const { join } = require("node:path") as typeof import("node:path");
+  const { tmpdir } = require("node:os") as typeof import("node:os");
+  const { loadCanonicalServers } = require("../src/mcp.ts") as typeof import("../src/mcp.ts");
+  function hubWith(doc: unknown) {
+    const hub = realpathSync(mkdtempSync(join(tmpdir(), "agent-hub-envhub-")));
+    mkdirSync(join(hub, "mcp", "gh"), { recursive: true });
+    writeFileSync(join(hub, "mcp", "gh", "mcp.json"), JSON.stringify(doc));
+    return hub;
+  }
+
+  test("loading the hub reports each plaintext field once per server, honouring allowPlaintextFields", () => {
+    const hub = hubWith({
+      mcp: { command: "/bin/gh", env: { GITHUB_TOKEN: "ghp_0123456789abcdefghijABCDEFGHIJ012345", API_KEY: "k" } },
+      allowPlaintextFields: ["env.API_KEY"],
+    });
+    const warnings: Array<{ server: string; field: string; reason: string; source: string }> = [];
+    loadCanonicalServers(hub, undefined, warnings);
+    expect(warnings.map((w) => `${w.server}:${w.field}`)).toEqual(["gh:env.GITHUB_TOKEN"]);
+    expect(warnings[0]!.source.endsWith("mcp/gh/mcp.json")).toBe(true);
+  });
+
+  test("allowPlaintextFields must be an array of field paths", () => {
+    for (const bad of ["env.X", [1], [""]]) {
+      const hub = hubWith({ mcp: { command: "/bin/gh" }, allowPlaintextFields: bad });
+      expect(() => loadCanonicalServers(hub)).toThrow(/allowPlaintextFields/);
+    }
+  });
+});

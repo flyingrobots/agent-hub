@@ -22,6 +22,8 @@ export type McpServerSpec = {
 export type RawMcpDocument = {
   mcp?: unknown;
   overrides?: Record<string, unknown>;
+  /** Field paths (`env.API_KEY`, `headers.Authorization`) whose literal values are intended. */
+  allowPlaintextFields?: unknown;
 };
 
 export type OwnershipBasis = "created" | "adopted" | "forced";
