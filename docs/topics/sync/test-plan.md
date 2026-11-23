@@ -21,6 +21,8 @@ module directly.
 | --- | --- | --- | --- | --- | --- |
 | SYNC-LINK-1 | Rules and skills are linked into every target whose root exists; tool-owned directories are preserved; removed skills are pruned | Symlinks present, `.system` dir untouched, link gone after hub removal (checked with `lstat`) | E2E | Implemented | `agent-hub.test.ts › installs skills, preserves tool-owned dirs, compiles MCP configs, passes --check, and prunes cleanly` |
 | SYNC-LINK-6 | OpenCode links and MCP config follow `$XDG_CONFIG_HOME` | Links and `opencode.json` under the XDG base; `--check` 0 | E2E | Implemented | `followups.test.ts › OpenCode links and MCP follow $XDG_CONFIG_HOME, as OpenCode itself does` |
+| SYNC-LINK-7 | A symlinked `XDG_CONFIG_HOME` that names `~/.config` causes no churn or conflict after a default-base sync | `--check` 0 with no conflict; links kept after `--adopt` | E2E | Implemented | `followups.test.ts › a symlinked XDG_CONFIG_HOME naming ~/.config causes no churn or conflicts after a default-base sync` |
+| SYNC-LINK-8 | A relative `XDG_CONFIG_HOME` is ignored | Links under `~/.config/opencode`, none under the relative path | E2E | Implemented | `followups.test.ts › a relative XDG_CONFIG_HOME is ignored, as the XDG spec requires` |
 | SYNC-LINK-2 | Unsafe skill sources (escaping, absolute or cyclic symlinks) are refused with no hub change | Exit 1, message, skill absent from hub | E2E | Implemented | `hardening.test.ts › F3 & F12: cyclic symlinks and escaping/absolute symlinks in skills & archives are rejected safely` |
 | SYNC-LINK-3 | A failed skill install leaves no staging directories in the hub | No `.staging-*` entries | Unit | Implemented | `hardening.test.ts › F4: applySkillInstall cleans up .staging-* on mid-install failure (zero leaks in <hub>/skills)` |
 | SYNC-LINK-4 | The skill name comes from `SKILL.md` frontmatter, including quoted values and inline comments | Installed directory name | E2E | Implemented | `hardening.test.ts › F10: YAML frontmatter name parses inline comments and quoted scalars cleanly` |
@@ -55,6 +57,7 @@ module directly.
 | SYNC-SCOPE-8 | A scoped run still prunes the active target's own stale links | Cursor link gone (by `lstat`), Claude link kept, scoped `--check` 0, unscoped `--check` 1 | E2E | Implemented | `adapters.test.ts › --targets cursor:links prunes a removed skill from Cursor and keeps Claude's` |
 | SYNC-SCOPE-10 | A repeated `--targets` flag exits 2 | Exit code, message | E2E | Implemented | `followups.test.ts › a repeated --targets flag is a usage error (exit 2), not silently last-wins` |
 | SYNC-SCOPE-11 | Excluded agents are absent from the compiled server map, so they can never be read as disabled | Map keys | Unit | Implemented | `followups.test.ts › the compiled server map has no entry for an inactive agent` |
+| SYNC-SCOPE-12 | `--skill-only` with `--disown-legacy` exits 2 | Exit code, message | E2E | Implemented | `followups.test.ts › --skill-only with --disown-legacy is a usage error, not a silent success (Baker Street PR #18 M-F-4)` |
 | SYNC-SCOPE-9 | Re-enabling an excluded target catches up its missed prunes | Next run prunes the removed server and skill | E2E | Implemented | `followups.test.ts › SYNC-SCOPE-9: re-enabling an excluded target catches up the prunes it missed` |
 
 ## Upgrade

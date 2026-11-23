@@ -275,3 +275,88 @@ describe("Contract ledger gaps from docs/ (flyingrobots/agent-hub#3)", () => {
     expect(readFileSync(cursorPath, "utf8")).toBe(edited);
   });
 });
+
+describe("Ledger records follow their config file across an OpenCode XDG move (Baker Street PR #18 H-F-1)", () => {
+  function moved() {
+    const sb = sandbox({ opencode: true });
+    server(sb.hub, "alpha", { command: "/bin/alpha" });
+    // First sync with the default base: alpha is recorded against ~/.config/opencode/opencode.json.
+    expect(runSync({ ...sb.base, targets: sel("opencode") }).exitCode).toBe(0);
+    const oldCfg = join(sb.home, ".config", "opencode", "opencode.json");
+    const xdg = join(sb.home, "xdg");
+    mkdirSync(join(xdg, "opencode", "skills"), { recursive: true });
+    const newCfg = join(xdg, "opencode", "opencode.json");
+    return { ...sb, oldCfg, xdg, newCfg, moved: { ...sb.base, xdgConfigHome: xdg, targets: sel("opencode") } };
+  }
+
+  test("an identical user entry in the new file is not silently adopted by the old record", () => {
+    const { oldCfg, newCfg, moved: opts } = moved();
+    const mine = JSON.stringify({ mcp: { alpha: { type: "local", command: ["/bin/alpha"], enabled: true } } }, null, 2) + "\n";
+    writeFileSync(newCfg, mine);
+    const oldBefore = readFileSync(oldCfg, "utf8");
+    const r = runSync(opts);
+    expect(r.exitCode).toBe(1);
+    expect(out(r)).toContain("--adopt");
+    expect(readFileSync(newCfg, "utf8")).toBe(mine);
+    expect(readFileSync(oldCfg, "utf8")).toBe(oldBefore);
+    expect(runSync({ ...opts, adopt: true }).exitCode).toBe(0);
+  });
+
+  test("removing the hub server never deletes a same-named user entry from the new file", () => {
+    const { hub, oldCfg, newCfg, moved: opts } = moved();
+    const mine = JSON.stringify({ mcp: { alpha: { type: "local", command: ["/bin/alpha"], enabled: true } } }, null, 2) + "\n";
+    writeFileSync(newCfg, mine);
+    rmSync(join(hub, "mcp", "alpha"), { recursive: true });
+    const oldBefore = readFileSync(oldCfg, "utf8");
+    const r = runSync(opts);
+    expect(r.exitCode).toBe(0);
+    expect(readFileSync(newCfg, "utf8")).toBe(mine);
+    expect(readFileSync(oldCfg, "utf8")).toBe(oldBefore);
+  });
+
+  test("an absent entry is added to the new file; the old file is left untouched and the stale record is reported", () => {
+    const { home, hub, oldCfg, newCfg, moved: opts, base } = moved();
+    const oldBefore = readFileSync(oldCfg, "utf8");
+    const r = runSync(opts);
+    expect(r.exitCode).toBe(0);
+    expect(JSON.parse(readFileSync(newCfg, "utf8")).mcp.alpha.command).toEqual(["/bin/alpha"]);
+    expect(readFileSync(oldCfg, "utf8")).toBe(oldBefore);
+    expect(out(r)).toContain(oldCfg);
+    const { statePath } = getStatePaths(hub, home, base.xdgStateHome);
+    expect(loadOwnershipState(statePath, hub).state.mcp.opencode.alpha?.configPath).toBe(newCfg);
+    expect(runSync({ ...opts, checkOnly: true }).exitCode).toBe(0);
+  });
+});
+
+describe("XDG_CONFIG_HOME aliases (Baker Street PR #18 M-F-3)", () => {
+  test("a symlinked XDG_CONFIG_HOME naming ~/.config causes no churn or conflicts after a default-base sync", () => {
+    const { home, hub, base } = sandbox({ opencode: true });
+    skill(hub, "demo");
+    expect(runSync({ ...base, targets: sel("opencode") }).exitCode).toBe(0);
+    const alias = join(home, "cfglink");
+    Bun.spawnSync(["ln", "-s", join(home, ".config"), alias]);
+    const opts = { ...base, xdgConfigHome: alias, targets: sel("opencode") };
+    const chk = runSync({ ...opts, checkOnly: true });
+    expect(out(chk)).not.toContain("conflict");
+    expect(chk.exitCode).toBe(0);
+    expect(runSync({ ...opts, adopt: true }).exitCode).toBe(0);
+    expect(isLink(join(home, ".config", "opencode", "skills", "demo"))).toBe(true);
+    expect(isLink(join(home, ".config", "opencode", "AGENTS.md"))).toBe(true);
+  });
+
+  test("a relative XDG_CONFIG_HOME is ignored, as the XDG spec requires", () => {
+    const { home, hub, base } = sandbox({ opencode: true });
+    skill(hub, "demo");
+    const r = runSync({ ...base, xdgConfigHome: "relative/cfg", cwd: home, targets: sel("opencode") });
+    expect(r.exitCode).toBe(0);
+    expect(isLink(join(home, ".config", "opencode", "skills", "demo"))).toBe(true);
+    expect(isLink(join(home, "relative", "cfg", "opencode", "skills", "demo"))).toBe(false);
+  });
+});
+
+test("--skill-only with --disown-legacy is a usage error, not a silent success (Baker Street PR #18 M-F-4)", () => {
+  const { base } = sandbox();
+  const r = runSync({ ...base, skillOnly: true, disownLegacy: [{ agent: "claude", name: "x" }] });
+  expect(r.exitCode).toBe(2);
+  expect(out(r)).toContain("--skill-only cannot be combined with --disown-legacy");
+});

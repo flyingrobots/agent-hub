@@ -3,8 +3,8 @@
  * Consolidates per-agent paths, default file modes, transport capabilities,
  * compilation rules, and comparable normalizers.
  */
-import { join, sep } from "node:path";
-import { isPlainObject } from "./paths.ts";
+import { isAbsolute, join, sep } from "node:path";
+import { canonicalizeHubPath, isPlainObject } from "./paths.ts";
 import { normalizeCodexComparable } from "./toml-edit.ts";
 import type { AgentId, McpServerSpec, McpTransport } from "./types.ts";
 
@@ -29,7 +29,25 @@ export const LINK_TARGETS: readonly LinkTargetDef[] = [
 ] as const;
 
 /**
- * Determine which target owns a recorded link destination under the current HOME, so a
+ * The XDG config base: `$XDG_CONFIG_HOME` when it is an absolute path, else `~/.config`. A relative
+ * value is ignored, as the XDG Base Directory spec requires. An absolute value is resolved through
+ * symlinks, so an alias for `~/.config` names the same destinations (and ledger keys) as
+ * `~/.config` itself; the default is used as given.
+ */
+export function xdgConfigBase(homeDir: string, xdgConfigHome?: string): string {
+  if (xdgConfigHome && isAbsolute(xdgConfigHome)) {
+    return canonicalizeHubPath(xdgConfigHome, homeDir, "/");
+  }
+  return join(homeDir, ".config");
+}
+
+/** Absolute root directory of a link target. */
+export function linkTargetRoot(target: LinkTargetDef, homeDir: string, configBase: string): string {
+  return join(target.base === "config" ? configBase : homeDir, target.rootRel);
+}
+
+/**
+ * Determine which target owns a recorded link destination under the current HOME (OpenCode: under the current XDG config base), so a
  * scoped run never prunes an excluded target's links.
  *
  * Ownership is recognized only for an exact layout path: a target's rules file
@@ -40,16 +58,6 @@ export const LINK_TARGETS: readonly LinkTargetDef[] = [
  * basename, an exact layout match is unambiguous. Anything else returns null, and scoped runs
  * keep records they cannot attribute.
  */
-/** `$XDG_CONFIG_HOME` when set and non-empty, else `~/.config`. */
-export function xdgConfigBase(homeDir: string, xdgConfigHome?: string): string {
-  return xdgConfigHome && xdgConfigHome.length > 0 ? xdgConfigHome : join(homeDir, ".config");
-}
-
-/** Absolute root directory of a link target. */
-export function linkTargetRoot(target: LinkTargetDef, homeDir: string, configBase: string): string {
-  return join(target.base === "config" ? configBase : homeDir, target.rootRel);
-}
-
 export function resolveLinkTargetId(
   dstPath: string,
   homeDir: string,

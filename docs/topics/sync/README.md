@@ -104,8 +104,12 @@ A run never plans changes for an excluded target or domain:
   exits `2` and names the selector to add.
 
 A link is attributed to a target only when its path is exactly that target's rules file or a
-direct child of its skills directory under the current `HOME`. A scoped run keeps any record it
-cannot attribute, such as one written under a different `HOME`.
+direct child of its skills directory under the current `HOME` (for OpenCode, under the current
+XDG config base). A scoped run keeps any record it cannot attribute, such as one written under a
+different `HOME` or `XDG_CONFIG_HOME`.
+
+`XDG_CONFIG_HOME` is used only when it is an absolute path, as the XDG spec requires, and is
+resolved through symlinks, so an alias for `~/.config` behaves exactly like `~/.config`.
 
 ## Installing skills
 
@@ -123,8 +127,8 @@ directory first. Symlinks that escape the skill, absolute symlinks and cycles ar
 
 Earlier versions compiled MCP servers only for Claude, Codex and Antigravity, though they already
 linked rules and skills into `~/.cursor` and `~/.config/opencode`. After upgrading, the first
-unscoped run also writes hub MCP servers into `~/.cursor/mcp.json` and
-`~/.config/opencode/opencode.json`, and `--check` reports that as pending work until it happens.
+unscoped run also writes hub MCP servers into `~/.cursor/mcp.json` and `<oc>/opencode.json`, and
+`--check` reports that as pending work until it happens.
 The strict JSON refusals and `config.json` validation are also new, and apply to every target.
 
 That run applies no Phase 2 change if either file has a personal server with the same name as a
@@ -132,3 +136,21 @@ hub server, or if either config is refused (see
 [strict JSON refusals](../mcp/README.md#strict-json-refusals)). To leave Cursor's and OpenCode's
 MCP configs untouched, as before, set `"disabledTargets": ["cursor:mcp", "opencode:mcp"]` before
 the first run.
+
+### If you set `XDG_CONFIG_HOME`
+
+Earlier versions always used `~/.config/opencode`, even when `XDG_CONFIG_HOME` pointed elsewhere,
+so OpenCode never read what they wrote. Now `<oc>` is `$XDG_CONFIG_HOME/opencode`. On the first
+unscoped run after upgrading:
+
+- **Links.** The old rules and skill links under `~/.config/opencode` are pruned (they are
+  `sync-agents`' own symlinks) and created under `<oc>`. A scoped run keeps the old links until
+  an unscoped run, because it cannot attribute them to OpenCode any more.
+- **MCP entries.** Hub servers are written into `<oc>/opencode.json`. The ownership records for
+  the servers written into `~/.config/opencode/opencode.json` are retired (`retire-moved-record`
+  in `--dry-run`), and that old file is **left untouched**: remove its entries by hand if you no
+  longer want them. A record never claims a same-named entry in the new file. If
+  `<oc>/opencode.json` already has a server with a hub server's name, the run stops as a
+  conflict; pass `--adopt` if it is identical, or rename one of them.
+
+Run `sync-agents --dry-run` first to see each of these before anything is written.

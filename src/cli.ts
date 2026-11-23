@@ -299,6 +299,10 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
   }
   const configBase = xdgConfigBase(homeDir, xdgConfigHome);
 
+  if (skillOnly && disownLegacy.length > 0) {
+    stderr.push(`${cmdLabel}: --skill-only cannot be combined with --disown-legacy (MCP planning does not run)`);
+    return { exitCode: 2, stdout, stderr };
+  }
   // A disown request is consumed only by its agent's MCP planner; out of scope it would be
   // dropped silently, so refuse it as a usage error instead.
   for (const req of disownLegacy) {

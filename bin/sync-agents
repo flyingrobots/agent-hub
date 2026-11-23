@@ -93,7 +93,10 @@ canonicalize_path() {
 }
 
 read_config_agents_dir() {
-  local cfg="${XDG_CONFIG_HOME:-$HOME/.config}/agent-hub/config.json"
+  # A relative XDG_CONFIG_HOME is ignored, as the XDG spec requires (and as the engine does).
+  local xdg_base="$HOME/.config"
+  if [[ "${XDG_CONFIG_HOME:-}" == /* ]]; then xdg_base="$XDG_CONFIG_HOME"; fi
+  local cfg="$xdg_base/agent-hub/config.json"
   [[ -f "$cfg" ]] || return 0
   if command -v bun >/dev/null 2>&1; then
     bun -e '

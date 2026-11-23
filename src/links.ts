@@ -462,7 +462,7 @@ function planPruneLinkOp(dst: string, rec: ManagedLinkRecord): PlannedLinkOp {
         observed: `managed symlink -> ${rec.target}`,
         intended: "remove stale managed symlink",
         ownershipBasis: rec.basis,
-        reason: "canonical source was removed and destination matches recorded managed target",
+        reason: "no longer a desired link (its canonical source was removed, or its target root moved) and destination matches recorded managed target",
         targetMutation: true,
         ledgerMutation: true,
       },

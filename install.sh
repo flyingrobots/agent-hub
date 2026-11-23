@@ -382,7 +382,8 @@ echo "[install] agent-hub -> $INSTALL_DIR"
 echo "[install] symlink   -> $SHIM_PATH"
 
 if [[ -n "$CONFIG_AGENTS_DIR" ]]; then
-  CFG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/agent-hub"
+  CFG_DIR="$HOME/.config/agent-hub"
+  if [[ "${XDG_CONFIG_HOME:-}" == /* ]]; then CFG_DIR="$XDG_CONFIG_HOME/agent-hub"; fi
   CFG_FILE="$CFG_DIR/config.json"
   mkdir -p "$CFG_DIR"
   if command -v bun >/dev/null 2>&1; then

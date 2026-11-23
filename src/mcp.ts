@@ -1082,7 +1082,16 @@ function planSingleMcpTarget(
     }
   }
 
-  const prevManaged = state.mcp[adapter.id];
+  // A ledger record owns an entry only in the file it was written for. A record for another
+  // file (the adapter's config moved, e.g. OpenCode following $XDG_CONFIG_HOME) must never claim
+  // a same-named entry here: that entry may be the user's. Such records are retired, and the
+  // file they describe is left untouched.
+  const prevManaged: Record<string, ManagedMcpRecord> = {};
+  const staleRecords: Array<[string, ManagedMcpRecord]> = [];
+  for (const [recName, rec] of Object.entries(state.mcp[adapter.id])) {
+    if (rec.configPath === configPath) prevManaged[recName] = rec;
+    else staleRecords.push([recName, rec]);
+  }
   const legacySet = legacyV1?.managed[adapter.id] ?? new Set<string>();
 
   const ctx: TargetPlanCtx = {
@@ -1100,6 +1109,24 @@ function planSingleMcpTarget(
     now,
     opts,
   };
+
+  for (const [recName, rec] of staleRecords.sort(([a], [b]) => a.localeCompare(b))) {
+    ctx.ledgerMutation = true;
+    ctx.changeSummaries.push(`retire record for moved config ${rec.configPath}#${recName}`);
+    ctx.ops.push({
+      domain: "mcp",
+      action: "retire-moved-record",
+      status: "change",
+      destination: `${rec.configPath}#${recName}`,
+      observed: `ownership record for "${recName}" in ${rec.configPath}`,
+      intended: `stop managing "${recName}" in ${rec.configPath}; ${adapter.label} now reads ${configPath}`,
+      ownershipBasis: rec.basis,
+      reason: `${adapter.label}'s config moved from ${rec.configPath} to ${configPath}; the record does not describe the file being synced, so it is retired and ${rec.configPath} is left untouched`,
+      nextStep: `Remove "${recName}" from ${rec.configPath} by hand if you no longer want it there`,
+      targetMutation: false,
+      ledgerMutation: true,
+    });
+  }
 
   for (const [name, compiledPerAgent] of servers) {
     if (!Object.prototype.hasOwnProperty.call(compiledPerAgent, adapter.id)) {

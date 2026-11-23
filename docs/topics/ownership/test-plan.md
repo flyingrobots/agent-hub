@@ -49,6 +49,9 @@ exist.
 | ID | Requirement | Oracle | Evidence | Status | Test |
 | --- | --- | --- | --- | --- | --- |
 | OWN-V1-1 | The v1 lifecycle (adopt, retire absent, disown) behaves as documented | Ledger and target per step | E2E | Implemented | `agent-hub.test.ts › Contract 2 (Amendment 5): full legacy v1 .mcp-managed.json lifecycle (L1-L6) & --disown-legacy` |
+| OWN-LED-6 | A ledger record for a moved config file never adopts an identical same-named entry in the new file; `--adopt` is required | Exit 1 naming `--adopt`; both files unchanged | E2E | Implemented | `followups.test.ts › an identical user entry in the new file is not silently adopted by the old record` |
+| OWN-LED-7 | Removing a hub server never deletes a same-named user entry from the moved-to file | Both files unchanged | E2E | Implemented | `followups.test.ts › removing the hub server never deletes a same-named user entry from the new file` |
+| OWN-LED-8 | A record for a moved file is retired and reported; the old file is left untouched; the entry is written to the new file | Old file bytes; new entry; ledger `configPath`; `--check` 0 | E2E | Implemented | `followups.test.ts › an absent entry is added to the new file; the old file is left untouched and the stale record is reported` |
 | OWN-LED-5 | A mixed conflict also leaves the ledger untouched | State bytes | E2E | Implemented | `followups.test.ts › OWN-LED-5: a mixed conflict leaves the ledger byte-identical` |
 | OWN-V1-3 | `--force` replaces a v1-claimed entry | Target and ledger | E2E | Implemented | `followups.test.ts › OWN-V1-3: --force replaces a differing entry claimed only by a legacy v1 manifest` |
 | OWN-V1-2 | `--disown-legacy` naming an agent whose MCP domain is out of scope exits 2 with the selector to add | Nonzero exit with message | E2E | Implemented | `followups.test.ts › --disown-legacy naming an agent whose MCP domain is out of scope is refused, not silently dropped` |
