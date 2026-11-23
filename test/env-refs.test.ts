@@ -1,4 +1,9 @@
 import { describe, expect, test } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { parseTargetSelector } from "../src/types.ts";
+import { runSync } from "./jsonl.ts";
 import { MCP_ADAPTER_BY_ID } from "../src/adapters.ts";
 import { detectPlaintextSecrets, exactEnvRef, hasEnvRef, parseEnvRefs, rewriteEnvRefs } from "../src/env-refs.ts";
 import { renderCodexSection, rewriteCodexToml } from "../src/toml-edit.ts";
@@ -214,5 +219,47 @@ describe("hub mcp.json: allowPlaintextFields and detector wiring (flyingrobots/a
       const hub = hubWith({ mcp: { command: "/bin/gh" }, allowPlaintextFields: bad });
       expect(() => loadCanonicalServers(hub)).toThrow(/allowPlaintextFields/);
     }
+  });
+});
+
+describe("a sync warns about plaintext secrets and still syncs (flyingrobots/agent-hub#6)", () => {
+  function sb(doc: unknown) {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-envsync-")));
+    const hub = path.join(home, ".agents");
+    fs.mkdirSync(path.join(hub, "mcp", "gh"), { recursive: true });
+    fs.mkdirSync(path.join(hub, "skills"), { recursive: true });
+    fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+    fs.writeFileSync(path.join(hub, "mcp", "gh", "mcp.json"), JSON.stringify(doc));
+    return {
+      home,
+      opts: {
+        hubDir: hub,
+        homeDir: home,
+        xdgConfigHome: path.join(home, ".config"),
+        xdgStateHome: path.join(home, ".local", "state"),
+        targets: [parseTargetSelector("claude:mcp")!],
+      },
+    };
+  }
+
+  test("a literal token is one warning line per field; the run still writes the config and exits 0", () => {
+    const { home, opts } = sb({ mcp: { command: "/bin/gh", env: { GITHUB_TOKEN: "ghp_0123456789abcdefghijABCDEFGHIJ012345" } } });
+    for (const mode of [{}, { dryRun: true }, { checkOnly: true }]) {
+      const r = runSync({ ...opts, ...mode });
+      const warnings = r.events.filter((e) => e.id === "agent_hub.warning");
+      expect(warnings.map((w) => [w.stream, w.data.server, w.data.field, w.data.code])).toEqual([["stderr", "gh", "env.GITHUB_TOKEN", "plaintext_secret"]]);
+      expect(JSON.stringify(warnings)).not.toContain("ghp_0123");
+    }
+    expect(JSON.parse(fs.readFileSync(path.join(home, ".claude.json"), "utf8")).mcpServers.gh.env.GITHUB_TOKEN).toMatch(/^ghp_/);
+  });
+
+  test("allowPlaintextFields silences the warning; a reference never warns", () => {
+    const a = sb({ mcp: { command: "/bin/gh", env: { GITHUB_TOKEN: "ghp_0123456789abcdefghijABCDEFGHIJ012345" } }, allowPlaintextFields: ["env.GITHUB_TOKEN"] });
+    expect(runSync(a.opts).events.some((e) => e.id === "agent_hub.warning")).toBe(false);
+    const b = sb({ mcp: { command: "/bin/gh", env: { GITHUB_TOKEN: "${env:GITHUB_TOKEN}" } } });
+    const r = runSync(b.opts);
+    expect(r.exitCode).toBe(0);
+    expect(r.events.some((e) => e.id === "agent_hub.warning")).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(b.home, ".claude.json"), "utf8")).mcpServers.gh.env.GITHUB_TOKEN).toBe("${GITHUB_TOKEN}");
   });
 });

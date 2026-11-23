@@ -97,8 +97,10 @@ Limits worth knowing:
 
 ### Plaintext secrets
 
-On every run, `sync-agents` warns (it does not refuse) about literal values in a server spec that
-look like credentials. It checks for known token patterns (`sk-…`, `ghp_…`, `github_pat_…`,
+On every run (sync, `--dry-run`, `--check`, `--explain`), `sync-agents` prints one
+`agent_hub.warning` line per field, before anything else the run reports, for each literal value
+in a server spec that looks like a credential. It does not refuse, and the exit code is
+unchanged; the value is never printed. It checks for known token patterns (`sk-…`, `ghp_…`, `github_pat_…`,
 Slack `xox?-…`, Google `AIza…`, AWS `AKIA…`, PEM private keys), any literal under an `env` key or
 header name that suggests a credential (`token`, `secret`, `password`, `api_key`, `auth`,
 `credential`, `private_key`, `session`, `cookie`), and a URL with an embedded user and password.

@@ -1441,8 +1441,9 @@ export function planMcpSync(
     configBase?: string;
     disownLegacy: Array<{ agent: AgentId; name: string }>;
   },
-): { targets: PlannedMcpTarget[]; globalOps: PlannedOp[] } {
-  const servers = loadCanonicalServers(canonicalHubPath, opts.activeTargets);
+): { targets: PlannedMcpTarget[]; globalOps: PlannedOp[]; warnings: PlaintextSecretWarning[] } {
+  const warnings: PlaintextSecretWarning[] = [];
+  const servers = loadCanonicalServers(canonicalHubPath, opts.activeTargets, warnings);
   const now = new Date().toISOString();
   const { disownByAgent, globalOps } = validateDisownRequests(opts.disownLegacy, legacyV1, servers);
 
@@ -1467,7 +1468,7 @@ export function planMcpSync(
     if (plan) targets.push(plan);
   }
 
-  return { targets, globalOps };
+  return { targets, globalOps, warnings };
 }
 
 export function applyMcpTarget(
