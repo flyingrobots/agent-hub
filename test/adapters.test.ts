@@ -463,7 +463,9 @@ describe("Baker Street round 1 repairs (PR #2)", () => {
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toContain("JSONC");
     expect(r.stderr).toContain("--targets");
-    expect(r.stderr).toContain('"disabledTargets": ["opencode"]');
+    expect(r.stderr).toContain('"disabledTargets": ["opencode:mcp"]');
+    expect(r.stderr).toContain(join(home, ".config", "agent-hub", "config.json"));
+    expect(r.stderr).toContain("no Phase 2 target or ledger changes were applied");
     // The run as a whole is refused: Claude did not receive the server either.
     expect(JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers).toBeUndefined();
 
@@ -472,7 +474,7 @@ describe("Baker Street round 1 repairs (PR #2)", () => {
     writeFileSync(join(home, ".cursor", "mcp.json"), "// c\n{}\n");
     const r2 = runCmd([SYNC_BIN], env);
     expect(r2.exitCode).toBe(1);
-    expect(r2.stderr).toContain('"disabledTargets": ["cursor"]');
+    expect(r2.stderr).toContain('"disabledTargets": ["cursor:mcp"]');
   });
 
   test("R-2: a conflict with a personal entry in one target names the opt-out, not only --force", () => {
@@ -484,7 +486,7 @@ describe("Baker Street round 1 repairs (PR #2)", () => {
     const r = runCmd([SYNC_BIN], env);
     expect(r.exitCode).toBe(1);
     expect(r.stderr).toContain("[conflict]");
-    expect(r.stderr).toContain('"disabledTargets": ["cursor"]');
+    expect(r.stderr).toContain('"disabledTargets": ["cursor:mcp"]');
     expect(readFileSync(cursorPath, "utf8")).toBe(mine);
   });
 
@@ -512,5 +514,64 @@ describe("Baker Street round 1 repairs (PR #2)", () => {
     const rn = runCmd([SYNC_BIN, "--targets", "cursor"], env);
     expect(rn.exitCode).toBe(1);
     expect(rn.stderr).toContain('duplicate key "command"');
+  });
+});
+
+describe("Domain-scoped targets (<target>:mcp, <target>:links)", () => {
+  function writeSkillAndServer(hub: string) {
+    mkdirSync(join(hub, "skills", "demo"), { recursive: true });
+    writeFileSync(join(hub, "skills", "demo", "SKILL.md"), "---\nname: demo\ndescription: d\n---\n");
+    mkdirSync(join(hub, "mcp", "srv"), { recursive: true });
+    writeFileSync(join(hub, "mcp", "srv", "mcp.json"), JSON.stringify({ mcp: { command: "/bin/srv" } }));
+  }
+
+  test("disabledTargets [\"opencode:mcp\"] keeps OpenCode links syncing past an opencode.jsonc", () => {
+    const { home, hub, env } = makeSandbox();
+    writeSkillAndServer(hub);
+    const jsonc = join(home, ".config", "opencode", "opencode.jsonc");
+    writeFileSync(jsonc, "// mine\n{}\n");
+    mkdirSync(join(home, ".config", "agent-hub"), { recursive: true });
+    writeFileSync(
+      join(home, ".config", "agent-hub", "config.json"),
+      JSON.stringify({ disabledTargets: ["opencode:mcp"] }),
+    );
+    const r = runCmd([SYNC_BIN], env);
+    expect(r.stderr).toBe("");
+    expect(r.exitCode).toBe(0);
+    expect(lstatSync(join(home, ".config", "opencode", "skills", "demo")).isSymbolicLink()).toBe(true);
+    expect(lstatSync(join(home, ".config", "opencode", "AGENTS.md")).isSymbolicLink()).toBe(true);
+    expect(readFileSync(jsonc, "utf8")).toBe("// mine\n{}\n");
+    expect(existsSync(join(home, ".config", "opencode", "opencode.json"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers.srv).toBeDefined();
+    expect(runCmd([SYNC_BIN, "--check"], env).exitCode).toBe(0);
+  });
+
+  test("--targets mixes whole targets and single domains", () => {
+    const { home, hub, env } = makeSandbox();
+    writeSkillAndServer(hub);
+    const r = runCmd([SYNC_BIN, "--targets", "claude,opencode:links,cursor:mcp"], env);
+    expect(r.exitCode).toBe(0);
+    expect(lstatSync(join(home, ".claude", "skills", "demo")).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers.srv).toBeDefined();
+    expect(lstatSync(join(home, ".config", "opencode", "skills", "demo")).isSymbolicLink()).toBe(true);
+    expect(existsSync(join(home, ".config", "opencode", "opencode.json"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(home, ".cursor", "mcp.json"), "utf8")).mcpServers.srv).toBeDefined();
+    expect(existsSync(join(home, ".cursor", "skills", "demo"))).toBe(false);
+    expect(existsSync(join(home, ".codex", "skills", "demo"))).toBe(false);
+  });
+
+  test("unknown domain is rejected: exit 2 from --targets, exit 1 from config", () => {
+    const { home, env } = makeSandbox();
+    const r = runCmd([SYNC_BIN, "--targets", "opencode:rules"], env);
+    expect(r.exitCode).toBe(2);
+    expect(r.stderr).toContain('unknown target "opencode:rules"');
+    mkdirSync(join(home, ".config", "agent-hub"), { recursive: true });
+    writeFileSync(
+      join(home, ".config", "agent-hub", "config.json"),
+      JSON.stringify({ disabledTargets: ["cursor:skills"] }),
+    );
+    const r2 = runCmd([SYNC_BIN], env);
+    expect(r2.exitCode).toBe(1);
+    expect(r2.stderr).toContain('unknown target "cursor:skills"');
   });
 });

@@ -18,7 +18,7 @@ Keep your personal `~/.agents/` directory in its own private git repo while inst
 
 > **Strict JSON / JSONC notice:** All JSON MCP adapters (`antigravity`, `claude`, `cursor`, `opencode`) parse target configs strictly via `JSON.parse` and refuse to modify a target config whenever a `.jsonc` sibling exists (e.g., `opencode.jsonc`), whether or not the `.json` file also exists. They also refuse a config that contains comments, trailing commas, or the same key twice in one object (where `JSON.parse` would silently keep only the last value). Commented JSONC files are unsupported until a comment-preserving editor is added.
 >
-> **A refusal stops the whole run.** Every active target is planned before anything is written, so one refused target means no target is synced in that run, and `--check` fails too. The error names the target; to sync the others, leave it out with `--targets` or add it to `disabledTargets` (see [Choosing targets](#choosing-targets)). Do not strip comments from a tool's own config just to make `sync-agents` run.
+> **A refusal stops the whole run.** Every active target is planned before anything is written, so one refused config means no Phase 2 target or ledger change is applied in that run (Phase 0 recovery of an earlier interrupted write may still complete), and `--check` fails too. The error names the target and the remedy: add `"<target>:mcp"` to `disabledTargets` (see [Choosing targets](#choosing-targets)) to leave only that tool's MCP config alone while its rules and skill links keep syncing. Do not strip comments from a tool's own config just to make `sync-agents` run.
 
 > **Important:** Structural synchronization verifies filesystem links, serialized JSON/TOML, and ownership state — it does not prove that a downstream agent application loaded and honored the configuration at runtime.
 
@@ -68,19 +68,21 @@ The same `config.json` also holds `"disabledTargets"`; see [Choosing targets](#c
 
 Every target whose root directory exists (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.cursor`, `~/.config/opencode`) is synced by default.
 
-- **`disabledTargets`** in `${XDG_CONFIG_HOME:-$HOME/.config}/agent-hub/config.json` is an array of target names (`antigravity`, `claude`, `codex`, `cursor`, `opencode`) to leave out by default:
+Each target has two sync domains: **`links`** (its rules file and skill symlinks) and **`mcp`** (its MCP config file). A selector is a target name (`antigravity`, `claude`, `codex`, `cursor`, `opencode`), meaning both domains, or a name with a domain suffix such as `opencode:mcp` or `cursor:links`.
+
+- **`disabledTargets`** in `${XDG_CONFIG_HOME:-$HOME/.config}/agent-hub/config.json` is an array of selectors to leave out by default:
 
   ```json
-  { "agentsDir": "~/.agents", "disabledTargets": ["cursor", "opencode"] }
+  { "agentsDir": "~/.agents", "disabledTargets": ["cursor", "opencode:mcp"] }
   ```
 
-  An unknown name or a non-array value makes the run exit `1`.
-- **`--targets <csv>`** (or `--targets=<csv>`) picks the targets for one run of sync, `--check`, `--dry-run`, or `--explain`. An unknown name exits `2`. An explicit `--targets` list **replaces** `disabledTargets` for that run, so `--targets cursor` acts on Cursor even when `"cursor"` is disabled.
-- **Excluded targets are left exactly as they are.** Nothing in them is pruned: symlinks and MCP entries that `sync-agents` placed earlier stay put, and hub changes (including removed servers) stop reaching them. `--check` reports on active targets only. When a target is enabled again, the next run catches it up, including any prunes it missed.
+  This example leaves Cursor out entirely, and syncs OpenCode's rules and skills but not `opencode.json` (useful if you keep an `opencode.jsonc`). An unknown selector or a non-array value makes the run exit `1`.
+- **`--targets <csv>`** (or `--targets=<csv>`) picks the selectors for one run of sync, `--check`, `--dry-run`, or `--explain`, e.g. `--targets claude,opencode:links`. An unknown selector exits `2`. An explicit `--targets` list **replaces** `disabledTargets` for that run, so `--targets cursor` acts on Cursor even when `"cursor"` is disabled.
+- **Excluded targets are left as they are.** A run never plans changes for an excluded target or domain: symlinks and MCP entries that `sync-agents` placed earlier stay put, and hub changes (including removed servers) stop reaching them. The one exception is Phase 0 recovery, which always finishes `sync-agents`' own interrupted write, whatever the target. `--check` reports drift for active targets only, plus any pending recovery journal. When a target is enabled again, the next run catches it up, including any prunes it missed.
 
 ### Upgrading from a three-target version
 
-Earlier versions synced MCP servers only to Claude, Codex, and Antigravity, though they already linked rules and skills into `~/.cursor` and `~/.config/opencode`. After upgrading, the first unscoped run also writes your hub's MCP servers into `~/.cursor/mcp.json` and `~/.config/opencode/opencode.json`, and `--check` reports that as pending work until it happens. That run is refused, with nothing written, if either file has a personal server with the same name as a hub server, or if an `opencode.jsonc` exists. To keep the old behavior, set `"disabledTargets": ["cursor", "opencode"]` before the first run, or pass `--targets antigravity,claude,codex`.
+Earlier versions synced MCP servers only to Claude, Codex, and Antigravity, though they already linked rules and skills into `~/.cursor` and `~/.config/opencode`. After upgrading, the first unscoped run also writes your hub's MCP servers into `~/.cursor/mcp.json` and `~/.config/opencode/opencode.json`, and `--check` reports that as pending work until it happens. That run is refused, with nothing written, if either file has a personal server with the same name as a hub server, or if an `opencode.jsonc` exists. To keep the old behavior exactly (links into both tools, MCP only for the original three), set `"disabledTargets": ["cursor:mcp", "opencode:mcp"]` before the first run.
 
 ---
 

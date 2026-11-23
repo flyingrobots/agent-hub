@@ -28,7 +28,12 @@ import {
 } from "./state.ts";
 import {
   ALL_AGENTS,
+  parseTargetSelector,
+  resolveTargetScope,
+  targetSelectorNames,
   type AgentId,
+  type TargetScope,
+  type TargetSelector,
   type ApplyHooks,
   type OwnershipStateV2,
   type PlannedOp,
@@ -66,7 +71,8 @@ Options:
       --explain                    Print observed state, intended state, ownership basis, reason,
                                    and next step for each object without modifying disk
       --targets <csv>              Restrict sync/check/dry-run/explain to specific target(s):
-                                   antigravity, claude, codex, cursor, opencode
+                                   antigravity, claude, codex, cursor, opencode, or one
+                                   domain of one, e.g. opencode:mcp or cursor:links
                                    (excluded targets are never pruned). Replaces the
                                    config.json "disabledTargets" list for this run
       --print-dir                  Print the canonical resolved hub directory and exit
@@ -74,14 +80,15 @@ Options:
 
 type HubUserConfig = {
   agentsDir?: string;
-  disabledTargets: AgentId[];
+  disabledTargets: TargetSelector[];
+  configPath: string;
 };
 
 function readUserConfig(homeDir: string, xdgConfigHome?: string): HubUserConfig {
   const cfgBase =
     xdgConfigHome && xdgConfigHome.length > 0 ? xdgConfigHome : join(homeDir, ".config");
   const cfgPath = join(cfgBase, "agent-hub", "config.json");
-  if (!existsSync(cfgPath)) return { disabledTargets: [] };
+  if (!existsSync(cfgPath)) return { disabledTargets: [], configPath: cfgPath };
   const parsed = parseJsonFile(cfgPath);
   if (!isPlainObject(parsed)) {
     throw new Error(`${cfgPath}: config.json must contain a JSON object`);
@@ -90,21 +97,22 @@ function readUserConfig(homeDir: string, xdgConfigHome?: string): HubUserConfig 
     typeof parsed.agentsDir === "string" && parsed.agentsDir.length > 0
       ? parsed.agentsDir
       : undefined;
-  const disabledTargets: AgentId[] = [];
+  const disabledTargets: TargetSelector[] = [];
   if (parsed.disabledTargets !== undefined) {
     if (!Array.isArray(parsed.disabledTargets)) {
       throw new Error(`${cfgPath}: "disabledTargets" must be an array of target names`);
     }
     for (const item of parsed.disabledTargets) {
-      if (typeof item !== "string" || !ALL_AGENTS.includes(item as AgentId)) {
+      const sel = typeof item === "string" ? parseTargetSelector(item) : null;
+      if (!sel) {
         throw new Error(
-          `${cfgPath}: unknown target "${String(item)}" in disabledTargets (expected one of: ${ALL_AGENTS.join(", ")})`,
+          `${cfgPath}: unknown target "${String(item)}" in disabledTargets (expected: ${targetSelectorNames()})`,
         );
       }
-      disabledTargets.push(item as AgentId);
+      disabledTargets.push(sel);
     }
   }
-  return { agentsDir, disabledTargets };
+  return { agentsDir, disabledTargets, configPath: cfgPath };
 }
 
 function readConfigAgentsDir(homeDir: string, xdgConfigHome?: string): string | null {
@@ -175,7 +183,8 @@ function buildSyncPlan(
     force: boolean;
     forceSkill: boolean;
     adopt: boolean;
-    activeTargets: ReadonlySet<AgentId>;
+    scope: TargetScope;
+    configPath: string;
     disownLegacy: Array<{ agent: AgentId; name: string }>;
   },
 ): BuiltSyncPlan {
@@ -201,7 +210,7 @@ function buildSyncPlan(
         : planLinkSync(canonicalHubPath, homeDir, state, stagedSkills.plannedSkillNames, {
             adopt: opts.adopt,
             force: opts.force,
-            activeTargets: opts.activeTargets,
+            activeTargets: opts.scope.links,
             plannedSkillSources: stagedSkills.plannedSkillSources,
           });
 
@@ -210,7 +219,8 @@ function buildSyncPlan(
       : planMcpSync(canonicalHubPath, homeDir, state, legacyV1, {
           adopt: opts.adopt,
           force: opts.force,
-          activeTargets: opts.activeTargets,
+          activeTargets: opts.scope.mcp,
+          configPath: opts.configPath,
           disownLegacy: opts.disownLegacy,
         });
 
@@ -264,15 +274,12 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
     return { exitCode: 2, stdout, stderr };
   }
 
-  let activeTargets: ReadonlySet<AgentId>;
+  let scope: TargetScope;
+  let configPath: string;
   try {
     const userCfg = readUserConfig(homeDir, xdgConfigHome);
-    if (options.targets && options.targets.length > 0) {
-      activeTargets = new Set(options.targets);
-    } else {
-      const disabled = new Set(userCfg.disabledTargets);
-      activeTargets = new Set(ALL_AGENTS.filter((a) => !disabled.has(a)));
-    }
+    scope = resolveTargetScope(options.targets, userCfg.disabledTargets);
+    configPath = userCfg.configPath;
   } catch (err) {
     stderr.push(`${cmdLabel}: ${err instanceof Error ? err.message : String(err)}`);
     return { exitCode: 1, stdout, stderr };
@@ -344,7 +351,8 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
         force,
         forceSkill,
         adopt,
-        activeTargets,
+        scope,
+        configPath,
         disownLegacy,
       });
 
@@ -427,7 +435,8 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       force,
       forceSkill,
       adopt,
-      activeTargets,
+      scope,
+      configPath,
       disownLegacy,
     });
 
@@ -625,24 +634,23 @@ export function parseCliArgs(argv: string[]): {
   return { options, printDir, showHelp };
 }
 
-function parseTargetsArg(raw: string): AgentId[] {
+function parseTargetsArg(raw: string): TargetSelector[] {
   const parts = raw
     .split(",")
     .map((s) => s.trim())
     .filter((s) => s.length > 0);
   if (parts.length === 0) {
     throw new Error(
-      `--targets requires at least one target (expected one or more of: ${ALL_AGENTS.join(", ")})`,
+      `--targets requires at least one target (expected one or more of: ${targetSelectorNames()})`,
     );
   }
-  const out: AgentId[] = [];
+  const out: TargetSelector[] = [];
   for (const p of parts) {
-    if (!ALL_AGENTS.includes(p as AgentId)) {
-      throw new Error(
-        `unknown target "${p}" in --targets (expected one of: ${ALL_AGENTS.join(", ")})`,
-      );
+    const sel = parseTargetSelector(p);
+    if (!sel) {
+      throw new Error(`unknown target "${p}" in --targets (expected: ${targetSelectorNames()})`);
     }
-    if (!out.includes(p as AgentId)) out.push(p as AgentId);
+    out.push(sel);
   }
   return out;
 }

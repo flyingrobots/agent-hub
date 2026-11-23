@@ -80,7 +80,7 @@ type TargetPlanCtx = {
   ledgerMutation: boolean;
   basisUsed: OwnershipBasis | "managed";
   now: string;
-  opts: { adopt: boolean; force: boolean };
+  opts: { adopt: boolean; force: boolean; configPath: string };
 };
 
 function detectFamily(spec: McpServerSpec): TransportFamily {
@@ -996,9 +996,11 @@ function planRemovedLegacyOp(
  * covers all active targets before anything is applied, so one target's refusal stops the
  * whole run; excluding that target is how an operator syncs the rest.
  */
-export function targetOptOutHint(agent: AgentId): string {
-  return `to sync the other targets without ${agent}, pass --targets with the targets you want, or add "disabledTargets": ["${agent}"] to agent-hub/config.json under $XDG_CONFIG_HOME (default ~/.config)`;
+export function targetOptOutHint(agent: AgentId, configPath: string): string {
+  return `to sync everything else and leave ${agent}'s MCP config alone, add "disabledTargets": ["${agent}:mcp"] to ${configPath}, or pass --targets naming what to sync (${agent}:links keeps its rules and skill links)`;
 }
+
+const NOT_APPLIED = "no Phase 2 target or ledger changes were applied in this run";
 
 function planSingleMcpTarget(
   adapter: McpAdapterDef,
@@ -1008,7 +1010,7 @@ function planSingleMcpTarget(
   legacyV1: LegacyManifestV1 | null,
   disownSet: Set<string>,
   now: string,
-  opts: { adopt: boolean; force: boolean },
+  opts: { adopt: boolean; force: boolean; configPath: string },
 ): PlannedMcpTarget | null {
   const rootDir = adapter.rootDir(homeDir);
   if (!existsSync(rootDir) || !statSync(rootDir).isDirectory()) return null;
@@ -1026,7 +1028,7 @@ function planSingleMcpTarget(
   // Checked whether or not the .json exists: with both present, the tool's effective config is ambiguous.
   if (adapter.format === "json" && existsSync(`${configPath}c`)) {
     throw new Error(
-      `mcp-sync: ${configPath}c exists: JSONC files with comments are unsupported until a comment-preserving editor is added; refusing to ${beforeSnapshot.kind === "absent" ? "create a separate" : "modify"} ${configPath}. No target is synced in this run; ${targetOptOutHint(adapter.id)}`,
+      `mcp-sync: ${configPath}c exists: JSONC files with comments are unsupported until a comment-preserving editor is added; refusing to ${beforeSnapshot.kind === "absent" ? "create a separate" : "modify"} ${configPath}; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`,
     );
   }
 
@@ -1054,7 +1056,7 @@ function planSingleMcpTarget(
         parsed = parseStrictJsonTargetFile(configPath);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(`mcp-sync: ${msg}. No target is synced in this run; ${targetOptOutHint(adapter.id)}`);
+        throw new Error(`mcp-sync: ${msg}; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`);
       }
       if (!isPlainObject(parsed)) {
         throw new Error(`mcp-sync: ${configPath} must contain a JSON object`);
@@ -1127,7 +1129,8 @@ function planSingleMcpTarget(
 
   for (const op of ctx.ops) {
     if (op.status === "conflict") {
-      op.nextStep = op.nextStep ? `${op.nextStep}; or ${targetOptOutHint(adapter.id)}` : targetOptOutHint(adapter.id);
+      const hint = targetOptOutHint(adapter.id, opts.configPath);
+      op.nextStep = op.nextStep ? `${op.nextStep}; or ${hint}` : hint;
     }
   }
 
@@ -1167,6 +1170,8 @@ export function planMcpSync(
     adopt: boolean;
     force: boolean;
     activeTargets?: ReadonlySet<AgentId>;
+    /** Resolved agent-hub config.json path, quoted in opt-out remedies. */
+    configPath?: string;
     disownLegacy: Array<{ agent: AgentId; name: string }>;
   },
 ): { targets: PlannedMcpTarget[]; globalOps: PlannedOp[] } {
@@ -1185,7 +1190,11 @@ export function planMcpSync(
       legacyV1,
       disownByAgent[adapter.id],
       now,
-      opts,
+      {
+        adopt: opts.adopt,
+        force: opts.force,
+        configPath: opts.configPath ?? "~/.config/agent-hub/config.json",
+      },
     );
     if (plan) targets.push(plan);
   }
