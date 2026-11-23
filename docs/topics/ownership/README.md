@@ -37,9 +37,10 @@ Ownership is never inferred:
 Strict equivalence compares every entry, including `.git`, dotfiles and empty directories; the
 object kind (FIFOs, sockets and device nodes are refused); file bytes; `mode & 0o7777`;
 `uid`/`gid`; `nlink === 1`; literal symlink targets (escaping relative symlinks are refused); and
-extended attribute names and raw values plus ACLs. On macOS these are read through native calls.
-On Linux they are read with `getfattr`/`getfacl` when installed; without them, xattrs and ACLs
-are outside what can be verified. Timestamps and inode identity are not compared.
+extended attribute names and raw values plus ACLs. Extended attributes are read natively on
+macOS and Linux. ACLs are read natively on macOS; on Linux they are read with `getfacl` when it
+is installed, and otherwise are not verified and do not block adoption. Timestamps and inode
+identity are not compared.
 
 ## Write-ahead recovery
 
@@ -47,12 +48,14 @@ Every target write is journaled first: the journal records the planned before an
 snapshots and the ledger change. The journal is cleared only after the ledger is saved. At the
 start of the next run, Phase 0 inspects any journal and:
 
-- completes the operation if the target is in its before or after state, including a ledger that
-  was not saved and a directory swap interrupted midway;
+- completes the operation if the target already reached its after state, reconciling a ledger
+  that was not saved or a directory swap interrupted midway;
+- discards the journal if the target is still in its before state; the write is redone only if
+  this run's Phase 1 plans it again, which it does not for an excluded target;
 - stops, preserving the destination and the journal, if the target changed in some other way.
   The run reports `pending recovery ambiguous` and refuses to continue until it is resolved.
 
-Phase 0 runs before target scoping is applied, so it finishes `sync-agents`' own interrupted
+Phase 0 runs before target scoping is applied, so it acts on `sync-agents`' own interrupted
 write whatever its target. Its result is reported separately from the run's other changes; a
 preflight failure after recovery applies no new Phase 2 change.
 

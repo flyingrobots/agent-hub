@@ -9,9 +9,10 @@ under `test/`; the documentation gate fails if a cited test does not exist.
 | --- | --- | --- | --- | --- | --- |
 | MCP-FMT-1 | Explicit transport, disabled-before-validation, family switching, the `gemini` to `antigravity` rename, and `--explain` output | Compiled entries per target; error text for a bare `url`; rename message | E2E | Implemented | `agent-hub.test.ts › Contract 8 (SHOULD #2 + Amendment 4): explicit transport, disabled-SSE precedence, family switching, antigravity rename, and --explain` |
 | MCP-FMT-2 | An SSE server needs no override when the SSE-incapable targets are excluded; an active Codex still rejects it | Exit 0 with `--targets cursor` and with `disabledTargets: [codex, antigravity]`; exit 1 for `--targets codex` | E2E | Implemented | `adapters.test.ts › SSE server without per-agent overrides syncs when SSE-incapable adapters are excluded by --targets or disabledTargets` |
-| MCP-CMP-1 | Claude, Codex and Antigravity receive compiled entries, and removed servers are pruned | Parsed target configs | E2E | Implemented | `agent-hub.test.ts › installs skills, preserves tool-owned dirs, compiles MCP configs, passes --check, and prunes cleanly` |
-| MCP-CMP-2 | Cursor and OpenCode receive stdio, http and sse entries in the documented shapes, keep unrelated keys and `0600`, pass `--check`, and prune | Parsed configs, file mode | E2E | Implemented | `adapters.test.ts › Cursor and OpenCode compile stdio/http/sse, preserve unrelated keys & 0600 mode, pass --check, and prune cleanly` |
+| MCP-CMP-1 | Claude, Codex and Antigravity receive compiled entries; a removed server is pruned from Claude | Parsed target configs | E2E | Implemented | `agent-hub.test.ts › installs skills, preserves tool-owned dirs, compiles MCP configs, passes --check, and prunes cleanly` |
+| MCP-CMP-2 | Cursor and OpenCode receive stdio and sse entries in the documented shapes, keep unrelated keys and an existing `0600` mode, pass `--check`, and prune | Parsed configs, file mode | E2E | Implemented | `adapters.test.ts › Cursor and OpenCode compile stdio/http/sse, preserve unrelated keys & 0600 mode, pass --check, and prune cleanly` |
 | MCP-CMP-3 | Cursor http is `{url, headers}`; OpenCode http is `{type: "remote", url, headers, enabled: true}` | Deep equality | E2E | Implemented | `adapters.test.ts › R-4b: Cursor and OpenCode compile http servers to the documented shapes` |
+| MCP-CMP-5 | Prune from Codex and Antigravity; new-file modes (`0600`, Antigravity `0644`) | Parsed configs, mode | E2E | Gap: no maintained test | — |
 | MCP-CMP-4 | Emitted OpenCode entries validate against OpenCode's published schema | Schema validation | — | Gap: checked by hand against `https://opencode.ai/config.json` during review; layout change tracked in flyingrobots/agent-hub#13 | — |
 
 ## Codex TOML editing
@@ -23,7 +24,7 @@ under `test/`; the documentation gate fails if a cited test does not exist.
 | MCP-TOML-3 | Bare, double-quoted and single-quoted keys and subtables are handled | Parsed result | Unit | Implemented | `toml-edit.test.ts › handles bare, double-quoted, and single-quoted keys and arbitrary subtables` |
 | MCP-TOML-4 | Inline-table, dotted-key, bare `[mcp_servers]` and `[[mcp_servers]]` forms are refused | Throws | Unit | Implemented | `toml-edit.test.ts › refuses unsupported inline table, dotted root key, bare [mcp_servers], and [[mcp_servers]]` |
 | MCP-TOML-5 | A change to any unrelated parsed value is refused | Throws | Unit | Implemented | `toml-edit.test.ts › semantic preservation guard rejects deliberate mutation of unrelated parsed values` |
-| MCP-TOML-6 | CRLF line endings and basic-string escapes survive | Byte equality | E2E | Implemented | `hardening.test.ts › F17 & F18c: CRLF preservation and TOML 1.0/1.1 \e, \xHH, \uXXXX, \UXXXXXXXX basic-string key escapes` |
+| MCP-TOML-6 | CRLF line endings and basic-string escapes survive | CRLF present, no bare LF; escaped keys round-trip | Unit | Implemented | `hardening.test.ts › F17 & F18c: CRLF preservation and TOML 1.0/1.1 \e, \xHH, \uXXXX, \UXXXXXXXX basic-string key escapes` |
 
 ## Strict JSON refusals
 
@@ -41,5 +42,5 @@ under `test/`; the documentation gate fails if a cited test does not exist.
 
 | ID | Requirement | Oracle | Evidence | Status | Test |
 | --- | --- | --- | --- | --- | --- |
-| MCP-CONF-1 | A differing personal entry with a hub server's name is a conflict that names the opt-out as well as `--force`, and the file is untouched | Message text; byte equality | E2E | Implemented | `adapters.test.ts › R-2: a conflict with a personal entry in one target names the opt-out, not only --force` |
+| MCP-CONF-1 | A differing personal entry with a hub server's name is a conflict that names the `"<target>:mcp"` opt-out, and the file is untouched | Message text; byte equality | E2E | Implemented | `adapters.test.ts › R-2: a conflict with a personal entry in one target names the opt-out, not only --force` |
 | MCP-CONF-2 | A disabled hub server never acquires ownership of a same-named personal entry, across `--check`, repeated syncs and re-enable | Ledger contents and target bytes | E2E | Implemented | `agent-hub.test.ts › Contract 1 (MUST #1): disabled MCP collision survives --check, 1st sync, 2nd sync, and re-enable without acquiring ownership` |

@@ -30,8 +30,8 @@ changes are called out under **Changed** with what to do.
 
 - Upgrading from a three-target build: the first unscoped run also writes hub MCP
   servers into Cursor and OpenCode configs where those directories exist. Set
-  `"disabledTargets": ["cursor:mcp", "opencode:mcp"]` first to keep the previous
-  behavior.
+  `"disabledTargets": ["cursor:mcp", "opencode:mcp"]` first to leave those two MCP
+  configs untouched.
 - A `config.json` that is not an object, or whose `disabledTargets` is invalid,
   now fails every sync run with exit 1.
 - Scoped runs recognize link ownership only for exact layout paths, so a record

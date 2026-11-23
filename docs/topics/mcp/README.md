@@ -77,11 +77,14 @@ is tracked in flyingrobots/agent-hub#13.
 
 ### Codex TOML editing
 
-Codex `config.toml` is edited in place by a TOML 1.0 lexical scanner. Comments, multiline
-strings, CRLF line endings and unrelated tables are preserved byte for byte. Inline-table,
-dotted-key and array-of-tables forms of `mcp_servers` are refused before any write. After
-rendering, every unrelated parsed value is compared with the original, and the write is refused
-if any changed.
+Codex `config.toml` is edited in place by a TOML 1.0 lexical scanner. Only the
+`[mcp_servers.<name>]` sections agent-hub manages are rewritten; everything outside them,
+including comments, multiline strings, CRLF line endings and unrelated tables, is kept as it was.
+An updated section stays where it was, a new one is appended at the end, and a comment or blank
+lines between a managed section and the next table stay with that next table. Comments *inside*
+a managed section are regenerated with it and not kept. Inline-table, dotted-key and
+array-of-tables forms of `mcp_servers` are refused before any write. After rendering, every
+unrelated parsed value is compared with the original, and the write is refused if any changed.
 
 ## Strict JSON refusals
 
@@ -96,12 +99,18 @@ when:
   names the decoded key and its location;
 - the document root, or its `mcpServers`/`mcp` value, is not an object.
 
-Codex is refused on invalid TOML or a non-table `mcp_servers`.
+Codex is refused on invalid TOML, a non-table `mcp_servers`, or a form the editor cannot change
+safely (above).
+
+Any target config that is not a regular file is refused, including one that is a symlink (as
+dotfile managers often create). JSON targets are rewritten with `JSON.stringify` and two-space
+indentation: values and key order survive, other formatting does not.
 
 **A refusal stops the whole run.** Every active target is planned before anything is written, so
 no Phase 2 target or ledger change is applied, and `--check` fails too. Phase 0 recovery of an
-earlier interrupted write may still complete. The error names the target, the resolved
-`config.json` path and the remedy: add `"<target>:mcp"` to `disabledTargets`, which leaves only
+earlier interrupted write may still complete. For the refusals listed here the error names the
+target, the resolved `config.json` path and the remedy (the Codex editor's own refusals do not
+yet; tracked in flyingrobots/agent-hub#3): add `"<target>:mcp"` to `disabledTargets`, which leaves only
 that tool's MCP config alone while its rules and skill links keep syncing. Do not strip comments
 from a tool's own config just to make `sync-agents` run.
 

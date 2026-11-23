@@ -11,7 +11,7 @@ module directly.
 
 | ID | Requirement | Oracle | Evidence | Status | Test |
 | --- | --- | --- | --- | --- | --- |
-| SYNC-HUB-1 | The hub resolves from `--dir`, then `$AGENTS_DIR`, then `config.json` `agentsDir`, then `~/.agents` | `--print-dir` output per layer | E2E | Implemented | `agent-hub.test.ts › resolves hub directory with precedence: --dir > AGENTS_DIR > config.json > ~/.agents` |
+| SYNC-HUB-1 | The hub resolves from `--dir`, then `$AGENTS_DIR`, then `config.json` `agentsDir`, then `~/.agents` | `--print-dir` output per layer (answered by the `bin/sync-agents` wrapper, not the TypeScript resolver sync uses) | E2E | Implemented | `agent-hub.test.ts › resolves hub directory with precedence: --dir > AGENTS_DIR > config.json > ~/.agents` |
 | SYNC-HUB-2 | A relative `--dir` is canonicalized, so links are absolute and `--check` works from any working directory | Link targets absolute; `--check` from another CWD exits 0, and 1 once a link breaks | E2E | Implemented | `agent-hub.test.ts › Contract 7 (MUST #6): relative --dir hub canonicalizes to absolute links and --check catches broken links across CWDs` |
 
 ## Links and skills
@@ -23,6 +23,14 @@ module directly.
 | SYNC-LINK-3 | A failed skill install leaves no staging directories in the hub | No `.staging-*` entries | Unit | Implemented | `hardening.test.ts › F4: applySkillInstall cleans up .staging-* on mid-install failure (zero leaks in <hub>/skills)` |
 | SYNC-LINK-4 | The skill name comes from `SKILL.md` frontmatter, including quoted values and inline comments | Installed directory name | E2E | Implemented | `hardening.test.ts › F10: YAML frontmatter name parses inline comments and quoted scalars cleanly` |
 | SYNC-LINK-5 | A local source path starting with `-` is a path, not a flag | Install succeeds | E2E | Implemented | `hardening.test.ts › F11: local skill source filename starting with '-' is not parsed as a CLI flag` |
+
+## Installer
+
+| ID | Requirement | Oracle | Evidence | Status | Test |
+| --- | --- | --- | --- | --- | --- |
+| SYNC-INST-1 | `install.sh` installs an isolated runtime with its marker and the result passes `--check` | Marker present; `--check` exit 0 | E2E | Implemented | `agent-hub.test.ts › install.sh creates isolated install with .agent-hub-runtime marker and passes --check` |
+| SYNC-INST-2 | `install.sh` never passes `--force`, scopes `--force-skill`, and guards the prefix and shim | Exit codes and preserved files per case | E2E | Implemented | `agent-hub.test.ts › Contract 3 (MUST #2 + SHOULD #4): installer never supplies global force, scopes --force-skill, and guards --prefix & shim` |
+| SYNC-INST-3 | Relative shim resolution, missing-argument exit 2, `--opt=val`, and an atomic runtime swap | Per case | E2E | Implemented | `hardening.test.ts › F7 & F8 & F13: install.sh relative shim resolution, missing-arg exit 2, --opt=val, and atomic swap` |
 
 ## Read-only modes
 

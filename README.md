@@ -45,14 +45,18 @@ export PATH="$HOME/.local/bin:$PATH"   # add to ~/.zshrc or ~/.bashrc
 ```
 
 `install.sh` copies the runtime into `~/.agent-hub/` (marked with `.agent-hub-runtime`), links
-`~/.local/bin/sync-agents`, installs the bundled `agent-hub` skill into the hub, and syncs.
+`~/.local/bin/sync-agents`, and, when the hub directory exists, installs the bundled `agent-hub`
+skill into it and syncs.
 
+- `--no-sync` installs the skill without syncing. `--no-skill` skips both the skill and the
+  sync; run `sync-agents` yourself afterwards. If the hub directory does not exist, neither runs.
 - It never passes `--force`. If `~/.agents/skills/agent-hub` already exists and differs, it is
-  kept and reported. `--force-skill` replaces only that skill; `--no-skill` and `--no-sync` skip
-  those steps.
-- It refuses to replace `/`, `$HOME`, a prefix overlapping the hub, a populated prefix without a
-  valid runtime marker, or an unrecognized file at `~/.local/bin/sync-agents`, unless told to
-  with `--replace-runtime` (which moves the old prefix aside) or `--replace-bin`.
+  kept and reported as a conflict, nothing is synced, and `install.sh` exits `1`.
+  `--force-skill` replaces only that skill.
+- It always refuses a prefix of `/`, `$HOME`, one that overlaps the hub, or one that is a file
+  or symlink. It refuses a populated prefix without a valid runtime marker unless given
+  `--replace-runtime` (which moves the old prefix aside), and an unrecognized file at
+  `~/.local/bin/sync-agents` unless given `--replace-bin`.
 
 ## Use
 
@@ -62,7 +66,7 @@ sync-agents --check                 # exit 0 if nothing needs doing, 1 if anythi
 sync-agents --dry-run               # show what a sync would change
 sync-agents --explain               # show observed state, intended state and why, per object
 sync-agents --targets claude,codex  # act on some targets only (others are never pruned)
-sync-agents --skill https://github.com/owner/repo.git   # install a skill, then sync
+sync-agents --skill <dir|git-url|archive>   # install a skill, then sync
 sync-agents --adopt                 # record identical unmanaged entries as owned
 sync-agents --print-dir             # print the resolved hub directory
 ```

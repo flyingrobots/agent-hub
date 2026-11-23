@@ -9,8 +9,8 @@ exist.
 | ID | Requirement | Oracle | Evidence | Status | Test |
 | --- | --- | --- | --- | --- | --- |
 | OWN-LED-1 | Ledger-only changes are visible to `--check`, and stable runs leave the ledger byte-identical | `--check` exit; state bytes and generation | E2E | Implemented | `agent-hub.test.ts › Contract 5 (Amendment 5): ledger-only changes visible to --check and stable runs have zero churn` |
-| OWN-LED-2 | A mixed conflict fails closed with no target or ledger write | Snapshots before and after | E2E | Implemented | `agent-hub.test.ts › Contract 6 (MUST #5): mixed conflict with no pending recovery fails closed with zero target or ledger writes` |
-| OWN-LED-3 | Corrupt or truncated state and journal files fail closed with a schema error | Exit 1, message | E2E | Implemented | `hardening.test.ts › F6: corrupt/truncated state and journal files fail closed with schema validation errors` |
+| OWN-LED-2 | A mixed conflict fails closed with no target write | Exit 1; the conflicting target's fields unchanged (no ledger assertion) | E2E | Implemented | `agent-hub.test.ts › Contract 6 (MUST #5): mixed conflict with no pending recovery fails closed with zero target or ledger writes` |
+| OWN-LED-3 | Corrupt or truncated state and journal files fail closed with a schema error | Loader throws | Unit | Implemented | `hardening.test.ts › F6: corrupt/truncated state and journal files fail closed with schema validation errors` |
 | OWN-LED-4 | A three-target ledger loads with zero churn | State bytes | E2E | Implemented | `adapters.test.ts › backward-compatible loading of existing 3-agent v2 ledger causes zero churn` |
 
 ## Adoption
@@ -19,7 +19,7 @@ exist.
 | --- | --- | --- | --- | --- | --- |
 | OWN-ADO-1 | Symlink existence never grants ownership; adoption requires strict equivalence (`.git`, mode, xattr values, escaping symlinks) | Conflicts reported; adopt succeeds only when equivalent | E2E | Implemented | `agent-hub.test.ts › Contract 4 (MUST #3 + Amendment 3): honest symlink ownership & strict adoption equivalence (.git, mode, xattr values, escaping symlinks)` |
 | OWN-ADO-2 | `--adopt --skill <src>` installs and adopts an identical existing copy in one run | Ledger record, link | E2E | Implemented | `hardening.test.ts › F9: --adopt --skill <src> installs and adopts identical existing target copy in a single pass` |
-| OWN-ADO-3 | Extended attributes and ACLs are read natively, quickly, and Linux `ENOTSUP` is classified safely | Timing bound; no subprocesses; classification | Unit | Implemented | `hardening.test.ts › F15 & F16: native FFI xattr/ACL reads 100-file tree fast (zero subprocesses) and classifies Linux ENOTSUP safely` |
+| OWN-ADO-3 | Extended attributes are read quickly for a 100-file tree, and Linux `ENOTSUP` is classified safely | Under 500 ms; classification | Unit | Implemented | `hardening.test.ts › F15 & F16: native FFI xattr/ACL reads 100-file tree fast (zero subprocesses) and classifies Linux ENOTSUP safely` |
 
 ## Recovery
 
@@ -48,5 +48,7 @@ exist.
 
 | ID | Requirement | Oracle | Evidence | Status | Test |
 | --- | --- | --- | --- | --- | --- |
-| OWN-V1-1 | The full v1 lifecycle (adopt, retire absent, disown, force) behaves as documented | Ledger and target per step | E2E | Implemented | `agent-hub.test.ts › Contract 2 (Amendment 5): full legacy v1 .mcp-managed.json lifecycle (L1-L6) & --disown-legacy` |
+| OWN-V1-1 | The v1 lifecycle (adopt, retire absent, disown) behaves as documented | Ledger and target per step | E2E | Implemented | `agent-hub.test.ts › Contract 2 (Amendment 5): full legacy v1 .mcp-managed.json lifecycle (L1-L6) & --disown-legacy` |
+| OWN-LED-5 | A mixed conflict also leaves the ledger untouched | State bytes | E2E | Gap: not asserted by OWN-LED-2's test | — |
+| OWN-V1-3 | `--force` replaces a v1-claimed entry | Target and ledger | E2E | Gap: no maintained test | — |
 | OWN-V1-2 | `--disown-legacy` naming a target excluded from the run reports it rather than silently doing nothing | Nonzero exit with message | E2E | Planned: flyingrobots/agent-hub#3 | — |
