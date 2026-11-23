@@ -10,6 +10,12 @@ changes are called out under **Changed** with what to do.
 
 ### Added
 
+- `sync-agents import` and `sync-agents pull`: bring agents' existing MCP servers, rules and
+  skills into the hub. Each entry is imported only if compiling it back reproduces it exactly;
+  identical specs across agents become the base and differences become overrides; plaintext
+  secrets stop an import unless `--rewrite-secrets`. Planning is the default; `--apply` writes.
+  See docs/topics/import.
+- `overrides.<agent>.extra`: native fields for one agent that the canonical spec does not model.
 - Commands and agents: `<hub>/commands/<name>.md` and `<hub>/agents/<name>.md` are generated
   into Claude Code, OpenCode, Cursor and (agents only) Codex, each in its own format, from a
   portable frontmatter subset; anything else goes under `targets.<agent>`. See

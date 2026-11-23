@@ -133,10 +133,21 @@ function isSecretName(name: string): boolean {
  * literal under a secret-bearing env key or header name, or a URL with embedded credentials.
  * References (`${env:...}`) are not literals. Fields named in `allow` are skipped.
  */
+/** String values inside `extra`, with paths like `extra.k`, `extra.k.sub`, `extra.k[0]`. */
+function extraFields(extra: unknown, path: string, out: Array<[string, string]>): void {
+  if (typeof extra === "string") out.push([path, extra]);
+  else if (Array.isArray(extra)) extra.forEach((v, i) => extraFields(v, `${path}[${i}]`, out));
+  else if (extra !== null && typeof extra === "object") {
+    for (const [k, v] of Object.entries(extra as Record<string, unknown>)) extraFields(v, `${path}.${k}`, out);
+  }
+}
+
 export function detectPlaintextSecrets(spec: McpServerSpec, allow: readonly string[] = []): PlaintextWarning[] {
   const allowed = new Set(allow);
   const warnings: PlaintextWarning[] = [];
-  for (const [field, value] of specFields(spec)) {
+  const fields = specFields(spec);
+  if (spec.extra) extraFields(spec.extra, "extra", fields);
+  for (const [field, value] of fields) {
     if (allowed.has(field)) continue;
     // Each literal part on its own: text on two sides of a reference was never contiguous.
     let parts: string[];
@@ -153,7 +164,13 @@ export function detectPlaintextSecrets(spec: McpServerSpec, allow: readonly stri
       warnings.push({ field, reason: pattern[1] });
       continue;
     }
-    const name = field.startsWith("env.") ? field.slice(4) : field.startsWith("headers.") ? field.slice(8) : null;
+    const name = field.startsWith("env.")
+      ? field.slice(4)
+      : field.startsWith("headers.")
+        ? field.slice(8)
+        : field.startsWith("extra.")
+          ? field.replace(/\[\d+\]$/, "").split(".").pop()!
+          : null;
     // "Bearer " or "Basic " alone is the scheme, not the credential.
     if (name !== null && isSecretName(name) && literal.replace(/^(Bearer|Basic|Token)\s*/i, "").trim().length > 0) {
       warnings.push({ field, reason: `"${name}" usually holds a credential and has a literal value` });

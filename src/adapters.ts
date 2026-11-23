@@ -272,6 +272,42 @@ function compileCodexRefs(
   }
 }
 
+/** Native keys each adapter's compile owns, by transport family: `extra` may not set these. */
+const MANAGED_KEYS: Record<AgentId, { stdio: string[]; remote: string[] }> = {
+  antigravity: { stdio: ["command", "args", "env", "disabled"], remote: ["serverUrl", "headers", "disabled"] },
+  claude: { stdio: ["type", "command", "args", "env"], remote: ["type", "url", "headers"] },
+  codex: {
+    stdio: ["command", "args", "env", "env_vars"],
+    remote: ["url", "http_headers", "bearer_token_env_var", "env_http_headers"],
+  },
+  cursor: { stdio: ["type", "command", "args", "env"], remote: ["url", "headers"] },
+  opencode: { stdio: ["type", "command", "environment"], remote: ["type", "url", "headers"] },
+};
+
+export function managedKeys(agent: AgentId, transport: McpTransport): string[] {
+  return MANAGED_KEYS[agent][transport === "stdio" ? "stdio" : "remote"];
+}
+
+/** Add one agent's `extra` native fields to its compiled entry, refusing fields compile owns. */
+export function applyExtra(
+  agent: AgentId,
+  transport: McpTransport,
+  compiled: Record<string, unknown>,
+  extra: Record<string, unknown> | undefined,
+  sourceLabel: string,
+): Record<string, unknown> {
+  if (!extra || Object.keys(extra).length === 0) return compiled;
+  const managed = new Set(managedKeys(agent, transport));
+  for (const k of Object.keys(extra)) {
+    if (managed.has(k)) {
+      throw new Error(
+        `${sourceLabel}: extra.${k} names a field sync-agents manages for ${agent}; set it through the canonical spec instead`,
+      );
+    }
+  }
+  return { ...compiled, ...extra };
+}
+
 export const MCP_ADAPTERS: readonly McpAdapterDef[] = [
   {
     id: "antigravity",

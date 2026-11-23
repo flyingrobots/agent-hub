@@ -17,6 +17,11 @@ export type McpServerSpec = {
   url?: string;
   headers?: Record<string, string>;
   disabled?: boolean;
+  /**
+   * Native fields for one agent that the canonical spec does not model (only in
+   * overrides.<agent>); they are added to that agent's compiled entry as written.
+   */
+  extra?: Record<string, unknown>;
 };
 
 export type RawMcpDocument = {
@@ -143,7 +148,7 @@ export type RecoveryReport = {
 export type OpStatus = "ok" | "change" | "conflict" | "error";
 
 export type PlannedOp = {
-  domain: "skill" | "link" | "mcp" | "recovery";
+  domain: "skill" | "link" | "mcp" | "rules" | "recovery";
   action: string;
   status: OpStatus;
   destination: string;

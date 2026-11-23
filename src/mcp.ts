@@ -3,6 +3,7 @@ import { detectPlaintextSecrets, specFields, validateSpecRefs } from "./env-refs
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
+  applyExtra,
   MCP_ADAPTER_BY_ID,
   MCP_ADAPTERS,
   normalizeAntigravityComparable,
@@ -109,7 +110,7 @@ function detectFamily(spec: McpServerSpec): TransportFamily {
   return null;
 }
 
-export function parseSpecSnippet(raw: unknown, sourceLabel: string): McpServerSpec {
+export function parseSpecSnippet(raw: unknown, sourceLabel: string, allowExtra = false): McpServerSpec {
   if (!isPlainObject(raw)) {
     throw new Error(`${sourceLabel}: expected JSON object`);
   }
@@ -127,7 +128,11 @@ export function parseSpecSnippet(raw: unknown, sourceLabel: string): McpServerSp
     "headers",
     "disabled",
   ]);
+  if (allowExtra) allowedKeys.add("extra");
   for (const key of Object.keys(body)) {
+    if (key === "extra" && !allowExtra) {
+      throw new Error(`${sourceLabel}: "extra" holds one agent's native fields, so it belongs in overrides.<agent>, not in the base "mcp"`);
+    }
     if (!allowedKeys.has(key)) {
       throw new Error(`${sourceLabel}: unknown MCP field "${key}"`);
     }
@@ -185,6 +190,10 @@ export function parseSpecSnippet(raw: unknown, sourceLabel: string): McpServerSp
     }
     spec.disabled = body.disabled;
   }
+  if (body.extra !== undefined) {
+    if (!isPlainObject(body.extra)) throw new Error(`${sourceLabel}: extra must be an object of native fields`);
+    spec.extra = { ...(body.extra as Record<string, unknown>) };
+  }
 
   // Malformed references are reported against the file (or override) that holds them.
   try {
@@ -225,6 +234,7 @@ export function mergeSpec(
     const switched: McpServerSpec = {};
     if (base.disabled !== undefined) switched.disabled = base.disabled;
     if (override.disabled !== undefined) switched.disabled = override.disabled;
+    if (base.extra || override.extra) switched.extra = { ...(base.extra ?? {}), ...(override.extra ?? {}) };
     if (ovFamily === "stdio") {
       switched.transport = "stdio";
       if (override.command !== undefined) switched.command = override.command;
@@ -255,6 +265,7 @@ export function mergeSpec(
       ),
     );
   }
+  if (base.extra || override.extra) merged.extra = { ...(base.extra ?? {}), ...(override.extra ?? {}) };
   if (base.headers || override.headers) {
     merged.headers = Object.fromEntries(
       Object.entries({ ...(base.headers ?? {}), ...(override.headers ?? {}) }).sort(([a], [b]) =>
@@ -311,7 +322,14 @@ export function compileAgentEntry(
     );
   }
 
-  return MCP_ADAPTER_BY_ID[agent].compile(transport, spec, serverName, sourceLabel);
+  const { extra, ...portable } = spec;
+  return applyExtra(
+    agent,
+    transport,
+    MCP_ADAPTER_BY_ID[agent].compile(transport, portable, serverName, sourceLabel),
+    extra,
+    `${sourceLabel}#overrides.${agent}`,
+  );
 }
 
 /** A literal that looks like a credential in a hub server spec (warning only, Phase 2). */
@@ -392,6 +410,7 @@ export function loadCanonicalServers(
         const inlineOv = parseSpecSnippet(
           { mcp: rawDoc.overrides[agent] },
           `${basePath}#overrides.${agent}`,
+          true,
         );
         resolved = mergeSpec(resolved, inlineOv, `${basePath}#overrides.${agent}`);
         layers.push([inlineOv, `${basePath}#overrides.${agent}`]);
@@ -400,7 +419,7 @@ export function loadCanonicalServers(
       const subPath = join(serverDir, agent, "mcp.json");
       if (existsSync(subPath)) {
         const subRaw = parseJsonFile(subPath);
-        const subOv = parseSpecSnippet(subRaw, subPath);
+        const subOv = parseSpecSnippet(subRaw, subPath, true);
         resolved = mergeSpec(resolved, subOv, subPath);
         layers.push([subOv, subPath]);
       }

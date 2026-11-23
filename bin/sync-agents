@@ -234,6 +234,8 @@ except Exception:
 usage() {
   cat <<'EOF'
 Usage: sync-agents [OPTIONS]
+       sync-agents import [OPTIONS]     (see sync-agents import --help)
+       sync-agents pull --from <agent> <mcp/<name>|skill/<name>> [OPTIONS]
 
 Install skills into your canonical hub directory (default ~/.agents/) and sync
 AGENTS.md, skills/, and mcp/ configs across local AI coding agents.
@@ -312,6 +314,15 @@ while [[ "$i" -lt "${#ARGS[@]}" ]]; do
   esac
   i=$((i + 1))
 done
+
+# Subcommands (import, pull) have their own options and help: the engine handles them.
+if [[ "${1:-}" == "import" || "${1:-}" == "pull" ]]; then
+  if ! command -v bun >/dev/null 2>&1; then
+    emit_error internal "sync-agents: bun is required to run sync-agents $1 (install from https://bun.sh)"
+    exit 1
+  fi
+  exec bun "${BUN_ISOLATED[@]}" "$CLI_SCRIPT" "$@"
+fi
 
 # --schema wins over --help and --print-dir, as in the engine; only the engine has the schemas.
 if [[ "$SHOW_SCHEMA" -eq 1 ]]; then
