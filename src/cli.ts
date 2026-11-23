@@ -12,6 +12,7 @@ import {
   releaseApplyLock,
   type ApplyLockHandle,
 } from "./lock.ts";
+import { applyFileOp, planPrimitives, type PlannedFileOp } from "./primitives.ts";
 import { applyMcpTarget, planMcpSync, type PlannedMcpTarget } from "./mcp.ts";
 import { canonicalizeHubPath, isPlainObject, parseJsonFile } from "./paths.ts";
 import {
@@ -179,6 +180,7 @@ function formatOpSummary(prefix: string, op: PlannedOp): string {
 type BuiltSyncPlan = {
   stagedSkills: StagedSkillPlan;
   linkPlans: PlannedLinkOp[];
+  filePlans: PlannedFileOp[];
   mcpTargets: PlannedMcpTarget[];
   allOps: PlannedOp[];
   changeOps: PlannedOp[];
@@ -234,6 +236,15 @@ function buildSyncPlan(
             plannedSkillSources: stagedSkills.plannedSkillSources,
           });
 
+    // Commands and agents generated from the hub live with rules and skills (the links domain).
+    const filePlans: PlannedFileOp[] =
+      opts.skillOnly || opts.mcpOnly
+        ? []
+        : planPrimitives(canonicalHubPath, homeDir, opts.configBase, state, opts.scope.links, {
+            adopt: opts.adopt,
+            force: opts.force,
+          });
+
     const mcpPlan = opts.skillOnly
       ? { targets: [] as PlannedMcpTarget[], globalOps: [] as PlannedOp[] }
       : planMcpSync(canonicalHubPath, homeDir, state, legacyV1, {
@@ -248,6 +259,7 @@ function buildSyncPlan(
     const allOps: PlannedOp[] = [
       ...stagedSkills.installs.map((s) => s.op),
       ...linkPlans.map((l) => l.op),
+      ...filePlans.map((f) => f.op),
       ...mcpPlan.globalOps,
       ...mcpPlan.targets.flatMap((t) => t.ops),
     ];
@@ -255,6 +267,7 @@ function buildSyncPlan(
     return {
       stagedSkills,
       linkPlans,
+      filePlans,
       mcpTargets: mcpPlan.targets,
       allOps,
       changeOps: allOps.filter((op) => op.status === "change"),
@@ -630,6 +643,17 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
             hooks,
           );
           emit("stdout", "agent_hub.op", formatOpSummary("sync", lp.op), { phase: "sync", op: opData(lp.op) });
+        },
+      });
+    }
+
+    for (const fp of plan.filePlans) {
+      if (fp.op.status !== "change") continue;
+      remainingWork.push({
+        label: `${fp.op.action} ${fp.dst}`,
+        run: () => {
+          state = applyFileOp(fp, canonicalHubPath, state, paths.statePath, paths.journalPath, flags, hooks);
+          emit("stdout", "agent_hub.op", formatOpSummary("sync", fp.op), { phase: "sync", op: opData(fp.op) });
         },
       });
     }

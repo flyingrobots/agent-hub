@@ -10,6 +10,11 @@ changes are called out under **Changed** with what to do.
 
 ### Added
 
+- Commands and agents: `<hub>/commands/<name>.md` and `<hub>/agents/<name>.md` are generated
+  into Claude Code, OpenCode, Cursor and (agents only) Codex, each in its own format, from a
+  portable frontmatter subset; anything else goes under `targets.<agent>`. See
+  docs/topics/primitives.
+
 - Machine-readable output: every line `sync-agents` prints, on stdout and stderr, is a JSON
   object naming its schema (`_schema`), with `kind`, `run_id` and `message`. The schemas, one
   per message type and each versioned on its own, are in `schemas/`; `sync-agents --schema`

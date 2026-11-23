@@ -17,6 +17,7 @@ import {
   type ApplyHooks,
   type JournalOpKind,
   type LegacyManifestV1,
+  type ManagedFileRecord,
   type ManagedLinkRecord,
   type ManagedMcpRecord,
   type OwnershipBasis,
@@ -44,7 +45,25 @@ const VALID_JOURNAL_KINDS = new Set<string>([
   "link-adopt-copy",
   "link-prune",
   "skill-replace",
+  "file-write",
+  "file-delete",
 ]);
+const VALID_FILE_KINDS = new Set<string>(["command", "agent"]);
+
+function validateFileRecord(raw: unknown, label: string): ManagedFileRecord {
+  if (!isPlainObject(raw)) throw new Error(`${label}: expected file record object`);
+  if (!isNonEmptyString(raw.kind) || !VALID_FILE_KINDS.has(raw.kind)) {
+    throw new Error(`${label}: invalid file kind "${String(raw.kind)}"`);
+  }
+  if (!isNonEmptyString(raw.digest) || !/^[0-9a-f]{64}$/.test(raw.digest)) {
+    throw new Error(`${label}: missing or invalid digest`);
+  }
+  if (!isNonEmptyString(raw.basis) || !VALID_BASES.has(raw.basis)) {
+    throw new Error(`${label}: invalid ownership basis "${String(raw.basis)}"`);
+  }
+  if (!isNonEmptyString(raw.updatedAt)) throw new Error(`${label}: missing or invalid updatedAt timestamp`);
+  return { kind: raw.kind as "command" | "agent", digest: raw.digest, basis: raw.basis as OwnershipBasis, updatedAt: raw.updatedAt };
+}
 
 function isNonEmptyString(v: unknown): v is string {
   return typeof v === "string" && v.length > 0;
@@ -173,6 +192,12 @@ function validateStateDelta(raw: unknown, label: string): StateDelta {
         throw new Error(`${label}: link-delete missing destination`);
       }
       return { kind: "link-delete", destination: raw.destination };
+    case "file-set":
+      if (!isNonEmptyString(raw.destination)) throw new Error(`${label}: file-set missing destination`);
+      return { kind: "file-set", destination: raw.destination, record: validateFileRecord(raw.record, `${label}.record`) };
+    case "file-delete":
+      if (!isNonEmptyString(raw.destination)) throw new Error(`${label}: file-delete missing destination`);
+      return { kind: "file-delete", destination: raw.destination };
     case "mcp-target": {
       if (!isNonEmptyString(raw.agent) || !ALL_AGENTS.includes(raw.agent as AgentId)) {
         throw new Error(`${label}: mcp-target invalid agent "${String(raw.agent)}"`);
@@ -239,6 +264,7 @@ export function createEmptyState(canonicalHubPath: string): OwnershipStateV2 {
     generation: 0,
     hubPath: canonicalHubPath,
     links: {},
+    files: {},
     mcp: makeEmptyAgentMcpMap(),
     resolvedLegacyV1: makeEmptyResolvedLegacyMap(),
   };
@@ -285,6 +311,15 @@ export function loadOwnershipState(
     links[k] = validateLinkRecord(v, `${statePath}#links[${k}]`);
   }
 
+  const files: Record<string, ManagedFileRecord> = {};
+  if (raw.files !== undefined) {
+    if (!isPlainObject(raw.files)) throw new Error(`agent-hub: invalid "files" map in ownership state: ${statePath}`);
+    for (const [k, v] of Object.entries(raw.files)) {
+      if (!isNonEmptyString(k)) throw new Error(`agent-hub: empty file key in ${statePath}`);
+      files[k] = validateFileRecord(v, `${statePath}#files[${k}]`);
+    }
+  }
+
   const mcp = makeEmptyAgentMcpMap();
   for (const agent of ALL_AGENTS) {
     const agentObj = raw.mcp[agent];
@@ -313,6 +348,7 @@ export function loadOwnershipState(
       generation: raw.generation,
       hubPath: canonicalHubPath,
       links,
+      files,
       mcp,
       resolvedLegacyV1,
     },
@@ -474,6 +510,7 @@ export function applyStateDelta(state: OwnershipStateV2, delta: StateDelta): Own
     generation: state.generation + 1,
     hubPath: state.hubPath,
     links: { ...state.links },
+    files: { ...state.files },
     mcp: nextMcp,
     resolvedLegacyV1: nextResolvedLegacyV1,
   };
@@ -496,7 +533,16 @@ export function applyStateDelta(state: OwnershipStateV2, delta: StateDelta): Own
       delete next.links[delta.destination];
       break;
     }
+    case "file-set": {
+      next.files[delta.destination] = delta.record;
+      break;
+    }
+    case "file-delete": {
+      delete next.files[delta.destination];
+      break;
+    }
   }
+  next.files = Object.fromEntries(Object.entries(next.files).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)));
 
   const sortedLinks: Record<string, ManagedLinkRecord> = {};
   for (const k of Object.keys(next.links).sort()) {
