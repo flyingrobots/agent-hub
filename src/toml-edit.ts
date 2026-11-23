@@ -459,6 +459,8 @@ export function normalizeCodexComparable(entry: unknown): Record<string, unknown
     delete copy.env_http_headers;
   }
   if (Array.isArray(copy.env_vars) && copy.env_vars.length === 0) delete copy.env_vars;
+  // env_vars is a set of names: order carries no meaning.
+  else if (Array.isArray(copy.env_vars)) copy.env_vars = [...copy.env_vars].map(String).sort();
   return copy;
 }
 

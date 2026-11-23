@@ -4,7 +4,7 @@
  * compilation rules, and comparable normalizers.
  */
 import { isAbsolute, join, sep } from "node:path";
-import { exactEnvRef, hasEnvRef, mapSpecRefs, specFields, validateSpecRefs } from "./env-refs.ts";
+import { ENV_NAME, exactEnvRef, hasEnvRef, mapSpecRefs, specFields, validateSpecRefs } from "./env-refs.ts";
 import { isPlainObject } from "./paths.ts";
 import { normalizeCodexComparable } from "./toml-edit.ts";
 import type { AgentId, McpServerSpec, McpTransport } from "./types.ts";
@@ -208,17 +208,28 @@ function compileCodexRefs(
       `${sourceLabel}: Codex cannot express the \${env:...} reference in ${field} of MCP "${serverName}" (${why}); use a literal, or set overrides.codex.disabled = true`,
     );
   };
-  if (typeof spec.command === "string" && hasEnvRef(spec.command)) refuse("command", "Codex expands no variables in command");
-  (spec.args ?? []).forEach((a, i) => {
-    if (hasEnvRef(a)) refuse(`args[${i}]`, "Codex expands no variables in args");
-  });
-  if (typeof spec.url === "string" && hasEnvRef(spec.url)) refuse("url", "Codex expands no variables in url");
+  // Only the fields this transport writes: a field Codex never receives cannot mislead it.
+  const stdio = out.command !== undefined;
+  if (stdio && typeof spec.command === "string" && hasEnvRef(spec.command)) refuse("command", "Codex expands no variables in command");
+  if (stdio) {
+    (spec.args ?? []).forEach((a, i) => {
+      if (hasEnvRef(a)) refuse(`args[${i}]`, "Codex expands no variables in args");
+    });
+  }
+  if (!stdio && typeof spec.url === "string" && hasEnvRef(spec.url)) refuse("url", "Codex expands no variables in url");
   if (out.env && typeof out.env === "object") {
     const env = { ...(out.env as Record<string, string>) };
     const forwarded: string[] = [];
     for (const [k, v] of Object.entries(env)) {
       if (!hasEnvRef(v)) continue;
-      if (exactEnvRef(v) !== k) refuse(`env.${k}`, `only env ${k} = "\${env:${k}}", forwarding the same name, is supported`);
+      if (exactEnvRef(v) !== k) {
+        refuse(
+          `env.${k}`,
+          ENV_NAME.test(k)
+            ? `only env ${k} = "\${env:${k}}", forwarding the same name, is supported`
+            : `Codex forwards a variable only under its own name, and "${k}" is not a valid variable name`,
+        );
+      }
       forwarded.push(k);
       delete env[k];
     }
@@ -231,6 +242,15 @@ function compileCodexRefs(
   if (out.http_headers && typeof out.http_headers === "object") {
     const headers = { ...(out.http_headers as Record<string, string>) };
     const fromEnv: Record<string, string> = {};
+    // Header names are case-insensitive: two spellings of one header cannot both be compiled.
+    const lower = Object.keys(headers).map((h) => h.toLowerCase());
+    for (const dup of new Set(lower.filter((h, i) => lower.indexOf(h) !== i))) {
+      // Authorization is compiled specially, so any second spelling of it is refused; another
+      // header only when one of its spellings carries a reference.
+      if (dup === "authorization" || Object.entries(headers).some(([h, v]) => h.toLowerCase() === dup && hasEnvRef(v))) {
+        refuse(`headers.${dup}`, "the header is set twice under different capitalizations");
+      }
+    }
     for (const [h, v] of Object.entries(headers)) {
       if (!hasEnvRef(v)) continue;
       const bearer = /^Bearer (\$\{env:[A-Z_][A-Z0-9_]*\})$/.exec(v);
@@ -297,7 +317,8 @@ export const MCP_ADAPTERS: readonly McpAdapterDef[] = [
     configPath: (homeDir) => join(homeDir, ".gemini", "config", "mcp_config.json"),
     compile(transport, spec, serverName, sourceLabel) {
       checkRefs(spec, serverName, sourceLabel);
-      const ref = specFields(spec).find(([, v]) => hasEnvRef(v));
+      const written = transport === "stdio" ? /^(command|args\[|env\.)/ : /^(url|headers\.)/;
+      const ref = specFields(spec).find(([f, v]) => written.test(f) && hasEnvRef(v));
       if (ref) {
         throw new Error(
           `${sourceLabel}: Antigravity does not expand environment references (\${env:...} in ${ref[0]} of MCP "${serverName}"); use a literal, or set overrides.antigravity.disabled = true`,

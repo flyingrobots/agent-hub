@@ -262,4 +262,137 @@ describe("a sync warns about plaintext secrets and still syncs (flyingrobots/age
     expect(r.events.some((e) => e.id === "agent_hub.warning")).toBe(false);
     expect(JSON.parse(fs.readFileSync(path.join(b.home, ".claude.json"), "utf8")).mcpServers.gh.env.GITHUB_TOKEN).toBe("${GITHUB_TOKEN}");
   });
+
+  test("a sync never reads a referenced variable: its value appears in no config and no output", () => {
+    const { home, opts } = sb({ mcp: { command: "/bin/gh", env: { GITHUB_TOKEN: "${env:GITHUB_TOKEN}" } } });
+    const sentinel = "sentinel-value-that-must-not-leak-1234567890";
+    const saved = process.env.GITHUB_TOKEN;
+    process.env.GITHUB_TOKEN = sentinel;
+    try {
+      const r = runSync(opts);
+      expect(r.exitCode).toBe(0);
+      expect(JSON.stringify(r.events)).not.toContain(sentinel);
+      expect(fs.readFileSync(path.join(home, ".claude.json"), "utf8")).not.toContain(sentinel);
+    } finally {
+      if (saved === undefined) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = saved;
+    }
+  });
+});
+
+describe("refusals never print a value (Baker Street PR #33 Holmes F1)", () => {
+  test("a malformed reference next to a literal token names the field, not the value", () => {
+    const token = "ghp_0123456789abcdefghijABCDEFGHIJ012345";
+    for (const value of [`Bearer ${token} \${env:TOK`, `\${env:${token.toLowerCase()}}`]) {
+      let message = "";
+      try {
+        MCP_ADAPTER_BY_ID.claude.compile("http", { url: "https://h", headers: { Authorization: value } }, "srv", "mcp/srv/mcp.json");
+      } catch (err) {
+        message = String(err);
+      }
+      expect(message).toContain("headers.Authorization");
+      expect(message).not.toContain(token);
+      expect(message.toLowerCase()).not.toContain(token.toLowerCase());
+    }
+  });
+});
+
+describe("references through a real sync, every native target (Baker Street PR #33 Holmes F5, F8)", () => {
+  function full() {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-envall-")));
+    const hub = path.join(home, ".agents");
+    for (const d of ["skills", "mcp/gh", "mcp/api"]) fs.mkdirSync(path.join(hub, d), { recursive: true });
+    for (const d of [".claude", ".cursor", ".codex", ".config/opencode"]) fs.mkdirSync(path.join(home, d), { recursive: true });
+    fs.writeFileSync(path.join(hub, "mcp", "gh", "mcp.json"), JSON.stringify({ mcp: { command: "/bin/gh", env: { GITHUB_TOKEN: "${env:GITHUB_TOKEN}" } } }));
+    fs.writeFileSync(
+      path.join(hub, "mcp", "api", "mcp.json"),
+      JSON.stringify({ mcp: { transport: "http", url: "https://api.invalid/mcp", headers: { Authorization: "Bearer ${env:API_TOKEN}" } } }),
+    );
+    const mcp = ["claude", "cursor", "codex", "opencode"].map((t) => parseTargetSelector(`${t}:mcp`)!);
+    return { home, hub, opts: { hubDir: hub, homeDir: home, xdgConfigHome: path.join(home, ".config"), xdgStateHome: path.join(home, ".local", "state"), targets: mcp } };
+  }
+
+  test("Claude, Cursor, OpenCode and Codex each get their native form, and a second run changes nothing", () => {
+    const { home, opts } = full();
+    expect(runSync(opts).exitCode).toBe(0);
+    const claude = JSON.parse(fs.readFileSync(path.join(home, ".claude.json"), "utf8")).mcpServers;
+    expect(claude.gh.env.GITHUB_TOKEN).toBe("${GITHUB_TOKEN}");
+    expect(claude.api.headers.Authorization).toBe("Bearer ${API_TOKEN}");
+    const cursor = JSON.parse(fs.readFileSync(path.join(home, ".cursor", "mcp.json"), "utf8")).mcpServers;
+    expect(cursor.gh.env.GITHUB_TOKEN).toBe("${env:GITHUB_TOKEN}");
+    const oc = JSON.parse(fs.readFileSync(path.join(home, ".config", "opencode", "opencode.json"), "utf8")).mcp.servers;
+    expect(oc.gh.environment.GITHUB_TOKEN).toBe("{env:GITHUB_TOKEN}");
+    expect(oc.api.headers.Authorization).toBe("Bearer {env:API_TOKEN}");
+    const codex = Bun.TOML.parse(fs.readFileSync(path.join(home, ".codex", "config.toml"), "utf8")) as Record<string, any>;
+    expect(codex.mcp_servers.gh).toEqual({ command: "/bin/gh", env_vars: ["GITHUB_TOKEN"] });
+    expect(codex.mcp_servers.api).toEqual({ url: "https://api.invalid/mcp", bearer_token_env_var: "API_TOKEN" });
+    const again = runSync(opts);
+    expect(again.events.filter((e) => e.id === "agent_hub.op" && e.data.phase === "sync")).toEqual([]);
+    expect(runSync({ ...opts, checkOnly: true }).exitCode).toBe(0);
+  });
+
+  test("a warning names the file that sets the field: a per-target mcp.json, not the base", () => {
+    const { hub, opts } = full();
+    fs.mkdirSync(path.join(hub, "mcp", "gh", "cursor"), { recursive: true });
+    fs.writeFileSync(path.join(hub, "mcp", "gh", "cursor", "mcp.json"), JSON.stringify({ mcp: { env: { GITHUB_TOKEN: "ghp_0123456789abcdefghijABCDEFGHIJ012345" } } }));
+    const w = runSync({ ...opts, dryRun: true }).events.filter((e) => e.id === "agent_hub.warning");
+    expect(w.map((e) => String(e.data.source).endsWith(path.join("mcp", "gh", "cursor", "mcp.json")))).toEqual([true]);
+  });
+});
+
+describe("Baker Street PR #33 Moriarty repairs", () => {
+  const codex = (t: McpTransport, spec: McpServerSpec) => compile("codex", t, spec);
+  test("Codex refuses a header set twice in different case, and a reference with text after it in any header", () => {
+    expect(() => codex("http", { url: "https://h", headers: { authorization: "Bearer ${env:X}", Authorization: "Bearer ${env:Y}" } })).toThrow(/twice/);
+    expect(() => codex("http", { url: "https://h", headers: { "X-Key": "${env:X}-suffix" } })).toThrow(/Codex/);
+    // Bearer mapping is for Authorization only.
+    expect(() => codex("http", { url: "https://h", headers: { "X-Token": "Bearer ${env:X}" } })).toThrow(/Codex/);
+  });
+
+  test("a Codex env key that is not a variable name gets a refusal that says so", () => {
+    expect(() => codex("stdio", { command: "/x", env: { "A.B": "${env:AB}" } })).toThrow(/not a valid variable name/);
+  });
+
+  test("Codex env_vars compare as a set, sorted on write", () => {
+    const out = codex("stdio", { command: "/x", env: { ZED: "${env:ZED}", ALPHA: "${env:ALPHA}" } });
+    expect(out.env_vars).toEqual(["ALPHA", "ZED"]);
+    const { normalizeCodexComparable } = require("../src/toml-edit.ts") as typeof import("../src/toml-edit.ts");
+    expect(normalizeCodexComparable({ command: "/x", env_vars: ["ZED", "ALPHA"] })).toEqual(normalizeCodexComparable({ command: "/x", env_vars: ["ALPHA", "ZED"] }));
+    expect(normalizeCodexComparable({ command: "/x", env_vars: [] })).toEqual({ command: "/x" });
+  });
+
+  test("only fields the transport writes are checked for Antigravity and Codex", () => {
+    expect(() => compile("antigravity", "stdio", { command: "/x", headers: { H: "${env:H}" } })).not.toThrow(/expand/);
+    expect(() => codex("http", { url: "https://h", command: "${env:C}" })).not.toThrow(/command/);
+  });
+
+  test("common non-secret names do not warn; the docs' Bearer reference does not warn", () => {
+    const names = ["GIT_AUTHOR_NAME", "MAX_TOKENS", "AUTH_MODE", "OAUTH_CLIENT_ID", "SESSION_DIR", "COOKIE_DOMAIN"];
+    const env = Object.fromEntries(names.map((n) => [n, "value"]));
+    expect(detectPlaintextSecrets({ command: "/x", env, headers: undefined })).toEqual([]);
+    expect(detectPlaintextSecrets({ url: "https://h", headers: { "X-Session-Id": "abc", Authorization: "Bearer ${env:EXAMPLE_TOKEN}" } })).toEqual([]);
+    expect(detectPlaintextSecrets({ command: "/x", env: { ACCESS_KEY: "v", "X-Api-Key": "v" } }).map((w) => w.field).sort()).toEqual(["env.ACCESS_KEY", "env.X-Api-Key"]);
+    // Text on both sides of a reference is not one token.
+    expect(detectPlaintextSecrets({ command: "/x", args: ["sk-abcdefgh${env:X}ijklmnopqrst"] })).toEqual([]);
+  });
+
+  test("a Codex refusal names the server and its source", () => {
+    expect(() => compile("codex", "stdio", { command: "/x", env: { A: "${env:lower}" } })).toThrow(/mcp\/srv\/mcp\.json: MCP "srv"/);
+  });
+
+  test("an Authorization header spelled twice is refused for Codex wherever it sits among the headers", () => {
+    for (const headers of [
+      { "A-A": "1", "a-a": "2", authorization: "Bearer ${env:X}", Authorization: "Bearer ${env:Y}" },
+      { "A-A": "1", "a-a": "2", Authorization: "Bearer ${env:X}", authorization: "Basic lit" },
+    ]) {
+      expect(() => codex("http", { url: "https://h", headers })).toThrow(/twice/);
+    }
+  });
+
+  test("credential names in camelCase, compound or header form still warn", () => {
+    const names = ["accessToken", "authToken", "clientSecret", "refreshToken", "PGPASSWORD", "AUTH_KEY", "SESSION_KEY", "SECRETKEY", "DB_PASS", "PASSPHRASE", "GITHUB_PAT", "BEARER", "API_KEY", "AUTH_TOKEN"];
+    const env = Object.fromEntries(names.map((n) => [n, "value"]));
+    expect(detectPlaintextSecrets({ command: "/x", env }).map((w) => w.field.slice(4)).sort()).toEqual([...names].sort());
+    expect(detectPlaintextSecrets({ url: "https://h", headers: { Cookie: "c=1", "X-Auth-Key": "k" } }).map((w) => w.field).sort()).toEqual(["headers.Cookie", "headers.X-Auth-Key"]);
+  });
 });

@@ -59,8 +59,10 @@ Rules:
   [Choosing targets](../sync/README.md#choosing-targets)) is not compiled at all, so it cannot
   reject a transport it does not support.
 
-Values are copied verbatim. agent-hub does not interpret `${...}` placeholders; whether a target
-application expands them is up to that application.
+Values are copied as written, except `${env:NAME}` references, which are compiled per target
+(next section). Any other `${...}` or `{...}` text is copied as is, and the target application
+decides what it means: Claude Code would expand a literal `${HOME}`, and OpenCode a literal
+`{env:HOME}`, so keep target-specific syntax in that target's override.
 
 ## Environment references
 
@@ -79,8 +81,11 @@ server, so the value never lands in a config file.
 }
 ```
 
-Each target either compiles a reference into its own syntax or refuses the server for that
-target with a message naming the field (set `overrides.<target>.disabled` to skip it there):
+Each target either compiles a reference into its own syntax or refuses it. A refusal stops the
+whole run, like any other planning error (an `error` line with code `plan`, naming the server,
+the target and the field), so nothing is written to any target; set
+`overrides.<target>.disabled: true` for that server, or give that target a literal in its
+override, to sync the rest:
 
 | Target | `command` | `args` | `env` | `url` | `headers` |
 | --- | --- | --- | --- | --- | --- |
@@ -96,19 +101,54 @@ Limits worth knowing:
   `headers` it reads some credential variables (its own `ANTHROPIC_*` keys, cloud and proxy
   tokens) as empty instead of expanding them. Use a name of your own, such as
   `EXAMPLE_TOKEN`.
-- An unset variable expands to empty in OpenCode and is left as written in Claude Code.
+- An unset variable expands to empty in OpenCode, and is left as written in Claude Code (which
+  warns in `claude mcp list`). In Codex, an unset `env_vars` name is simply not passed to the
+  server, an unset `env_http_headers` variable drops that header, and an unset
+  `bearer_token_env_var` stops the server from starting. Cursor does not document it.
+- Verified: Claude Code 2.1.323 expands `${VAR}` in a user-scope `~/.claude.json` entry's
+  `command`, `args` and `env` (`claude mcp list` started the server with the expanded values);
+  its documentation covers `url` and `headers` too. Cursor documents `${env:VAR}` in all five
+  fields for its MCP config, without saying whether that includes the global
+  `~/.cursor/mcp.json`.
 - Codex has no interpolation, so a reference anywhere else, or with text around it
-  (`"Bearer ${env:X}-suffix"`), is refused for Codex.
+  (`"Bearer ${env:X}-suffix"`), is refused for Codex. In `env` the key must be the variable's own
+  name (`GITHUB_TOKEN = "${env:GITHUB_TOKEN}"`; `TOKEN = "${env:GH_TOKEN}"` is refused). The
+  `Authorization` header name is matched in any case; the value must be exactly
+  `Bearer ${env:X}` with one space, and a header set twice in different capitalizations is
+  refused. Only fields the transport writes are checked (a stdio server's leftover `headers`
+  are ignored).
+- Antigravity expands nothing, so a server that needs a reference is refused there; disable it
+  for Antigravity, or give Antigravity a literal in `overrides.antigravity` (which keeps one
+  plaintext copy, and is reported as below).
+- **Where to set the variable.** Each agent reads it from its own process environment when it
+  starts the server. A variable exported in `~/.zshrc` reaches agents started from that shell
+  (Claude Code, Codex, OpenCode in a terminal). An app started from the Dock, Finder or
+  Spotlight on macOS (Cursor, Antigravity, desktop apps) does not read shell profiles: set the
+  variable for GUI apps (`launchctl setenv NAME value`, which lasts until logout) or start the
+  app from a shell, then restart it. A reference to a variable the agent cannot see gives the
+  server an empty or literal value, typically a 401 from the server.
+- **Existing configs.** Before this release a `${env:...}` string was copied verbatim. It is
+  now compiled, or refused for Codex and Antigravity, and a malformed one
+  (`${env:lowercase}`, an unterminated `${env:`) stops the run. There is no escape for a literal
+  `${env:` in a value.
 
 ### Plaintext secrets
 
-On every run (sync, `--dry-run`, `--check`, `--explain`), `sync-agents` prints one
-`agent_hub.warning` line per field, before anything else the run reports, for each literal value
-in a server spec that looks like a credential. It does not refuse, and the exit code is
+On every run that plans MCP servers (sync, `--dry-run`, `--check`, `--explain`; not `--skill-only`,
+and not a read-only run that stops on a pending recovery), `sync-agents` prints one
+`agent_hub.warning` line per field, before the run's operations, for each literal value in a
+server spec that looks like a credential. Every layer is checked (the base `mcp`, inline
+overrides and `<target>/mcp.json` files, as each target resolves them); a field flagged for
+several targets is reported once. It does not refuse, and the exit code is
 unchanged; the value is never printed. It checks for known token patterns (`sk-…`, `ghp_…`, `github_pat_…`,
 Slack `xox?-…`, Google `AIza…`, AWS `AKIA…`, PEM private keys), any literal under an `env` key or
-header name that suggests a credential (`token`, `secret`, `password`, `api_key`, `auth`,
-`credential`, `private_key`, `session`, `cookie`), and a URL with an embedded user and password.
+header name with a credential word as one of its parts (split on `_`, `-`, `.` and camelCase:
+`token`, `secret`, `password`, `passwd`, `pwd`, `pass`, `passphrase`, `pat`, `apikey`,
+`credential(s)`, `authorization`, `bearer`; the pairs `api key`, `access key`, `private key`,
+`secret key`, `auth key`, `session key`, `auth token`; `password`, `secret`, `apikey` or
+`credential` inside a longer part, as in `PGPASSWORD`; or the `Cookie` header), and a URL with
+an embedded user and password. A second literal for the same field in another layer (a
+per-target `mcp.json`) is reported on its own.
 These are known token patterns and secret-bearing field names, not a scanner: a secret in any
 other shape is not noticed. To keep a literal you intend, name its field:
 
@@ -116,7 +156,12 @@ other shape is not noticed. To keep a literal you intend, name its field:
 { "mcp": { "command": "/bin/x", "env": { "API_KEY": "public-demo-key" } }, "allowPlaintextFields": ["env.API_KEY"] }
 ```
 
-Field paths are `command`, `args[i]`, `env.<KEY>`, `url` and `headers.<Name>`.
+`allowPlaintextFields` sits at the top level of `<hub>/mcp/<server>/mcp.json`, next to `mcp` and
+`overrides`, and applies to every target's resolved spec. Field paths are `command`, `args[i]`,
+`env.<KEY>`, `url` and `headers.<Name>`. Name matching is case-insensitive and by whole parts, so
+`GIT_AUTHOR_NAME`, `MAX_TOKENS` or `X-Session-Id` are not reported; a non-secret
+`SECRET_FILE` is, and can be listed. Paths match exactly (case-sensitive), and an entry naming
+a field that does not exist is accepted silently.
 
 ## What each target receives
 

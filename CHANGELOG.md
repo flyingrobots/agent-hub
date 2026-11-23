@@ -52,6 +52,12 @@ changes are called out under **Changed** with what to do.
 
 ### Changed
 
+- **`${env:NAME}` in a hub server spec is now a reference, no longer literal text.** It is
+  compiled for each target, refused for Antigravity and for Codex outside the forms it can
+  express, and a malformed one (`${env:lower}`, unterminated) stops the run. Run
+  `sync-agents --dry-run` first; disable a refused server for that target, or move the literal
+  into that target's override.
+
 - **Breaking: output is JSON Lines by default.** Scripts that read `sync-agents` output as text
   must add `--human` (alias `--humanize`) to get prose, for example
   `"$(sync-agents --print-dir --human)"`; `--help` prints JSON lines too. Earlier versions reject
@@ -110,7 +116,8 @@ changes are called out under **Changed** with what to do.
   conflicts or "moved" MCP records.
 - Two agents' skill directories that are one physical directory (`~/.codex/skills` a symlink
   to `~/.claude/skills`) no longer fail the first sync with a stale-snapshot error: the shared
-  link is planned once.
+  link is planned once, and its record lives under the spelling with no symlink in its path,
+  so replacing the symlinked directory later leaves both links owned.
 - Rewriting a Codex table that holds a long hand-written multiline string whose lines start
   with `#` no longer takes time quadratic in its length; the cut comes from the TOML scanner.
 - `src/cli.ts --print-dir` ignored a valid `agentsDir` when `disabledTargets` was

@@ -29,10 +29,11 @@ export function parseEnvRefs(s: string): EnvRefPart[] {
     }
     if (at > i) parts.push({ kind: "literal", text: s.slice(i, at) });
     const close = s.indexOf("}", at + OPEN.length);
-    if (close === -1) throw new EnvRefError(`unterminated \${env:...} reference in "${s}"`);
+    // Messages never quote the value: it may hold a secret next to the broken reference.
+    if (close === -1) throw new EnvRefError("unterminated ${env:...} reference");
     const name = s.slice(at + OPEN.length, close);
     if (!ENV_NAME.test(name)) {
-      throw new EnvRefError(`invalid \${env:${name}} reference: names must match ^[A-Z_][A-Z0-9_]*$`);
+      throw new EnvRefError("invalid ${env:...} reference: the name must match ^[A-Z_][A-Z0-9_]*$");
     }
     parts.push({ kind: "ref", name });
     i = close + 1;
@@ -82,9 +83,15 @@ export function mapSpecRefs(spec: McpServerSpec, render: (name: string) => strin
   return out;
 }
 
-/** Throws EnvRefError for any malformed reference in the spec. */
+/** Throws EnvRefError, naming the field, for any malformed reference in the spec. */
 export function validateSpecRefs(spec: McpServerSpec): void {
-  for (const [, v] of specFields(spec)) parseEnvRefs(v);
+  for (const [field, v] of specFields(spec)) {
+    try {
+      parseEnvRefs(v);
+    } catch (err) {
+      throw new EnvRefError(`${field}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 }
 
 export type PlaintextWarning = { field: string; reason: string };
@@ -100,7 +107,26 @@ const TOKEN_PATTERNS: Array<[RegExp, string]> = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, "looks like a PEM private key"],
 ];
 // Field names that usually hold a credential.
-const SECRET_NAME = /(token|secret|passw(or)?d|api[_-]?key|apikey|auth|credential|private[_-]?key|session|cookie)/i;
+// Matched against a name's segments (split on _, - and .), so AUTHOR, MAX_TOKENS or
+// X-Session-Id do not count; API_KEY, X-Api-Key, ACCESS_KEY and PRIVATE_KEY do.
+const SECRET_SEGMENTS = new Set([
+  "token", "secret", "password", "passwd", "pwd", "pass", "passphrase", "pat", "apikey",
+  "credential", "credentials", "authorization", "bearer",
+]);
+const SECRET_PAIRS: Array<[string, string]> = [
+  ["api", "key"], ["access", "key"], ["private", "key"], ["secret", "key"], ["auth", "key"],
+  ["session", "key"], ["auth", "token"],
+];
+// Credential words that are safe to find inside a longer word (PGPASSWORD, SECRETKEY).
+const SECRET_INFIXES = ["password", "passwd", "secret", "apikey", "credential"];
+function isSecretName(name: string): boolean {
+  // camelCase parts too: accessToken, clientSecret.
+  const seg = name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[_.\-]+/).filter(Boolean);
+  if (seg.some((s) => SECRET_SEGMENTS.has(s) || SECRET_INFIXES.some((w) => s.includes(w)))) return true;
+  // The Cookie header itself, not names that merely mention cookies (COOKIE_DOMAIN).
+  if (seg.length === 1 && seg[0] === "cookie") return true;
+  return SECRET_PAIRS.some(([a, b]) => seg.some((s, i) => s === a && seg[i + 1] === b));
+}
 
 /**
  * Literal values that look like credentials: a known token pattern anywhere, any non-empty
@@ -123,16 +149,17 @@ export function detectPlaintextSecrets(spec: McpServerSpec, allow: readonly stri
   if (spec.extra) extraFields(spec.extra, "extra", fields);
   for (const [field, value] of fields) {
     if (allowed.has(field)) continue;
-    let literal: string;
+    // Each literal part on its own: text on two sides of a reference was never contiguous.
+    let parts: string[];
     try {
-      literal = parseEnvRefs(value)
+      parts = parseEnvRefs(value)
         .filter((p) => p.kind === "literal")
-        .map((p) => (p as { text: string }).text)
-        .join("");
+        .map((p) => (p as { text: string }).text);
     } catch {
-      literal = value;
+      parts = [value];
     }
-    const pattern = TOKEN_PATTERNS.find(([re]) => re.test(literal));
+    const literal = parts.join(" ");
+    const pattern = TOKEN_PATTERNS.find(([re]) => parts.some((p) => re.test(p)));
     if (pattern) {
       warnings.push({ field, reason: pattern[1] });
       continue;
@@ -145,7 +172,7 @@ export function detectPlaintextSecrets(spec: McpServerSpec, allow: readonly stri
           ? field.replace(/\[\d+\]$/, "").split(".").pop()!
           : null;
     // "Bearer " or "Basic " alone is the scheme, not the credential.
-    if (name !== null && SECRET_NAME.test(name) && literal.replace(/^(Bearer|Basic|Token)\s*/i, "").trim().length > 0) {
+    if (name !== null && isSecretName(name) && literal.replace(/^(Bearer|Basic|Token)\s*/i, "").trim().length > 0) {
       warnings.push({ field, reason: `"${name}" usually holds a credential and has a literal value` });
       continue;
     }
