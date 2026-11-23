@@ -102,6 +102,7 @@ changes are called out under **Changed** with what to do.
 
 ### Fixed
 
+- A Codex MCP value containing DEL (U+007F) no longer makes the `config.toml` rewrite fail.
 - A Codex `config.toml` that starts with a UTF-8 BOM directly before a managed
   `[mcp_servers.<name>]` table is edited instead of refused; the BOM is kept.
 - Security: a `.env`, `bunfig.toml`, `tsconfig.json` or `jsconfig.json` in (or, for the last

@@ -443,8 +443,16 @@ export function scanTomlDocument(src: string): TomlScanResult {
   return { sections, rootAssignments, bareMcpServersHasAssignments };
 }
 
+/**
+ * A TOML basic string. JSON's escapes are valid TOML except that JSON leaves DEL (U+007F) raw,
+ * which TOML forbids, so it is escaped too.
+ */
+export function tomlString(v: string): string {
+  return JSON.stringify(v).replace(/\u007f/g, "\\u007F");
+}
+
 export function formatTomlKey(key: string): string {
-  return /^[A-Za-z0-9_-]+$/.test(key) ? key : JSON.stringify(key);
+  return /^[A-Za-z0-9_-]+$/.test(key) ? key : tomlString(key);
 }
 
 export function normalizeCodexComparable(entry: unknown): Record<string, unknown> {
@@ -472,20 +480,20 @@ export function renderCodexSection(
   const key = formatTomlKey(name);
   const lines: string[] = [`[mcp_servers.${key}]`];
   if (typeof entry.command === "string") {
-    lines.push(`command = ${JSON.stringify(entry.command)}`);
+    lines.push(`command = ${tomlString(entry.command)}`);
   }
   if (Array.isArray(entry.args) && entry.args.length > 0) {
-    lines.push(`args = [${entry.args.map((a) => JSON.stringify(a)).join(", ")}]`);
+    lines.push(`args = [${entry.args.map((a) => tomlString(a)).join(", ")}]`);
   }
   if (typeof entry.url === "string") {
-    lines.push(`url = ${JSON.stringify(entry.url)}`);
+    lines.push(`url = ${tomlString(entry.url)}`);
   }
   // Variables Codex reads from its own environment (flyingrobots/agent-hub#6).
   if (typeof entry.bearer_token_env_var === "string") {
-    lines.push(`bearer_token_env_var = ${JSON.stringify(entry.bearer_token_env_var)}`);
+    lines.push(`bearer_token_env_var = ${tomlString(entry.bearer_token_env_var)}`);
   }
   if (Array.isArray(entry.env_vars) && entry.env_vars.length > 0) {
-    lines.push(`env_vars = [${entry.env_vars.map((v) => JSON.stringify(v)).join(", ")}]`);
+    lines.push(`env_vars = [${entry.env_vars.map((v) => tomlString(v)).join(", ")}]`);
   }
   if (isPlainObject(entry.env) && Object.keys(entry.env).length > 0) {
     lines.push("");
@@ -493,7 +501,7 @@ export function renderCodexSection(
     for (const [k, v] of Object.entries(entry.env as Record<string, string>).sort(([a], [b]) =>
       a.localeCompare(b),
     )) {
-      lines.push(`${formatTomlKey(k)} = ${JSON.stringify(v)}`);
+      lines.push(`${formatTomlKey(k)} = ${tomlString(v)}`);
     }
   }
   for (const table of ["http_headers", "env_http_headers"] as const) {
@@ -503,7 +511,7 @@ export function renderCodexSection(
       for (const [k, v] of Object.entries(entry[table] as Record<string, string>).sort(([a], [b]) =>
         a.localeCompare(b),
       )) {
-        lines.push(`${formatTomlKey(k)} = ${JSON.stringify(v)}`);
+        lines.push(`${formatTomlKey(k)} = ${tomlString(v)}`);
       }
     }
   }
