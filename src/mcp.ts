@@ -1124,7 +1124,12 @@ function planSingleMcpTarget(
           existingMap = {};
         }
         for (const [k, v] of Object.entries(rootObj)) {
-          if (!adapter.reservedNames?.includes(k)) Object.defineProperty(legacyEntries, k, { value: v, enumerable: true, writable: true, configurable: true });
+          // A key the agent uses itself (mcp.timeout) is a previous-layout entry only when it holds
+          // a server object; OpenCode's own settings there are not a server.
+          const isLegacyServer = isPlainObject(v) && ((v as Record<string, unknown>).type === "local" || (v as Record<string, unknown>).type === "remote");
+          if (k !== adapter.nestedKey && (!adapter.reservedNames?.includes(k) || isLegacyServer)) {
+            Object.defineProperty(legacyEntries, k, { value: v, enumerable: true, writable: true, configurable: true });
+          }
         }
       } else {
         existingMap = { ...rootObj };
@@ -1169,60 +1174,63 @@ function planSingleMcpTarget(
 
   // Keys of the root object the render drops (migrated or removed previous-layout entries).
   const migrated = new Set<string>();
-  // Previous layout, at a name the current layout reserves (OpenCode's mcp.servers, mcp.timeout):
-  // an entry agent-hub wrote there can never be migrated (the name is refused for this target), so
-  // once its ledger digest still matches it is removed; otherwise the record is retired and what
-  // is there is left alone, since it is no longer what agent-hub wrote. Never reported "absent".
-  const handledReserved = new Set<string>();
+  // Previous layout, at a key the agent uses itself:
+  // - a server object agent-hub wrote at <rootKey>.<nestedKey> (a server named "servers"),
+  //   unchanged since (ledger digest), becomes the first entry of a fresh map;
+  // - a record for another such key whose slot now holds the agent's own settings (OpenCode's
+  //   mcp.timeout object) is retired, and the settings are left alone. A server object there is
+  //   an ordinary previous-layout entry (see the loop below).
   for (const name of adapter.reservedNames ?? []) {
-    const rec = prevManaged[name];
-    const present = Object.prototype.hasOwnProperty.call(rootObj, name);
-    const isServerSlot = name === adapter.nestedKey ? nestedIsLegacyServer : present;
+    const rec = Object.prototype.hasOwnProperty.call(prevManaged, name) ? prevManaged[name] : undefined;
     if (!rec) continue;
-    handledReserved.add(name);
-    delete prevManaged[name];
     const value = rootObj[name];
-    const matches =
-      present &&
-      isServerSlot &&
-      adapter.legacyNormalizeComparable !== undefined &&
-      sha256Hex(stableJson(adapter.legacyNormalizeComparable(value))) === rec.digest;
-    ctx.ledgerMutation = true;
-    if (matches) {
-      migrated.add(name);
-      if (name === adapter.nestedKey) nestedIsLegacyServer = false;
+    if (name === adapter.nestedKey) {
+      if (!nestedIsLegacyServer) continue; // a real map: the record is an entry in it, if any
+      const matches =
+        adapter.legacyNormalizeComparable !== undefined &&
+        sha256Hex(stableJson(adapter.legacyNormalizeComparable(value))) === rec.digest;
+      if (!matches) continue; // refused below: not provably agent-hub's
+      const migratedEntry = adapter.normalizeComparable(adapter.legacyToCurrent ? adapter.legacyToCurrent(value) : value);
+      existingMap = {};
+      Object.defineProperty(existingMap, name, { value: migratedEntry, enumerable: true, writable: true, configurable: true });
+      ctx.existingMap = existingMap;
+      prevManaged[name] = { ...rec, digest: sha256Hex(stableJson(migratedEntry)) };
+      nestedIsLegacyServer = false;
       ctx.targetMutation = true;
-      ctx.changeSummaries.push(`remove ${name} from ${rootKey}`);
+      ctx.ledgerMutation = true;
+      ctx.changeSummaries.push(`move ${name} into ${rootKey}.${adapter.nestedKey}`);
       ctx.ops.push({
         domain: "mcp",
-        action: "mcp-remove-reserved-legacy",
+        action: "mcp-migrate-layout",
         status: "change",
         destination: `${configPath}#${rootKey}.${name}`,
         observed: `server "${name}" written by sync-agents directly under ${rootKey}, in the previous layout`,
-        intended: `remove it; "${name}" is one of ${adapter.label}'s own ${rootKey} keys, so it cannot be a server name`,
+        intended: `make ${rootKey}.${adapter.nestedKey} a map of servers holding it as ${rootKey}.${adapter.nestedKey}.${name}`,
         ownershipBasis: rec.basis,
-        reason: `${adapter.label} reserves ${rootKey}.${name}; the server sync-agents wrote there is unchanged since, so it is removed`,
-        nextStep: `Rename the hub server if you still want it in ${adapter.label}`,
+        reason: `${adapter.label} reads servers from ${rootKey}.${adapter.nestedKey}; the direct ${rootKey}.<name> layout is deprecated`,
         targetMutation: true,
         ledgerMutation: true,
       });
-    } else {
-      ctx.changeSummaries.push(`retire record for ${rootKey}.${name}`);
-      ctx.ops.push({
-        domain: "mcp",
-        action: "retire-reserved-record",
-        status: "change",
-        destination: `${configPath}#${rootKey}.${name}`,
-        observed: present
-          ? `${rootKey}.${name} is not the server sync-agents wrote there`
-          : `${rootKey}.${name} is not in ${configPath}`,
-        intended: `stop managing ${rootKey}.${name}; leave ${configPath} untouched`,
-        ownershipBasis: rec.basis,
-        reason: `${adapter.label} reserves ${rootKey}.${name}, so it is no longer a server sync-agents manages`,
-        targetMutation: false,
-        ledgerMutation: true,
-      });
+      continue;
     }
+    const isServerObject = isPlainObject(value) && ((value as Record<string, unknown>).type === "local" || (value as Record<string, unknown>).type === "remote");
+    const inMap = Object.prototype.hasOwnProperty.call(existingMap, name);
+    if (value === undefined || isServerObject || inMap) continue;
+    delete prevManaged[name];
+    ctx.ledgerMutation = true;
+    ctx.changeSummaries.push(`retire record for ${rootKey}.${name}`);
+    ctx.ops.push({
+      domain: "mcp",
+      action: "retire-reserved-record",
+      status: "change",
+      destination: `${configPath}#${rootKey}.${name}`,
+      observed: `${rootKey}.${name} holds ${adapter.label}'s own settings, not the server sync-agents wrote there`,
+      intended: `stop managing ${rootKey}.${name}; leave it untouched`,
+      ownershipBasis: rec.basis,
+      reason: `the previous-layout server at ${rootKey}.${name} was replaced by ${adapter.label}'s own settings`,
+      targetMutation: false,
+      ledgerMutation: true,
+    });
   }
   if (nestedIsLegacyServer) {
     throw new Error(
@@ -1339,7 +1347,6 @@ function planSingleMcpTarget(
   }
 
   for (const [name, compiledPerAgent] of servers) {
-    if (handledReserved.has(name)) continue;
     if (!Object.prototype.hasOwnProperty.call(compiledPerAgent, adapter.id)) {
       throw new Error(`mcp-sync: internal error: ${adapter.id} was planned but not compiled for "${name}"`);
     }

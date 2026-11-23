@@ -70,9 +70,9 @@ changes are called out under **Changed** with what to do.
   `enabled: true`. An old-layout entry named like a hub server that `sync-agents` did not write,
   or that was edited, stops the run as a conflict that `--force` and `--adopt` do not override:
   move it to `mcp.servers.<name>` yourself, rename or remove it, or exclude `"opencode:mcp"`. Your
-  own old-layout entries with other names stay put and are listed by `--explain`. The hub server
-  names `servers` and `timeout` are refused for OpenCode and stop every run that includes it
-  until you rename the server or set `overrides.opencode.disabled: true`.
+  own old-layout entries with other names stay put and are listed by `--explain`. Hub servers
+  may be named `servers` or `timeout`; they are written to `mcp.servers.<name>`, and
+  agent-hub's own old-layout entries under those names move there too.
 - OpenCode's rules, skills and `opencode.json` live under
   `${XDG_CONFIG_HOME:-~/.config}/opencode`, matching OpenCode itself. If you set an absolute
   `XDG_CONFIG_HOME`, the first unscoped sync after upgrading moves the links there, writes hub

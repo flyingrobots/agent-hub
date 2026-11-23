@@ -82,6 +82,10 @@ export type McpAdapterDef = {
   /** When set, servers live one level down, at `<rootKey>.<nestedKey>` (OpenCode: `mcp.servers`). */
   readonly nestedKey?: string;
   /** Keys of `<rootKey>` that are not server names (OpenCode: `servers`, `timeout`). */
+  /**
+   * Keys of <rootKey> the agent itself uses (OpenCode: servers, timeout). They are legal server
+   * names in the nested map; only the previous direct layout needs care with them.
+   */
   readonly reservedNames?: readonly string[];
   /** Comparable form used for ledger digests of entries in the previous (direct) layout. */
   readonly legacyNormalizeComparable?: (entry: unknown) => Record<string, unknown>;
@@ -394,11 +398,6 @@ export const MCP_ADAPTERS: readonly McpAdapterDef[] = [
       checkRefs(rawSpec, serverName, sourceLabel);
       // OpenCode substitutes {env:VAR} inside any string of its config.
       const spec = mapSpecRefs(rawSpec, (name) => `{env:${name}}`);
-      if (serverName === "servers" || serverName === "timeout") {
-        throw new Error(
-          `${sourceLabel}: MCP server name "${serverName}" is reserved by OpenCode's config (mcp.${serverName}); rename the server, or set overrides.opencode.disabled = true`,
-        );
-      }
       if (transport === "stdio") {
         const out: Record<string, unknown> = {
           type: "local",

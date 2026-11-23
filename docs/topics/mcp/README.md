@@ -184,20 +184,22 @@ entry in the old layout stops the run, as above. On `dev`, a direct entry that h
 `enabled` key is dropped with a diagnostic. These statements come from reading OpenCode's source
 (anomalyco/opencode, tag `v1.19.6` and `dev` at `7b70422`), not from running OpenCode.
 
-The hub server names `servers` and `timeout` are refused for OpenCode. They are legal names
-inside `mcp.servers`, but in the previous layout they collide with OpenCode's own `mcp.servers`
-and `mcp.timeout` keys, so refusing them keeps an upgrade unambiguous. Until you rename the
-server or disable it for OpenCode (`overrides.opencode.disabled: true`), every run that includes
-OpenCode's MCP config stops. A disabled server still names its entry: a server of your own at
-`mcp.servers.timeout` is then a conflict, and `--force` would remove it, so rename the hub server
-instead when you have one.
+A hub server may be named `servers` or `timeout` like any other: it is written to
+`mcp.servers.servers` or `mcp.servers.timeout`, and OpenCode's own `mcp.timeout` settings are
+never touched. In the previous layout those names sat on OpenCode's own keys, so they get extra
+care on upgrade:
 
-A server by one of those names that an earlier `sync-agents` wrote in the previous layout is
-removed once it is disabled or renamed, provided it is unchanged (`mcp-remove-reserved-legacy`).
-If a `timeout` entry was changed, its record is retired and `mcp.timeout` is left alone
-(`retire-reserved-record`). A `mcp.servers` holding any value that is not a server object, which
-is what the previous layout's server named `servers` looks like, is refused unless
-`sync-agents` wrote it and it is unchanged, so nothing is ever written inside it.
+- a server `sync-agents` wrote at `mcp.timeout`, unchanged since, moves to
+  `mcp.servers.timeout` (`mcp-migrate-layout`); changed, it is a conflict like any edited
+  old-layout entry; one you wrote yourself, named like a hub server, is a conflict too;
+- a server `sync-agents` wrote at `mcp.servers` itself (a server named `servers`), unchanged
+  since, becomes the first entry of a new `mcp.servers` map. Any other `mcp.servers` holding a
+  value that is not a server object is refused, so nothing is ever written inside it;
+- a record for `timeout` whose `mcp.timeout` now holds OpenCode's own settings object is retired,
+  and the settings are left alone (`retire-reserved-record`).
+
+OpenCode reads a direct-layout server object at `mcp.servers` or `mcp.timeout` as a server too
+(`isDirectLegacyMcp` in its config normalizer), so these entries are the servers they look like.
 
 ### Codex TOML editing
 
