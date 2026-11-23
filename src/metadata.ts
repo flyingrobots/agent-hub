@@ -17,6 +17,12 @@ export type EntryMetadataResult =
   | { ok: false; reason: string };
 
 const DARWIN_XATTR_NOFOLLOW = 0x0001;
+/**
+ * Extended attributes left out of every metadata read. `com.apple.provenance` is macOS's own
+ * record of which application wrote a file: it says nothing about the file's content, and it
+ * differs between two identical copies written by different programs, sync-agents included.
+ */
+const DARWIN_IGNORED_XATTRS: ReadonlySet<string> = new Set(["com.apple.provenance"]);
 const DARWIN_ACL_TYPE_EXTENDED = 0x00000100;
 const DARWIN_ENOENT = 2;
 const DARWIN_ENOTSUP = 45;
@@ -190,6 +196,7 @@ function readDarwinMetadata(entryPath: string): EntryMetadataResult {
     }
     const names = splitNulTerminatedNames(listBuf, Number(readBytes));
     for (const name of names) {
+      if (DARWIN_IGNORED_XATTRS.has(name)) continue;
       const nameBuf = toCStringBuffer(name);
       const namePtr = ptr(nameBuf);
       const valSize = api.getxattr(pathPtr, namePtr, null, 0n, 0, DARWIN_XATTR_NOFOLLOW);

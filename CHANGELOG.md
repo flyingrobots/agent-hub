@@ -8,6 +8,12 @@ changes are called out under **Changed** with what to do.
 
 ## [Unreleased]
 
+### Fixed
+
+- On macOS, `--adopt` no longer refuses an identical copy because one side carries
+  `com.apple.provenance`, the attribute macOS adds to files written by some applications. Any
+  other differing extended attribute still blocks adoption.
+
 ## [0.2.0] - 2026-11-23
 
 Vault secrets with grant-bound `sync-agents exec`, project mode with an attacker-safe lockfile,
