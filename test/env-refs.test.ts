@@ -258,6 +258,15 @@ describe("a plaintext secret blocks the sync (flyingrobots/agent-hub#6, flyingro
     expect(fs.existsSync(path.join(home, ".claude.json"))).toBe(false);
   });
 
+  test("two literal fields give two conflicts, and the summary counts both", () => {
+    const { home, opts } = sb({ mcp: { command: "/bin/gh", env: { GITHUB_TOKEN: "ghp_0123456789abcdefghijABCDEFGHIJ012345", API_KEY: "sk-FAKE0123456789abcdefghijklmnop" } } });
+    const r = runSync(opts);
+    expect(r.exitCode).toBe(1);
+    expect(r.events.filter((e) => e.id === "agent_hub.conflict").map((e) => String(e.data.reason).includes("env.API_KEY") || String(e.data.reason).includes("env.GITHUB_TOKEN"))).toEqual([true, true]);
+    expect(r.events.find((e) => e.id === "agent_hub.summary")!.data.conflicts).toBe(2);
+    expect(fs.existsSync(path.join(home, ".claude.json"))).toBe(false);
+  });
+
   test("a plaintext secret in a per-agent override file blocks the sync too", () => {
     const { home, opts } = sb({ mcp: { command: "/bin/gh" } });
     const hub = opts.hubDir;

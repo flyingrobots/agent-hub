@@ -147,7 +147,10 @@ server spec that looks like a credential. Every layer is checked (the base `mcp`
 overrides and `<target>/mcp.json` files, as each target resolves them); a field flagged for
 several targets is reported once. Each such field also gets an `agent_hub.conflict`, so the run
 **refuses**, as it does for any conflict: it writes nothing (no target, no ledger) and exits 1.
-`--force` does not override it. The value is never printed. Fix it by writing the field as
+`--force` does not override it. The value is never printed. A server with `disabled: true` still
+blocks (the literal is still in the hub). A run that plans no MCP servers (`--skill-only`, or
+`--targets` naming only `:links`) does not check, and a literal only in the override file of a
+target the run excludes does not block that run. Fix it by writing the field as
 `${env:NAME}` (above) or `${vault:KEY}` (below), or by naming it in `allowPlaintextFields` if it
 is not secret. It checks for known token patterns (`sk-…`, `ghp_…`, `github_pat_…`,
 Slack `xox?-…`, Google `AIza…`, AWS `AKIA…`, PEM private keys), any literal under an `env` key or

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/flyingrobots/agent-hub/schemas/agent_hub.warning.schema.json",
   "title": "agent_hub.warning",
-  "description": "Something worth attention, with machine-readable details. code plaintext_secret: a literal value in a hub server spec looks like a credential (the value itself is never printed); since agent-hub 0.2.0 the same field is also an agent_hub.conflict, so the run refuses.",
+  "description": "Something worth attention, with machine-readable details. code plaintext_secret: a literal value in a hub server spec looks like a credential (the value itself is never printed); the same field is also an agent_hub.conflict, so the run refuses.",
   "x-schema-version": "1.1.0",
   "type": "object",
   "required": [

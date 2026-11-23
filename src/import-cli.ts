@@ -141,7 +141,8 @@ function chooseAgents(from?: AgentId): AgentId[] {
 }
 
 /** A sync with --adopt after writing, so the agents' identical entries become owned. */
-function adoptAfter(opts: ImportOptions, emit: ReturnType<typeof recorder>["emit"]): number {
+/** Run the adopting sync; its exit code and how many conflicts it reported. */
+function adoptAfter(opts: ImportOptions, emit: ReturnType<typeof recorder>["emit"]): { exit: number; conflicts: number } {
   const res = runSync({
     hubDir: opts.hubDir,
     homeDir: opts.homeDir,
@@ -154,7 +155,7 @@ function adoptAfter(opts: ImportOptions, emit: ReturnType<typeof recorder>["emit
     if (e.id === "agent_hub.summary") continue;
     emit(e.stream, e.id, e.message, e.data);
   }
-  return res.exitCode;
+  return { exit: res.exitCode, conflicts: Math.max(1, res.events.filter((e) => e.id === "agent_hub.conflict").length) };
 }
 
 export function runImport(opts: ImportOptions): Run {
@@ -378,18 +379,18 @@ export function runImport(opts: ImportOptions): Run {
       return { exitCode: 1, events: r.events };
     }
   }
-  let exit = 0;
-  if (opts.adopt) exit = adoptAfter(opts, r.emit);
+  const adopted = opts.adopt ? adoptAfter(opts, r.emit) : { exit: 0, conflicts: 0 };
+  const setVars = rewrittenVars.size > 0 ? ` Set ${[...rewrittenVars].sort().join(", ")} in your agents' environment, then run sync-agents --force to replace the agents' literal values.` : "";
+  if (adopted.exit !== 0) {
+    r.emit("stderr", "agent_hub.summary", `sync-agents: imported ${planned} item(s), but the sync that adopts the agents' entries found ${adopted.conflicts} conflict(s); see above.${setVars}`, { status: "conflicts", conflicts: adopted.conflicts });
+    return { exitCode: 1, events: r.events };
+  }
   if (rewrittenVars.size > 0) {
     r.emit("stdout", "agent_hub.summary", `sync-agents: imported ${planned} item(s); set ${[...rewrittenVars].sort().join(", ")} in your agents' environment, then run sync-agents --force to replace the agents' literal values.`, {
       status: "applied",
       changes: r.applied(),
     });
-    return { exitCode: exit, events: r.events };
-  }
-  if (exit !== 0) {
-    r.emit("stderr", "agent_hub.summary", "sync-agents: imported, but adopting the agents' entries found conflicts; see above.", { status: "conflicts", conflicts: 1 });
-    return { exitCode: 1, events: r.events };
+    return { exitCode: 0, events: r.events };
   }
   r.emit("stdout", "agent_hub.summary", `sync-agents: imported ${planned} item(s).`, { status: "applied", changes: r.applied() });
   return { exitCode: 0, events: r.events };
@@ -510,9 +511,9 @@ export function runPull(opts: PullOptions): Run {
     r.emit("stderr", "agent_hub.error", `sync-agents: ${err instanceof Error ? err.message : String(err)}`, { code: "apply" });
     return { exitCode: 1, events: r.events };
   }
-  const exit = adoptAfter(opts as ImportOptions, r.emit);
-  if (exit !== 0) {
-    r.emit("stderr", "agent_hub.summary", "sync-agents: pulled, but the sync that followed found conflicts; see above.", { status: "conflicts", conflicts: 1 });
+  const adopted = adoptAfter(opts as ImportOptions, r.emit);
+  if (adopted.exit !== 0) {
+    r.emit("stderr", "agent_hub.summary", `sync-agents: pulled ${kind}/${name}, but the sync that followed found ${adopted.conflicts} conflict(s); see above.`, { status: "conflicts", conflicts: adopted.conflicts });
     return { exitCode: 1, events: r.events };
   }
   r.emit("stdout", "agent_hub.summary", `sync-agents: pulled ${kind}/${name} from ${opts.from} and synced.`, { status: "applied", changes: r.applied() });
