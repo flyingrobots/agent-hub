@@ -329,16 +329,22 @@ if [[ -n "$BINARY_SRC" ]]; then
 fi
 CANON_HOME="$(canonicalize_path "$HOME")"
 
+# Every hub the installed runtime could resolve: an --agents-dir value (written to config.json),
+# an exported AGENTS_DIR (which the engine prefers over config.json at run time), the wrapper's
+# view, and with --binary the binary's own view (it reads config.json without Bun or python3).
+# The prefix must overlap none of them.
+HUB_CANDIDATES=()
 if [[ -n "$CONFIG_AGENTS_DIR" ]]; then
-  HUB_DIR="$(canonicalize_path "$CONFIG_AGENTS_DIR")"
-else
-  HUB_DIR="$("$REPO_DIR/bin/sync-agents" --print-dir)"
+  HUB_CANDIDATES+=("$(canonicalize_path "$CONFIG_AGENTS_DIR")|--agents-dir")
 fi
-# With --binary, also ask the binary itself where the hub is: it is what will run, and it reads
-# config.json without Bun or python3. Refuse if either view overlaps the prefix.
-BINARY_HUB_DIR=""
-if [[ -n "$BINARY_SRC" && -z "$CONFIG_AGENTS_DIR" ]]; then
-  BINARY_HUB_DIR="$("$BINARY_SRC" --print-dir)"
+if [[ -n "${AGENTS_DIR:-}" ]]; then
+  HUB_CANDIDATES+=("$(canonicalize_path "$AGENTS_DIR")|AGENTS_DIR")
+fi
+if [[ -z "$CONFIG_AGENTS_DIR" ]]; then
+  HUB_CANDIDATES+=("$("$REPO_DIR/bin/sync-agents" --print-dir)|bin/sync-agents --print-dir")
+  if [[ -n "$BINARY_SRC" ]]; then
+    HUB_CANDIDATES+=("$("$BINARY_SRC" --print-dir)|the binary's --print-dir")
+  fi
 fi
 
 if [[ "$INSTALL_DIR" == "/" || "$INSTALL_DIR" == "$CANON_HOME" ]]; then
@@ -346,14 +352,14 @@ if [[ "$INSTALL_DIR" == "/" || "$INSTALL_DIR" == "$CANON_HOME" ]]; then
   exit 1
 fi
 
-if paths_overlap "$INSTALL_DIR" "$HUB_DIR"; then
-  echo "install.sh: refusing --prefix ($INSTALL_DIR) that overlaps hub directory ($HUB_DIR)" >&2
-  exit 1
-fi
-if [[ -n "$BINARY_HUB_DIR" ]] && paths_overlap "$INSTALL_DIR" "$BINARY_HUB_DIR"; then
-  echo "install.sh: refusing --prefix ($INSTALL_DIR) that overlaps hub directory ($BINARY_HUB_DIR, as the binary resolves it)" >&2
-  exit 1
-fi
+for candidate in "${HUB_CANDIDATES[@]}"; do
+  hub="${candidate%%|*}"
+  source_label="${candidate#*|}"
+  if paths_overlap "$INSTALL_DIR" "$hub"; then
+    echo "install.sh: refusing --prefix ($INSTALL_DIR) that overlaps hub directory ($hub, from $source_label)" >&2
+    exit 1
+  fi
+done
 
 PREFIX_STATUS="absent"
 if [[ -L "$INSTALL_DIR" || -f "$INSTALL_DIR" ]]; then

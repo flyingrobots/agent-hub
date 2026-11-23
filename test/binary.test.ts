@@ -445,6 +445,22 @@ describe.skipIf(compileUnavailable !== null)("install.sh --binary", () => {
     expect(existsSync(rt)).toBe(false);
   });
 
+  // python3 accepts NaN in JSON; the engine (JSON.parse) does not, so the wrapper and the binary
+  // see different hubs. Skipped only where no working python3 exists.
+  const python3Works = Bun.spawnSync(["python3", "-c", "import json; json.loads('NaN')"]).exitCode === 0;
+  test.skipIf(!python3Works)("the binary's own --print-dir blocks a prefix the wrapper's view misses (Baker Street PR #17 CK-F-1)", () => {
+    const { home, env } = makeSandbox();
+    const { path } = minimalHostPath(home);
+    const py = Bun.spawnSync(["sh", "-c", "command -v python3"], { stdout: "pipe" }).stdout.toString().trim();
+    symlinkSync(py, join(path, "python3"));
+    mkdirSync(join(home, ".config", "agent-hub"), { recursive: true });
+    writeFileSync(join(home, ".config", "agent-hub", "config.json"), `{"agentsDir": "${join(home, "elsewhere")}", "x": NaN}\n`);
+    const binaryHub = join(home, ".agents");
+    const r = run([INSTALL_SH, "--binary", BIN, "--prefix", binaryHub, "--bin-dir", join(home, ".local", "bin"), "--no-skill"], { ...env, PATH: path });
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("the binary's --print-dir");
+  });
+
   test("without Bun on PATH, upgrading a binary runtime is one atomic exchange (no two-step rename)", () => {
     const { home, env } = makeSandbox();
     const prefix = join(home, ".agent-hub");

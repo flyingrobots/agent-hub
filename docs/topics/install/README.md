@@ -31,9 +31,12 @@ as a whole, including any `src/mcp-sync.ts` that only the source layout has.
   neither is available, `bin/sync-agents --print-dir` (which `install.sh` uses for its hub-overlap
   check) refuses rather than guessing; with `--binary`, `install.sh` also checks the binary's own
   view of the hub.
-- **Paths.** A relative path is resolved against the physical current directory, and a path
-  containing a newline is refused, so `install.sh`, the wrapper and the engine always name the
-  same directory.
+- **Paths.** A relative path is resolved against the physical current directory, `..` is
+  normalized the way the engine does, and a path containing a newline is refused, so
+  `install.sh`, the wrapper and the engine resolve hub paths the same way.
+- **Hub-overlap guard.** The prefix is refused if it overlaps any hub the runtime could use: an
+  `--agents-dir` value, an exported `AGENTS_DIR` (which the engine prefers over `config.json`),
+  the wrapper's `--print-dir`, and with `--binary` the binary's own `--print-dir`.
 
 ## Installing a release binary
 
@@ -101,8 +104,9 @@ bun run build:bin          # writes dist/sync-agents for this machine
 Pushing a tag `v<version>` runs `.github/workflows/release.yml`:
 
 1. **Verify.** The tag must equal `v` + the `version` in `package.json`, its commit must be on
-   `main`, and no release (or draft) may already exist for it. Published assets are never
-   replaced; a mistake is fixed with a new version.
+   `main`, and no published release may already exist for it. A leftover draft (from an earlier
+   failed publish) is invisible to this read-only job; the publish step, which can see drafts,
+   refuses it. Published assets are never replaced; a mistake is fixed with a new version.
 2. **Build.** Each platform is compiled with Bun 1.4.5, the macOS builds are ad-hoc signed, and
    native builds run the compiled-binary and end-to-end suites against the exact artifact.
 3. **Publish.** `SHA256SUMS` and provenance attestations are generated, and everything is

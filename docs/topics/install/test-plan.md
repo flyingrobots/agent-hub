@@ -12,6 +12,7 @@ exist.
 | INST-SRC-2 | `install.sh` never passes `--force`, scopes `--force-skill`, and guards the prefix and shim | Exit codes; preserved files per case | E2E | Implemented | `agent-hub.test.ts › Contract 3 (MUST #2 + SHOULD #4): installer never supplies global force, scopes --force-skill, and guards --prefix & shim` |
 | INST-SRC-3 | Relative shim resolution, missing-argument exit 2, `--opt=val`, and an atomic runtime swap | Per case | E2E | Implemented | `hardening.test.ts › F7 & F8 & F13: install.sh relative shim resolution, missing-arg exit 2, --opt=val, and atomic swap` |
 | INST-SRC-5 | Bash canonicalizers agree with the engine: relative paths from a symlinked cwd, unreadable `config.json`, newline | Equal `--print-dir`; refusals | E2E | Implemented | `hardening.test.ts › a relative AGENTS_DIR with '..' from a symlinked cwd resolves like the engine (physical cwd)` |
+| INST-SRC-7 | A prefix that is an exported `AGENTS_DIR` is refused even when `--agents-dir` names another hub | Exit 1 naming `AGENTS_DIR`; prefix not created | E2E | Implemented | `hardening.test.ts › install.sh refuses a --prefix that is an exported AGENTS_DIR even when --agents-dir names another hub (Baker Street PR #17 CK-F-3)` |
 | INST-SRC-4 | The hub-overlap guard and the engine agree on `..` paths, so a prefix that is the hub is refused | Both `--print-dir` paths equal; install exit 1, prefix not created | E2E | Implemented | `hardening.test.ts › AGENTS_DIR=<h>/nope/../rt with --prefix <h>/rt is refused as overlapping, and both print-dir paths agree` |
 
 ## Binary layout
@@ -27,7 +28,8 @@ exist.
 | INST-BIN-6 | Switching between layouts replaces the runtime in place under the marker guard | Layout and tree after each install | E2E | Implemented | `binary.test.ts › swaps between source and binary layouts in place under the existing marker guard` |
 | INST-BIN-7 | `--binary` refuses a missing argument, a non-executable, a non-native file (including a shebang-less script), a quarantined macOS download, and a non-agent-hub program, leaving the prefix untouched | Exit codes and messages; prefix absent | E2E | Implemented | `binary.test.ts › refuses a missing argument, a non-executable, a script, or a non-agent-hub program, leaving the prefix untouched` |
 | INST-BIN-8 | Without Bun, replacing an existing binary runtime is one atomic exchange | No `mv` of the prefix during the upgrade | E2E | Implemented | `binary.test.ts › without Bun on PATH, upgrading a binary runtime is one atomic exchange (no two-step rename)` |
-| INST-BIN-10 | Without Bun or python3, the binary's own hub view blocks a prefix that is the configured hub | Exit 1; prefix not created | E2E | Implemented | `binary.test.ts › without Bun or python3, the binary's own hub view still blocks a prefix that is the configured hub` |
+| INST-BIN-10 | Without Bun or python3, a prefix that is the configured hub is refused | Exit 1; prefix not created | E2E | Implemented | `binary.test.ts › without Bun or python3, the binary's own hub view still blocks a prefix that is the configured hub` |
+| INST-BIN-11 | The binary's own `--print-dir` blocks a prefix that the wrapper's view misses | Exit 1 naming the binary's view; killed by a mutant that drops it | E2E | Implemented | `binary.test.ts › the binary's own --print-dir blocks a prefix the wrapper's view misses (Baker Street PR #17 CK-F-1)` |
 | INST-SRC-6 | A source-layout install without Bun swaps atomically | No moment without a runtime | — | Gap: falls back to two renames (documented above) | — |
 
 ## Release workflow

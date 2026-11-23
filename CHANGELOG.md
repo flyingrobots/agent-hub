@@ -62,7 +62,8 @@ changes are called out under **Changed** with what to do.
 - `install.sh`'s hub-overlap guard missed a hub path written with `..` under a
   nonexistent directory, so a later install could delete skills in a hub that was
   also the runtime prefix. Both Bash path canonicalizers now normalize `..` the way
-  the engine does.
+  the engine does, and the guard now checks every hub the runtime could resolve, including an
+  exported `AGENTS_DIR` alongside `--agents-dir`.
 - The Codex TOML editor no longer deletes a comment that sits between a managed
   `[mcp_servers.<name>]` table and the next table, and an updated table stays where
   it was instead of moving to the end of the file (flyingrobots/agent-hub#15).

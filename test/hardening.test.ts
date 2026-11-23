@@ -474,3 +474,22 @@ describe("Bash path canonicalizers agree with the engine (Baker Street PR #17 bl
     expect(existsSync(join(root, "rt"))).toBe(false);
   }, INSTALLER_TIMEOUT_MS);
 });
+
+test("install.sh refuses a --prefix that is an exported AGENTS_DIR even when --agents-dir names another hub (Baker Street PR #17 CK-F-3)", () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "agent-hub-envhub-")));
+  tempRoots.push(home);
+  const env = {
+    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, ".config"),
+    XDG_STATE_HOME: join(home, ".local", "state"),
+    AGENTS_DIR: join(home, "envhub"),
+  };
+  const r = Bun.spawnSync(
+    ["bash", INSTALL_SH, "--agents-dir", join(home, "cfghub"), "--prefix", join(home, "envhub"), "--bin-dir", join(home, ".local", "bin"), "--no-skill"],
+    { env, stdout: "pipe", stderr: "pipe" },
+  );
+  expect(r.exitCode).toBe(1);
+  expect(r.stderr.toString()).toContain("from AGENTS_DIR");
+  expect(existsSync(join(home, "envhub"))).toBe(false);
+}, INSTALLER_TIMEOUT_MS);

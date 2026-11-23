@@ -135,7 +135,7 @@ read_config_agents_dir() {
     ' "$cfg" 2>/dev/null || true
   elif ! command -v python3 >/dev/null 2>&1; then
     # Guessing ~/.agents here would let install.sh's hub-overlap guard check the wrong hub.
-    echo "sync-agents: $cfg exists but neither bun nor python3 is available to read it; pass --dir or set AGENTS_DIR" >&2
+    echo "sync-agents: $cfg exists but neither bun nor python3 is available to read it; set AGENTS_DIR to the hub, or install Bun or python3" >&2
     return 1
   else
     python3 -c '

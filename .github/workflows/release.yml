@@ -3,7 +3,7 @@ name: Release
 # Builds unsigned standalone sync-agents binaries for a pushed v* tag and publishes them,
 # with SHA256SUMS and GitHub build-provenance attestations, to a new GitHub release for that tag.
 # The tag must equal "v" + package.json "version" and point at a commit on main. A tag that
-# already has a release is refused: published assets are never replaced.
+# already has a release (or, checked at publish, a draft) is refused: published assets are never replaced.
 
 on:
   push:
@@ -40,14 +40,15 @@ jobs:
             exit 1
           fi
 
-      - name: No release exists for this tag yet
+      # A read-only token cannot see drafts; the publish job re-checks with write access.
+      - name: No published release exists for this tag yet
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
         run: |
           if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::error::a release (or draft) for $TAG already exists; published assets are never replaced. Delete it deliberately, or cut a new version."
+            echo "::error::a release for $TAG already exists; published assets are never replaced. Delete it deliberately, or cut a new version."
             exit 1
           fi
 
