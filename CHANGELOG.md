@@ -8,6 +8,12 @@ changes are called out under **Changed** with what to do.
 
 ## [Unreleased]
 
+### Fixed
+
+- A target JSON config that is empty or holds only whitespace (as Antigravity creates
+  `mcp_config.json`) no longer stops the whole run as invalid JSON; it is treated like an absent
+  file ([#54](https://github.com/flyingrobots/agent-hub/issues/54)).
+
 ## [0.2.0] - 2026-11-23
 
 Vault secrets with grant-bound `sync-agents exec`, project mode with an attacker-safe lockfile,
