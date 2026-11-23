@@ -796,6 +796,7 @@ export function wantsHuman(argv: readonly string[]): boolean {
   return argv.includes("--human") || argv.includes("--humanize");
 }
 
+/** --help: what the command does, then the schema of every message type it can print. */
 export function helpEvents(command: string, usage: string): OutputEvent[] {
   return [
     {
@@ -804,6 +805,7 @@ export function helpEvents(command: string, usage: string): OutputEvent[] {
       message: usage,
       data: { command, usage, schemas: Object.keys(SCHEMAS) },
     },
+    ...schemaEvents(),
   ];
 }
 
@@ -830,7 +832,8 @@ export function cliMain(argv: string[], command = "sync-agents", usage = CLI_USA
       return 0;
     }
     if (parsed.showHelp) {
-      writeEvents(helpEvents(command, usage), human);
+      // In prose, help is just the usage text.
+      writeEvents(human ? helpEvents(command, usage).slice(0, 1) : helpEvents(command, usage), human);
       return 0;
     }
     if (parsed.printDir) {
@@ -858,5 +861,6 @@ export function cliMain(argv: string[], command = "sync-agents", usage = CLI_USA
 }
 
 if (import.meta.main) {
-  process.exit(cliMain(process.argv.slice(2)));
+  // exitCode, not process.exit(): exiting at once drops whatever a slow pipe has not yet taken.
+  process.exitCode = cliMain(process.argv.slice(2));
 }

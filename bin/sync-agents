@@ -130,7 +130,14 @@ canonicalize_path() {
   # the logical $PWD keeps symlink names, so a ".." would climb a different directory.
   case "$p" in
     /*) ;;
-    *)  p="$(pwd -P)/$p" ;;
+    *)
+      local here
+      if ! here="$(pwd -P 2>/dev/null)"; then
+        emit_error internal "${0##*/}: cannot read the current directory to resolve $raw"
+        return 1
+      fi
+      p="$here/$p"
+      ;;
   esac
   p="$(lexical_normalize "$p")"
 
@@ -140,10 +147,18 @@ canonicalize_path() {
   while true; do
     if [[ -e "$cursor" ]]; then
       local real_base
+      # Checked explicitly: a caller's `|| exit` turns off set -e inside this function.
       if [[ -d "$cursor" ]]; then
-        real_base="$(cd -P "$cursor" && pwd)"
+        if ! real_base="$(cd -P "$cursor" 2>/dev/null && pwd)"; then
+          emit_error internal "${0##*/}: cannot enter $cursor to resolve $raw"
+          return 1
+        fi
       else
-        real_base="$(cd -P "$(dirname "$cursor")" && pwd)/$(basename "$cursor")"
+        if ! real_base="$(cd -P "$(dirname "$cursor")" 2>/dev/null && pwd)"; then
+          emit_error internal "${0##*/}: cannot enter $(dirname "$cursor") to resolve $raw"
+          return 1
+        fi
+        real_base="$real_base/$(basename "$cursor")"
       fi
       local out="$real_base"
       local idx=$(( ${#tail[@]} - 1 ))
@@ -286,7 +301,12 @@ while [[ "$i" -lt "${#ARGS[@]}" ]]; do
   i=$((i + 1))
 done
 
+if [[ "$SHOW_HELP" -eq 1 && "$HUMAN" -eq 0 ]] && command -v bun >/dev/null 2>&1 && [[ -f "$CLI_SCRIPT" ]]; then
+  # The engine prints the help line and then every message schema.
+  exec bun "$CLI_SCRIPT" --help
+fi
 if [[ "$SHOW_HELP" -eq 1 ]]; then
+  # Without Bun: the help line alone (its "schemas" names every schema; see schemas/).
   USAGE_TEXT="$(usage)"
   emit_line stdout agent_hub.help help "$USAGE_TEXT" ",\"command\":\"sync-agents\",\"usage\":$(json_str "$USAGE_TEXT"),\"schemas\":[$SCHEMA_IDS]"
   exit 0
@@ -305,7 +325,7 @@ if [[ "$PRINT_DIR" -eq 1 ]]; then
       RAW_DIR="$HOME/.agents"
     fi
   fi
-  HUB="$(canonicalize_path "$RAW_DIR")" || exit 2
+  HUB="$(canonicalize_path "$RAW_DIR")" || exit 1
   emit_line stdout agent_hub.print_dir print_dir "$HUB" ",\"hub\":$(json_str "$HUB")"
   exit 0
 fi

@@ -9,4 +9,5 @@ import { cliMain } from "./cli.ts";
 const MCP_USAGE =
   "Usage: mcp-sync.ts [--dir <path>] [--targets <csv>] [--dry-run|-n] [--check] [--adopt] [--force] [--explain] [--disown-legacy <agent>:<name>] [--human] [--schema]";
 
-process.exit(cliMain(process.argv.slice(2), "mcp-sync", MCP_USAGE, true));
+// exitCode, not process.exit(): exiting at once drops whatever a slow pipe has not yet taken.
+process.exitCode = cliMain(process.argv.slice(2), "mcp-sync", MCP_USAGE, true);

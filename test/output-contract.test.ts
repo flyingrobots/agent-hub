@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import Ajv2020 from "ajv/dist/2020";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { CLI_USAGE } from "../src/cli.ts";
@@ -68,16 +68,18 @@ describe("JSON Lines output contract (flyingrobots/agent-hub#5)", () => {
     for (const e of events) expect(() => ajv.compile(e.schema as object)).not.toThrow();
   });
 
-  test("--help is one agent_hub.help line naming every schema, from the engine, mcp-sync and the wrapper", () => {
+  test("--help is an agent_hub.help line then every schema, from the engine, mcp-sync and the wrapper", () => {
     const { env } = sandbox();
     for (const cmd of [["bun", ENGINE, "--help"], ["bun", MCP_SYNC, "--help"], [WRAPPER, "--help"]]) {
       const r = raw(cmd, env);
       expect(r.exitCode).toBe(0);
       expect(r.stderr).toBe("");
       const { events } = decodeStream(r.stdout, "stdout");
-      expect(events.length).toBe(1);
       expect(events[0]!._schema.id).toBe("agent_hub.help");
       expect(events[0]!.schemas).toEqual(Object.keys(SCHEMAS));
+      // Then the schema of every message type the command can print, success and error alike.
+      expect(events.slice(1).map((e) => e.schema_id)).toEqual(Object.keys(SCHEMAS));
+      expect(new Set(events.map((e) => e.run_id)).size).toBe(1);
     }
   });
 
@@ -155,5 +157,41 @@ describe("JSON Lines output contract (flyingrobots/agent-hub#5)", () => {
     expect(r.exitCode).toBe(0);
     const { events } = decodeStream(r.stdout, "stdout");
     expect(events[0]!.hub).toBe(weird);
+  });
+
+  test("output larger than a pipe buffer reaches a slow reader whole, from the engine and the wrapper", () => {
+    const { home, hub, env } = sandbox();
+    for (let i = 0; i < 400; i++) {
+      mkdirSync(join(hub, "skills", `skill-${i}`), { recursive: true });
+      writeFileSync(join(hub, "skills", `skill-${i}`, "SKILL.md"), `---\nname: skill-${i}\ndescription: d\n---\n`);
+    }
+    for (const cmd of [`bun "${ENGINE}"`, `"${WRAPPER}"`]) {
+      const p = Bun.spawnSync(["bash", "-c", `${cmd} --dir "${hub}" --targets claude --dry-run | (sleep 1; cat)`], {
+        env,
+        cwd: home,
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const text = p.stdout.toString();
+      expect(text.length).toBeGreaterThan(65536);
+      const { events } = decodeStream(text, "stdout");
+      expect(events.filter((e) => e.kind === "op").length).toBeGreaterThan(400);
+    }
+  });
+
+  test("a wrapper --print-dir that cannot resolve the hub is one error line, exit 1, nothing on stdout", () => {
+    if (process.getuid?.() === 0) return; // root ignores directory permissions
+    const { home, env } = sandbox();
+    mkdirSync(join(home, "locked", "sub"), { recursive: true });
+    chmodSync(join(home, "locked"), 0o000);
+    try {
+      const r = raw([WRAPPER, "--print-dir", "--dir", join(home, "locked", "sub", "hub")], env);
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe("");
+      const { events } = decodeStream(r.stderr, "stderr");
+      expect(events.map((e) => e.kind)).toEqual(["error"]);
+    } finally {
+      chmodSync(join(home, "locked"), 0o755);
+    }
   });
 });
