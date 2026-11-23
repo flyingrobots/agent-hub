@@ -11,7 +11,7 @@ Machine-local state lives under `${XDG_STATE_HOME:-$HOME/.local/state}/agent-hub
 
 | File | Contents |
 | --- | --- |
-| `state-<hub-hash>.json` | The v2 ledger: a monotonic `generation`, every managed symlink (`target`, `basis`) and every managed MCP entry per target (`configPath`, content `digest`, `basis`) |
+| `state-<hub-hash>.json` | The v2 ledger: a monotonic `generation`, every managed symlink (`target`, `basis`, and `physical` for a link several agents' skills directories share) and every managed MCP entry per target (`configPath`, content `digest`, `basis`) |
 | `journal-<hub-hash>.json` | The write-ahead journal, present only while a target write is in flight |
 | `apply.lock` | A persistent file locked with `flock(2)` while applying |
 
@@ -27,6 +27,30 @@ Ownership is never inferred:
 - `--check` reports ledger-only work, such as retiring a legacy claim, as drift. The one
   exception is re-keying a record to the spelling of the current run (`rekey-link-record`,
   `rekey-mcp-record`), which any sync does and `--check` neither counts nor lists.
+
+## Shared skills directories
+
+When several agents' skills directories reach one physical directory (`~/.codex/skills` a
+symlink to `~/.claude/skills`, or both symlinks to a third directory), each skill is one link
+with one ledger record. That record also stores the link's physical destination in `physical`;
+an unshared link's record has no `physical` field, so its ledger bytes do not change.
+
+- **Splitting a side.** When the directory holding the record's spelling is replaced with a real
+  directory, the other agents' spellings still reach the link `sync-agents` made. A spelling
+  whose physical path equals a record's `physical` is owned through that record, provided its
+  link is unchanged; the sync copies the record to that spelling (`record-shared-link`, ledger
+  only) and creates the link on the newly real side. A repointed link is a conflict as usual.
+  Either side, in either order, can be split without `--adopt`.
+- **Older ledgers.** A ledger written before `physical` existed loads unchanged. The next sync
+  of a shared layout records the field (`record-shared-link`, ledger only); `--check` reports it
+  as drift until then. Splitting a side before that sync still needs `--adopt` for the other
+  link. The ledger stays version 2: the field is optional, and it must be an absolute path (any
+  other value is refused and the ledger is left as it is). Older builds read such a ledger, but
+  a sync by an older build that writes the ledger drops the field; the next sync with this
+  version records it again, and until then splitting a side needs `--adopt` as above.
+- **Duplicate records in scoped runs.** Two records for one physical link keep one. A scoped run
+  retires the other only when every target its spellings resolve to is active, so a run scoped
+  to `codex:links` never retires a record under `~/.claude/skills`, even the symlink-free one.
 
 ## Adoption
 
