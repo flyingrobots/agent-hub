@@ -33,6 +33,11 @@ SCRIPT_DIR="$(dirname "$SCRIPT_REAL")"
 INSTALL_ROOT="$(cd -P "$SCRIPT_DIR/.." && pwd)"
 CLI_SCRIPT="$INSTALL_ROOT/src/cli.ts"
 
+# Bun reads .env, bunfig.toml and tsconfig.json/jsconfig.json (also from parent directories) from
+# the working directory by default: a checkout could then redirect AGENTS_DIR / XDG_*, preload
+# code, or remap modules so its own file runs instead. Every bun call here ignores all three.
+BUN_ISOLATED=(--config=/dev/null --no-env-file --tsconfig-override=/dev/null)
+
 expand_tilde() {
   local p="$1"
   case "$p" in
@@ -126,7 +131,7 @@ read_config_agents_dir() {
   local cfg="$xdg_base/agent-hub/config.json"
   [[ -f "$cfg" ]] || return 0
   if command -v bun >/dev/null 2>&1; then
-    bun -e '
+    bun "${BUN_ISOLATED[@]}" -e '
       import { readFileSync } from "node:fs";
       const cfg = JSON.parse(readFileSync(process.argv[1], "utf8"));
       if (typeof cfg.agentsDir === "string" && cfg.agentsDir.length > 0) {
@@ -258,4 +263,4 @@ if [[ ! -f "$CLI_SCRIPT" ]]; then
   exit 1
 fi
 
-exec bun "$CLI_SCRIPT" "$@"
+exec bun "${BUN_ISOLATED[@]}" "$CLI_SCRIPT" "$@"

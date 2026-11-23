@@ -99,6 +99,19 @@ bun run build:bin          # writes dist/sync-agents for this machine
 
 `build:bin` compiles inside `dist/` and removes the temporary file Bun 1.4.5 leaves behind.
 
+## The working directory cannot change what runs
+
+Bun normally loads `.env` and `bunfig.toml` from the directory it is started in, and
+`tsconfig.json` or `jsconfig.json` from it or any parent. For `sync-agents` that would let any
+checkout you run it from set `AGENTS_DIR`, `XDG_CONFIG_HOME` or `XDG_STATE_HOME`, preload its
+own code, or remap modules so that its own file runs in place of the engine. So every `bun` call
+in `bin/sync-agents` and `install.sh` passes
+`--config=/dev/null --no-env-file --tsconfig-override=/dev/null`, and binaries are compiled with
+`--no-compile-autoload-dotenv --no-compile-autoload-bunfig --no-compile-autoload-tsconfig
+--no-compile-autoload-package-json` (by `build:bin` and by the release workflow). Set
+those variables in your shell or in `agent-hub/config.json` instead. A binary built some other
+way, or an earlier release, still reads these files.
+
 ## How releases are cut
 
 Pushing a tag `v<version>` runs `.github/workflows/release.yml`:

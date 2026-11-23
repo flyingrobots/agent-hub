@@ -7,7 +7,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "bun test",
-    "build:bin": "mkdir -p dist && cd dist && bun build ../src/cli.ts --compile --outfile sync-agents && rm -f ./.*.bun-build"
+    "build:bin": "mkdir -p dist && cd dist && bun build ../src/cli.ts --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --no-compile-autoload-tsconfig --no-compile-autoload-package-json --outfile sync-agents && rm -f ./.*.bun-build"
   },
   "devDependencies": {
     "@types/bun": "^1.2.15",

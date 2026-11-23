@@ -66,6 +66,10 @@ changes are called out under **Changed** with what to do.
 
 ### Fixed
 
+- Security: a `.env`, `bunfig.toml`, `tsconfig.json` or `jsconfig.json` in (or, for the last
+  two, above) the directory `sync-agents` or `install.sh` was run from could redirect the hub,
+  config and state paths, or run its own code, because Bun loads them by default. Every `bun`
+  call now ignores them, and binaries are compiled not to load them.
 - Rewriting a Codex table that holds a long hand-written multiline string whose lines start
   with `#` no longer takes time quadratic in its length; the cut comes from the TOML scanner.
 - `src/cli.ts --print-dir` ignored a valid `agentsDir` when `disabledTargets` was

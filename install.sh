@@ -13,6 +13,11 @@ FORCE_SKILL=0
 REPLACE_RUNTIME=0
 REPLACE_BIN=0
 CONFIG_AGENTS_DIR=""
+
+# Bun reads .env, bunfig.toml and tsconfig.json/jsconfig.json (also from parent directories) from
+# the working directory by default: a checkout could then redirect AGENTS_DIR / XDG_*, preload
+# code, or remap modules so its own file runs instead. Every bun call here ignores all three.
+BUN_ISOLATED=(--config=/dev/null --no-env-file --tsconfig-override=/dev/null)
 BINARY_SRC=""
 
 # Exact verified SHA-256 checksums of the unmarked baseline (3cbd0a8) runtime layout.
@@ -249,9 +254,9 @@ try_atomic_dir_exchange() {
   # bun --compile executable behave as the bun CLI), so --binary installs stay atomic.
   local -a runner
   if command -v bun >/dev/null 2>&1; then
-    runner=(bun)
+    runner=(bun "${BUN_ISOLATED[@]}")
   elif [[ -n "$BINARY_SRC" && -x "$a/bin/sync-agents" ]] && is_native_executable "$a/bin/sync-agents"; then
-    runner=(env BUN_BE_BUN=1 "$a/bin/sync-agents")
+    runner=(env BUN_BE_BUN=1 "$a/bin/sync-agents" "${BUN_ISOLATED[@]}")
   else
     return 1
   fi
@@ -524,7 +529,7 @@ if [[ -n "$CONFIG_AGENTS_DIR" ]]; then
   CFG_FILE="$CFG_DIR/config.json"
   mkdir -p "$CFG_DIR"
   if command -v bun >/dev/null 2>&1; then
-    bun -e '
+    bun "${BUN_ISOLATED[@]}" -e '
       import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
       const [cfgPath, agentsDir] = process.argv.slice(1);
       let obj: Record<string, unknown> = {};
