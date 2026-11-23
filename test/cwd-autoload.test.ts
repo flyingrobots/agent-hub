@@ -1,0 +1,97 @@
+/**
+ * Bun loads `.env` and `bunfig.toml` from the working directory by default. Nothing a directory
+ * holds may change where sync-agents reads or writes, or run code (flyingrobots/agent-hub#26).
+ */
+import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+
+const REPO_ROOT = resolve(import.meta.dir, "..");
+const WRAPPER = join(REPO_ROOT, "bin", "sync-agents");
+const INSTALL_SH = join(REPO_ROOT, "install.sh");
+
+const tempRoots: string[] = [];
+afterEach(() => {
+  while (tempRoots.length > 0) rmSync(tempRoots.pop()!, { recursive: true, force: true });
+});
+
+/** A sandbox HOME with a hub, plus a hostile working directory: .env redirects, bunfig preloads. */
+export function hostileSandbox() {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "agent-hub-cwd-")));
+  tempRoots.push(home);
+  const hub = join(home, ".agents");
+  mkdirSync(join(hub, "skills"), { recursive: true });
+  writeFileSync(join(hub, "AGENTS.md"), "# rules\n");
+  mkdirSync(join(home, ".claude"), { recursive: true });
+  const decoy = join(home, "decoy");
+  const marker = join(home, "PRELOAD-RAN");
+  const cwd = join(home, "checkout");
+  mkdirSync(cwd, { recursive: true });
+  writeFileSync(join(cwd, ".env"), `AGENTS_DIR=${decoy}/hub\nXDG_STATE_HOME=${decoy}/state\nXDG_CONFIG_HOME=${decoy}/config\n`);
+  writeFileSync(join(cwd, "preload.ts"), `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");\n`);
+  writeFileSync(join(cwd, "bunfig.toml"), `preload = ["./preload.ts"]\n`);
+  const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home };
+  return { home, hub, decoy, marker, cwd, env };
+}
+
+function run(cmd: string[], env: Record<string, string>, cwd: string) {
+  const p = Bun.spawnSync(cmd, { env, cwd, stdout: "pipe", stderr: "pipe" });
+  return { exitCode: p.exitCode, stdout: p.stdout.toString(), stderr: p.stderr.toString() };
+}
+
+describe("the working directory's .env and bunfig.toml are ignored (flyingrobots/agent-hub#26)", () => {
+  test("wrapper --print-dir, through its bun config reader, is neither redirected nor preloaded", () => {
+    const { home, hub, decoy, marker, cwd, env } = hostileSandbox();
+    mkdirSync(join(home, ".config", "agent-hub"), { recursive: true });
+    writeFileSync(join(home, ".config", "agent-hub", "config.json"), JSON.stringify({ agentsDir: hub }));
+    const r = run([WRAPPER, "--print-dir"], env, cwd);
+    expect(r.exitCode).toBe(0);
+    expect(r.stdout).toContain(hub);
+    expect(r.stdout).not.toContain(decoy);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("a sync through the wrapper writes its ledger under the real state home and runs no preload", () => {
+    const { home, decoy, marker, cwd, env } = hostileSandbox();
+    const r = run([WRAPPER, "--targets", "claude"], env, cwd);
+    expect(r.exitCode).toBe(0);
+    expect(existsSync(join(home, ".local", "state", "agent-hub"))).toBe(true);
+    expect(existsSync(decoy)).toBe(false);
+    expect(existsSync(marker)).toBe(false);
+  });
+
+  test("install.sh run from such a directory runs no preload, including its bun helpers", () => {
+    const { home, hub, decoy, marker, cwd, env } = hostileSandbox();
+    const r = run(
+      ["bash", INSTALL_SH, "--prefix", join(home, ".agent-hub"), "--bin-dir", join(home, ".local", "bin"), "--agents-dir", hub],
+      { ...env, XDG_STATE_HOME: join(home, ".local", "state") },
+      cwd,
+    );
+    expect(r.exitCode).toBe(0);
+    expect(existsSync(marker)).toBe(false);
+    expect(existsSync(decoy)).toBe(false);
+    expect(JSON.parse(readFileSync(join(home, ".config", "agent-hub", "config.json"), "utf8")).agentsDir).toBe(hub);
+  }, 30_000);
+
+  test("every bun invocation in bin/sync-agents and install.sh passes --config=/dev/null --no-env-file", () => {
+    for (const file of [WRAPPER, INSTALL_SH]) {
+      const lines = readFileSync(file, "utf8").split("\n");
+      const calls = lines.filter((l) => /(^|[\s(=])bun\s+(-e|"\$|--)/.test(l) && !l.trim().startsWith("#"));
+      expect(calls.length).toBeGreaterThan(0);
+      for (const l of calls) expect(l).toContain("${BUN_ISOLATED[@]}");
+    }
+    const runner = readFileSync(INSTALL_SH, "utf8").match(/runner=\((?:bun|env BUN_BE_BUN)[^)]*\)/g) ?? [];
+    expect(runner.length).toBe(2);
+    for (const r of runner) expect(r).toContain("${BUN_ISOLATED[@]}");
+  });
+
+  test("the binary is compiled without .env or bunfig.toml autoloading, by build:bin and the release workflow", () => {
+    const build = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")).scripts["build:bin"] as string;
+    const release = readFileSync(join(REPO_ROOT, ".github", "workflows", "release.yml"), "utf8");
+    for (const text of [build, release]) {
+      expect(text).toContain("--no-compile-autoload-dotenv");
+      expect(text).toContain("--no-compile-autoload-bunfig");
+    }
+  });
+});
