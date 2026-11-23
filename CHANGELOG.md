@@ -33,9 +33,14 @@ changes are called out under **Changed** with what to do.
 ### Changed
 
 - OpenCode servers are written in its current `mcp.servers` layout instead of the deprecated
-  direct `mcp.<name>` form. Entries `sync-agents` wrote in the old layout move on the next sync;
-  an unmanaged old-layout entry named like a hub server stops the run as a conflict. The hub
-  server names `servers` and `timeout` are refused for OpenCode.
+  direct `mcp.<name>` form. Run `sync-agents --dry-run` first: entries `sync-agents` wrote in the
+  old layout, unchanged since, move on the next sync (`mcp-migrate-layout`), without the old
+  `enabled: true`. An old-layout entry named like a hub server that `sync-agents` did not write,
+  or that was edited, stops the run as a conflict that `--force` and `--adopt` do not override:
+  move it to `mcp.servers.<name>` yourself, rename or remove it, or exclude `"opencode:mcp"`. Your
+  own old-layout entries with other names stay put and are listed by `--explain`. The hub server
+  names `servers` and `timeout` are refused for OpenCode and stop every run that includes it
+  until you rename the server or set `overrides.opencode.disabled: true`.
 - OpenCode's rules, skills and `opencode.json` live under
   `${XDG_CONFIG_HOME:-~/.config}/opencode`, matching OpenCode itself. If you set an absolute
   `XDG_CONFIG_HOME`, the first unscoped sync after upgrading moves the links there, writes hub

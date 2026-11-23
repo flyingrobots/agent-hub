@@ -76,13 +76,29 @@ OpenCode entries use its current layout, `mcp.servers.<name>` (see its schema at
 Entries in the previous layout, directly under `mcp.<name>`:
 
 - one that `sync-agents` wrote, and that is unchanged since (its ledger digest matches), is
-  moved to `mcp.servers.<name>` (`mcp-migrate-layout` in `--dry-run`);
-- one that it did not write, or that was edited, and that has a hub server's name, stops the
-  run as a conflict; rename or remove it by hand;
-- any other is left where it is.
+  moved to `mcp.servers.<name>` (`mcp-migrate-layout` in `--dry-run`). The move drops the old
+  layout's `enabled: true`, which the current layout does not have. If that server has since
+  been removed from the hub or disabled for OpenCode, it is moved and then removed in the same
+  run, as any managed server would be;
+- one that it did not write, or that was edited, and that has a hub server's name (or a
+  sync-agents record), stops the run as a conflict. `--force` and `--adopt` do not resolve it,
+  because `sync-agents` will not move or replace an entry it cannot prove it wrote. Move the
+  entry to `mcp.servers.<name>` yourself, rename or remove it, rename the hub server, or leave
+  OpenCode's MCP config out with `"opencode:mcp"`. If the edit was deliberate, such as turning
+  the server off with `enabled: false`, say so in the hub instead
+  (`overrides.opencode.disabled: true`), or removing the entry will bring the server back;
+- any other is left where it is, and `--explain` lists it (`leave-legacy-unmanaged`). A file
+  holding both layouts is valid under OpenCode's schema, which still accepts the old one as
+  deprecated.
 
 The hub server names `servers` and `timeout` are refused for OpenCode, because those keys are
-OpenCode's own; disable the server for OpenCode or rename it.
+OpenCode's own; until you disable the server for OpenCode (`overrides.opencode.disabled: true`)
+or rename it, every run that includes OpenCode's MCP config stops. A server by one of those
+names that an earlier `sync-agents` wrote in the previous layout is removed once it is disabled
+or renamed, provided it is unchanged (`mcp-remove-reserved-legacy`); if it was changed, its
+record is retired and the key is left alone (`retire-reserved-record`). A `mcp.servers` that
+holds a server object rather than a map of servers, which is the previous layout's server named
+`servers`, is refused unless `sync-agents` wrote it, so nothing is ever written inside it.
 
 ### Codex TOML editing
 
