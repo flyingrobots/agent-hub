@@ -66,7 +66,8 @@ object kind (FIFOs, sockets and device nodes are refused); file bytes; `mode & 0
 extended attribute names and raw values plus ACLs. Extended attributes are read natively on
 macOS and Linux. ACLs are read natively on macOS; on Linux they are read with `getfacl` when it
 is installed, and otherwise are not verified and do not block adoption. Timestamps and inode
-identity are not compared.
+identity are not compared. Nor is macOS's `com.apple.provenance` attribute, which records the
+application that wrote a file and so differs between identical copies.
 
 ## Write-ahead recovery
 
