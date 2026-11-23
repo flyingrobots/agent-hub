@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/flyingrobots/agent-hub/schemas/agent_hub.summary.schema.json",
+  "title": "agent_hub.summary",
+  "description": "The outcome of a run. Every run that gets past argument parsing ends with exactly one agent_hub.summary or agent_hub.error line.",
+  "x-schema-version": "1.0.0",
+  "type": "object",
+  "required": [
+    "_schema",
+    "kind",
+    "run_id",
+    "message",
+    "status"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "_schema": {
+      "type": "object",
+      "required": [
+        "id",
+        "version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "const": "agent_hub.summary"
+        },
+        "version": {
+          "const": "1.0.0"
+        }
+      }
+    },
+    "kind": {
+      "const": "summary"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "Identifies one invocation; every line it emits carries it."
+    },
+    "message": {
+      "type": "string",
+      "description": "The same content as human prose; --human prints only this."
+    },
+    "status": {
+      "enum": [
+        "in_sync",
+        "planned",
+        "out_of_sync",
+        "conflicts",
+        "recovered_in_sync",
+        "pending_recovery",
+        "applied"
+      ]
+    },
+    "changes": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "conflicts": {
+      "type": "integer",
+      "minimum": 0
+    }
+  }
+}

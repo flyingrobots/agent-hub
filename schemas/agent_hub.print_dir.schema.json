@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/flyingrobots/agent-hub/schemas/agent_hub.print_dir.schema.json",
+  "title": "agent_hub.print_dir",
+  "description": "The resolved canonical hub directory (--print-dir).",
+  "x-schema-version": "1.0.0",
+  "type": "object",
+  "required": [
+    "_schema",
+    "kind",
+    "run_id",
+    "message",
+    "hub"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "_schema": {
+      "type": "object",
+      "required": [
+        "id",
+        "version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "const": "agent_hub.print_dir"
+        },
+        "version": {
+          "const": "1.0.0"
+        }
+      }
+    },
+    "kind": {
+      "const": "print_dir"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "Identifies one invocation; every line it emits carries it."
+    },
+    "message": {
+      "type": "string",
+      "description": "The same content as human prose; --human prints only this."
+    },
+    "hub": {
+      "type": "string"
+    }
+  }
+}

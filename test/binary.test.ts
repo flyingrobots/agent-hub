@@ -34,6 +34,7 @@ import { CLI_USAGE } from "../src/cli.ts";
 // on first exec); these took 3.5-5 s locally, so the 5 s default flaked.
 setDefaultTimeout(30_000);
 import { getStatePaths, loadOwnershipState, loadPendingJournal } from "../src/state.ts";
+import { decodeOutput, isSyncAgents, type DecodedEvent } from "./jsonl.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 const INSTALL_SH = join(REPO_ROOT, "install.sh");
@@ -143,7 +144,11 @@ function run(cmd: string[], env: Record<string, string | undefined>, cwd?: strin
 }
 
 function sb(env: Record<string, string>) {
-  return (args: string[], cwd?: string) => run([BIN, ...args], env, cwd);
+  return (args: string[], cwd?: string) => {
+    const r = run([BIN, ...args], env, cwd);
+    if (args.includes("--human")) return { ...r, events: [] as DecodedEvent[] };
+    return { ...r, ...decodeOutput(r.stdout, r.stderr) };
+  };
 }
 
 function writeSkill(hub: string, name: string) {
@@ -214,7 +219,7 @@ describe.skipIf(compileUnavailable !== null)("compiled sync-agents binary", () =
     writeFileSync(join(cwd, "preload.ts"), `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");\n`);
     writeFileSync(join(cwd, "bunfig.toml"), `preload = ["./preload.ts"]\n`);
     writeFileSync(join(cwd, "tsconfig.json"), JSON.stringify({ compilerOptions: { paths: { "*": ["./preload.ts"] } } }));
-    const r = run([BIN, "--print-dir"], env, cwd);
+    const r = run([BIN, "--print-dir", "--human"], env, cwd);
     expect(r.exitCode).toBe(0);
     expect(r.stdout.trim()).toBe(join(home, ".agents"));
     expect(existsSync(marker)).toBe(false);
@@ -229,7 +234,10 @@ describe.skipIf(compileUnavailable !== null)("compiled sync-agents binary", () =
     const { env } = makeSandbox();
     const help = sb(env)(["--help"]);
     expect(help.exitCode).toBe(0);
-    expect(help.stdout.trim()).toBe(CLI_USAGE);
+    expect(help.events[0]!._schema.id).toBe("agent_hub.help");
+    expect(help.events[0]!.usage).toBe(CLI_USAGE);
+    expect(help.events.slice(1).every((e) => e.kind === "schema")).toBe(true);
+    expect(sb(env)(["--help", "--human"]).stdout.trim()).toBe(CLI_USAGE);
 
     const bogus = sb(env)(["--bogus-flag"]);
     expect(bogus.exitCode).toBe(2);

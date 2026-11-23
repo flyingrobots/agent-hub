@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { runSync } from "../src/cli.ts";
+import { runSync } from "./jsonl.ts";
 import { getStatePaths, loadOwnershipState } from "../src/state.ts";
 import { parseTargetSelector, type SyncOptions } from "../src/types.ts";
 

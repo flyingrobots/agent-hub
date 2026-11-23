@@ -156,6 +156,8 @@ export type SyncOptions = {
   explain?: boolean;
   targets?: TargetSelector[];
   disownLegacy?: Array<{ agent: AgentId; name: string }>;
+  /** Called with each output event as it happens (the CLI prints it at once). */
+  onEvent?: (event: import("./output.ts").OutputEvent) => void;
 };
 
 export type ApplyHooks = {
@@ -175,8 +177,11 @@ export type ApplyHooks = {
 
 export type SyncRunResult = {
   exitCode: number;
+  /** Human messages, in order (what --human prints). */
   stdout: string[];
   stderr: string[];
+  /** Structured events, one per printed line (what the default JSON Lines output prints). */
+  events: import("./output.ts").OutputEvent[];
   recovery?: RecoveryReport;
 };
 

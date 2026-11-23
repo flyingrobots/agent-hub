@@ -66,19 +66,86 @@ lexical_normalize() {
   if [[ ${#out[@]} -eq 0 ]]; then printf '/\n'; else printf '/%s\n' "${out[*]}"; fi
 }
 
+# ---- Output: JSON Lines by default (each line names its schema), prose with --human ----
+# The same contract as the engine (src/output.ts, schemas/); this wrapper emits only the
+# agent_hub.help, agent_hub.print_dir and agent_hub.error message types itself.
+HUMAN=0
+SHOW_SCHEMA=0
+skip_value=0
+for a in "$@"; do
+  # An option's value (e.g. `--dir --human`) is not a flag, as in the engine's wantsHuman.
+  if [[ "$skip_value" -eq 1 ]]; then skip_value=0; continue; fi
+  case "$a" in
+    --dir|--skill|--targets|--disown-legacy) skip_value=1 ;;
+    --human|--humanize) HUMAN=1 ;;
+    --schema) SHOW_SCHEMA=1 ;;
+  esac
+done
+RUN_ID="$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')"
+SCHEMA_IDS='"agent_hub.op","agent_hub.conflict","agent_hub.recovery","agent_hub.summary","agent_hub.error","agent_hub.help","agent_hub.print_dir","agent_hub.schema"'
+
+# Escape a string for a JSON string literal (backslash, quote, and the control characters a
+# message or path can contain here: newline, tab, carriage return).
+json_str() {
+  local s="$1"
+  s="${s//\\/\\\\}"
+  s="${s//\"/\\\"}"
+  s="${s//$'\n'/\\n}"
+  s="${s//$'\t'/\\t}"
+  s="${s//$'\r'/\\r}"
+  # Any other control character is escaped as \u00XX, so no input can break the line.
+  if [[ "$s" == *[$'\x01'-$'\x1f']* ]]; then
+    local out="" ch i
+    for ((i = 0; i < ${#s}; i++)); do
+      ch="${s:i:1}"
+      if [[ "$ch" == [$'\x01'-$'\x1f'] ]]; then
+        out+="$(printf '\\u%04x' "'$ch")"
+      else
+        out+="$ch"
+      fi
+    done
+    s="$out"
+  fi
+  printf '"%s"' "$s"
+}
+
+# emit_line <stdout|stderr> <schema id> <kind> <message> [extra JSON fields, comma-prefixed]
+emit_line() {
+  local stream="$1" id="$2" kind="$3" message="$4" extra="${5:-}"
+  local line
+  if [[ "$HUMAN" -eq 1 ]]; then
+    line="$message"
+  else
+    line="{\"_schema\":{\"id\":\"$id\",\"version\":\"1.0.0\"},\"kind\":\"$kind\",\"run_id\":\"$RUN_ID\",\"message\":$(json_str "$message")$extra}"
+  fi
+  if [[ "$stream" == "stdout" ]]; then printf '%s\n' "$line"; else printf '%s\n' "$line" >&2; fi
+}
+
+# emit_error <code> <message>
+emit_error() {
+  emit_line stderr agent_hub.error error "$2" ",\"code\":$(json_str "$1")"
+}
+
 canonicalize_path() {
   local raw="$1"
   local p
   p="$(expand_tilde "$raw")"
   if [[ "$p" == *$'\n'* ]]; then
-    echo "${0##*/}: refusing a path that contains a newline: $raw" >&2
+    emit_error config "${0##*/}: refusing a path that contains a newline: $raw"
     return 1
   fi
   # Resolve a relative path against the physical cwd, as the engine's process.cwd() does;
   # the logical $PWD keeps symlink names, so a ".." would climb a different directory.
   case "$p" in
     /*) ;;
-    *)  p="$(pwd -P)/$p" ;;
+    *)
+      local here
+      if ! here="$(pwd -P 2>/dev/null)"; then
+        emit_error internal "${0##*/}: cannot read the current directory to resolve $raw"
+        return 1
+      fi
+      p="$here/$p"
+      ;;
   esac
   p="$(lexical_normalize "$p")"
 
@@ -88,10 +155,18 @@ canonicalize_path() {
   while true; do
     if [[ -e "$cursor" ]]; then
       local real_base
+      # Checked explicitly: a caller's `|| exit` turns off set -e inside this function.
       if [[ -d "$cursor" ]]; then
-        real_base="$(cd -P "$cursor" && pwd)"
+        if ! real_base="$(cd -P "$cursor" 2>/dev/null && pwd)"; then
+          emit_error internal "${0##*/}: cannot enter $cursor to resolve $raw"
+          return 1
+        fi
       else
-        real_base="$(cd -P "$(dirname "$cursor")" && pwd)/$(basename "$cursor")"
+        if ! real_base="$(cd -P "$(dirname "$cursor")" 2>/dev/null && pwd)"; then
+          emit_error internal "${0##*/}: cannot enter $(dirname "$cursor") to resolve $raw"
+          return 1
+        fi
+        real_base="$real_base/$(basename "$cursor")"
       fi
       local out="$real_base"
       local idx=$(( ${#tail[@]} - 1 ))
@@ -140,7 +215,7 @@ read_config_agents_dir() {
     ' "$cfg" 2>/dev/null || true
   elif ! command -v python3 >/dev/null 2>&1; then
     # Guessing ~/.agents here would let install.sh's hub-overlap guard check the wrong hub.
-    echo "sync-agents: $cfg exists but neither bun nor python3 is available to read it; set AGENTS_DIR to the hub, or install Bun or python3" >&2
+    emit_error config "sync-agents: $cfg exists but neither bun nor python3 is available to read it; set AGENTS_DIR to the hub, or install Bun or python3"
     return 1
   else
     python3 -c '
@@ -192,6 +267,10 @@ Options:
                                    (excluded targets are never pruned). Replaces the
                                    config.json "disabledTargets" list for this run
       --print-dir                  Print the canonical resolved hub directory and exit
+      --human, --humanize          Print prose instead of JSON Lines (the default output: one
+                                   JSON object per line on stdout and stderr, each naming its
+                                   schema in "_schema")
+      --schema                     Print every output message schema as JSON Lines and exit
   -h, --help                       Show this help
 EOF
 }
@@ -205,6 +284,10 @@ i=0
 while [[ "$i" -lt "${#ARGS[@]}" ]]; do
   arg="${ARGS[$i]}"
   case "$arg" in
+    --skill|--targets|--disown-legacy)
+      # Their value is not a flag (the engine reads it the same way).
+      i=$((i + 1))
+      ;;
     -h|--help)
       SHOW_HELP=1
       ;;
@@ -213,7 +296,7 @@ while [[ "$i" -lt "${#ARGS[@]}" ]]; do
       ;;
     --dir)
       if [[ $((i + 1)) -ge "${#ARGS[@]}" ]]; then
-        echo "sync-agents: --dir requires a path argument" >&2
+        emit_error usage "sync-agents: --dir requires a path argument"
         exit 2
       fi
       i=$((i + 1))
@@ -222,7 +305,7 @@ while [[ "$i" -lt "${#ARGS[@]}" ]]; do
     --dir=*)
       CLI_AGENTS_DIR="${arg#--dir=}"
       if [[ -z "$CLI_AGENTS_DIR" ]]; then
-        echo "sync-agents: --dir requires a non-empty path argument" >&2
+        emit_error usage "sync-agents: --dir requires a non-empty path argument"
         exit 2
       fi
       ;;
@@ -230,8 +313,23 @@ while [[ "$i" -lt "${#ARGS[@]}" ]]; do
   i=$((i + 1))
 done
 
+# --schema wins over --help and --print-dir, as in the engine; only the engine has the schemas.
+if [[ "$SHOW_SCHEMA" -eq 1 ]]; then
+  if ! command -v bun >/dev/null 2>&1; then
+    emit_error internal "sync-agents: bun is required to print the schemas (they are also in $INSTALL_ROOT/schemas/)"
+    exit 1
+  fi
+  exec bun "${BUN_ISOLATED[@]}" "$CLI_SCRIPT" "$@"
+fi
+
+if [[ "$SHOW_HELP" -eq 1 && "$HUMAN" -eq 0 ]] && command -v bun >/dev/null 2>&1 && [[ -f "$CLI_SCRIPT" ]]; then
+  # The engine prints the help line and then every message schema.
+  exec bun "${BUN_ISOLATED[@]}" "$CLI_SCRIPT" --help
+fi
 if [[ "$SHOW_HELP" -eq 1 ]]; then
-  usage
+  # Without Bun: the help line alone (its "schemas" names every schema; see schemas/).
+  USAGE_TEXT="$(usage)"
+  emit_line stdout agent_hub.help help "$USAGE_TEXT" ",\"command\":\"sync-agents\",\"usage\":$(json_str "$USAGE_TEXT"),\"schemas\":[$SCHEMA_IDS]"
   exit 0
 fi
 
@@ -248,18 +346,19 @@ if [[ "$PRINT_DIR" -eq 1 ]]; then
       RAW_DIR="$HOME/.agents"
     fi
   fi
-  canonicalize_path "$RAW_DIR"
+  HUB="$(canonicalize_path "$RAW_DIR")" || exit 1
+  emit_line stdout agent_hub.print_dir print_dir "$HUB" ",\"hub\":$(json_str "$HUB")"
   exit 0
 fi
 
 # Upfront Bun prerequisite check before any sync work.
 if ! command -v bun >/dev/null 2>&1; then
-  echo "sync-agents: bun is required to run sync-agents (install from https://bun.sh)" >&2
+  emit_error internal "sync-agents: bun is required to run sync-agents (install from https://bun.sh)"
   exit 1
 fi
 
 if [[ ! -f "$CLI_SCRIPT" ]]; then
-  echo "sync-agents: engine script not found at $CLI_SCRIPT" >&2
+  emit_error internal "sync-agents: engine script not found at $CLI_SCRIPT"
   exit 1
 fi
 

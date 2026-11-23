@@ -15,7 +15,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { runSync } from "../src/cli.ts";
+import { runSync } from "./jsonl.ts";
 import { acquireApplyLock, LockBusyError, releaseApplyLock } from "../src/lock.ts";
 import {
   captureFileSnapshot,
@@ -852,6 +852,29 @@ describe("write-ahead recovery, locking, and snapshot freshness", () => {
         const sb = makeSandbox();
         const paths = getStatePaths(sb.hub, sb.home, sb.xdgStateHome);
         const fixture = c.setup(sb, paths);
+
+        // Read-only modes first (they change nothing): each reports the pending journal as a
+        // recovery event and ends with one summary or error line saying what it found.
+        const ro = { hubDir: sb.hub, homeDir: sb.home, xdgConfigHome: sb.xdgConfigHome, xdgStateHome: sb.xdgStateHome };
+        const ambiguous = fixture.expectedClassification === "ambiguous";
+        for (const mode of [{ dryRun: true }, { checkOnly: true }, { explain: true }]) {
+          const r = runSync({ ...ro, ...mode });
+          const last = r.events[r.events.length - 1]!;
+          const rec = r.events.filter((e) => e.id === "agent_hub.recovery");
+          expect(rec.length).toBeGreaterThan(0);
+          expect(rec.every((e) => e.data.classification === fixture.expectedClassification)).toBe(true);
+          if (ambiguous) {
+            expect(r.exitCode).toBe(1);
+            expect(rec.some((e) => e.data.event === "ambiguous")).toBe(true);
+            expect(last.id).toBe("agent_hub.error");
+            expect(last.data.code).toBe("recovery");
+          } else {
+            expect(r.exitCode).toBe("checkOnly" in mode ? 1 : 0);
+            expect(rec.every((e) => e.data.event === "pending")).toBe(true);
+            expect(last.id).toBe("agent_hub.summary");
+            expect(last.data.status).toBe("pending_recovery");
+          }
+        }
 
         const res = runSync({
           hubDir: sb.hub,

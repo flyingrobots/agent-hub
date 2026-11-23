@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/flyingrobots/agent-hub/schemas/agent_hub.help.schema.json",
+  "title": "agent_hub.help",
+  "description": "What the command does (usage text) and the ids of every message schema it can emit; see --schema.",
+  "x-schema-version": "1.0.0",
+  "type": "object",
+  "required": [
+    "_schema",
+    "kind",
+    "run_id",
+    "message",
+    "command",
+    "usage",
+    "schemas"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "_schema": {
+      "type": "object",
+      "required": [
+        "id",
+        "version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "const": "agent_hub.help"
+        },
+        "version": {
+          "const": "1.0.0"
+        }
+      }
+    },
+    "kind": {
+      "const": "help"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "Identifies one invocation; every line it emits carries it."
+    },
+    "message": {
+      "type": "string",
+      "description": "The same content as human prose; --human prints only this."
+    },
+    "command": {
+      "type": "string"
+    },
+    "usage": {
+      "type": "string"
+    },
+    "schemas": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

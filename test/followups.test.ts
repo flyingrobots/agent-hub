@@ -13,10 +13,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { runSync } from "../src/cli.ts";
+import { runSync } from "./jsonl.ts";
 import { loadCanonicalServers } from "../src/mcp.ts";
 import { getStatePaths, loadOwnershipState } from "../src/state.ts";
 import { parseTargetSelector, type SyncOptions, type TargetSelector } from "../src/types.ts";
+import { decodeOutput, isSyncAgents, printedHub } from "./jsonl.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
 // AGENT_HUB_BINARY runs this suite against a compiled binary instead of the source wrapper.
@@ -88,7 +89,10 @@ function runCli(args: string[], env: Record<string, string>) {
     stdout: "pipe",
     stderr: "pipe",
   });
-  return { exitCode: p.exitCode, stdout: p.stdout.toString(), stderr: p.stderr.toString() };
+  if (args.includes("--human")) {
+    return { exitCode: p.exitCode, stdout: p.stdout.toString(), stderr: p.stderr.toString(), events: [] };
+  }
+  return { exitCode: p.exitCode, ...decodeOutput(p.stdout.toString(), p.stderr.toString()) };
 }
 
 describe("Phase 1 follow-ups (flyingrobots/agent-hub#3)", () => {
@@ -139,10 +143,12 @@ describe("Phase 1 follow-ups (flyingrobots/agent-hub#3)", () => {
       JSON.stringify({ agentsDir: alt, disabledTargets: ["bogus"] }),
     );
     const viaWrapper = runCli(["--print-dir"], env).stdout.trim();
-    const viaTs = Bun.spawnSync(["bun", join(REPO_ROOT, "src", "cli.ts"), "--print-dir"], {
-      env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...env },
-      stdout: "pipe",
-    }).stdout.toString().trim();
+    const viaTs = printedHub(
+      Bun.spawnSync(["bun", join(REPO_ROOT, "src", "cli.ts"), "--print-dir"], {
+        env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...env },
+        stdout: "pipe",
+      }).stdout.toString(),
+    );
     expect(viaWrapper).toBe(alt);
     expect(viaTs).toBe(viaWrapper);
   });
