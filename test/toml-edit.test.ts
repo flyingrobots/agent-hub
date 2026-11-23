@@ -160,3 +160,79 @@ describe("toml-edit: lexical scanner, refusal, and semantic preservation", () =>
     ).toThrow(TomlPreservationError);
   });
 });
+
+describe("toml-edit: comments and placement around managed sections (flyingrobots/agent-hub#15)", () => {
+  const src = [
+    'model = "gpt-5"',
+    "",
+    "[mcp_servers.x]",
+    'command = "/bin/x"',
+    "",
+    "# my note about profiles",
+    "[profiles.fast]",
+    'model = "o3"',
+    "",
+  ].join("\n");
+
+  test("updating a managed section keeps the comment after it and keeps its position", () => {
+    const out = rewriteCodexToml(src, new Map([["x", { command: "/bin/x2" }]]));
+    expect(out).toContain("# my note about profiles\n[profiles.fast]");
+    expect(out.indexOf("[mcp_servers.x]")).toBeLessThan(out.indexOf("[profiles.fast]"));
+    expect(out).toContain('command = "/bin/x2"');
+  });
+
+  test("pruning a managed section keeps the comment after it", () => {
+    const out = rewriteCodexToml(src, new Map([["x", null]]));
+    expect(out).not.toContain("[mcp_servers.x]");
+    expect(out).toContain("# my note about profiles\n[profiles.fast]");
+  });
+
+  test("a trailing comment at end of file after a managed section survives", () => {
+    const tail = '[mcp_servers.x]\ncommand = "/bin/x"\n\n# end-of-file note\n';
+    const out = rewriteCodexToml(tail, new Map([["x", { command: "/bin/y" }]]));
+    expect(out).toContain("# end-of-file note");
+    expect(out).toContain('command = "/bin/y"');
+  });
+
+  test("CRLF documents keep CRLF and the following comment", () => {
+    const crlf = src.replace(/\n/g, "\r\n");
+    const out = rewriteCodexToml(crlf, new Map([["x", { command: "/bin/x2" }]]));
+    expect(out).toContain("# my note about profiles\r\n[profiles.fast]");
+    expect(out.replace(/\r\n/g, "")).not.toContain("\n");
+  });
+
+  test("a new server is appended after existing content", () => {
+    const out = rewriteCodexToml(src, new Map([["z", { command: "/bin/z" }]]));
+    expect(out.indexOf("[mcp_servers.z]")).toBeGreaterThan(out.indexOf("[profiles.fast]"));
+    expect(out).toContain("# my note about profiles");
+  });
+
+  test("a multiline string whose last line starts with # is cut with its section, leaking no stale value", () => {
+    const ml = '[mcp_servers.x]\ncommand = "/bin/x"\nargs = ["""\n# not a comment"""]\n\n# note for profiles\n[profiles.fast]\nmodel = "o3"\n';
+    const out = rewriteCodexToml(ml, new Map([["x", { command: "/bin/y" }]]));
+    expect(out).not.toContain("# not a comment");
+    expect(out).toContain("# note for profiles\n[profiles.fast]");
+  });
+
+  test("a trailing comment that mentions triple quotes survives update and prune", () => {
+    const doc = '[mcp_servers.x]\ncommand = "/bin/x"\n\n# write long prompts as """multiline""" or \'\'\'literal\'\'\' strings\n[profiles.fast]\nmodel = "o3"\n';
+    for (const update of [{ command: "/bin/y" }, null]) {
+      const out = rewriteCodexToml(doc, new Map([["x", update]]));
+      expect(out).toContain('# write long prompts as """multiline""" or \'\'\'literal\'\'\' strings\n[profiles.fast]');
+    }
+  });
+
+  test("repeated rewrites of a mid-file server with env and http_headers subtables are byte-stable", () => {
+    const doc = 'model = "gpt-5"\n\n[mcp_servers.a]\ncommand = "/bin/a"\n\n[mcp_servers.a.env]\nK = "1"\n\n# profiles note\n[profiles.fast]\nmodel = "o3"\n';
+    const once = rewriteCodexToml(doc, new Map([["a", { command: "/bin/a2", env: { K: "2" } }]]));
+    const twice = rewriteCodexToml(once, new Map([["a", { command: "/bin/a2", env: { K: "2" } }]]));
+    expect(twice).toBe(once);
+    expect(once).toContain("# profiles note\n[profiles.fast]");
+    expect(once.indexOf("[mcp_servers.a]")).toBeLessThan(once.indexOf("[profiles.fast]"));
+    expect(once).not.toMatch(/\n\n\n/);
+    const h1 = rewriteCodexToml(once, new Map([["a", { url: "https://x.invalid/mcp", http_headers: { H: "v" } }]]));
+    const h2 = rewriteCodexToml(h1, new Map([["a", { url: "https://x.invalid/mcp", http_headers: { H: "v" } }]]));
+    expect(h2).toBe(h1);
+    expect(h1).not.toMatch(/\n\n\n/);
+  });
+});
