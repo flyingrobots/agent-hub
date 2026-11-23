@@ -308,7 +308,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
   for (const req of disownLegacy) {
     if (!scope.mcp.has(req.agent)) {
       stderr.push(
-        `${cmdLabel}: --disown-legacy ${req.agent}:${req.name} needs ${req.agent}'s MCP config in scope; include "${req.agent}" or "${req.agent}:mcp" in --targets, or remove it from disabledTargets for this run`,
+        `${cmdLabel}: --disown-legacy ${req.agent}:${req.name} needs ${req.agent}'s MCP config in scope; include "${req.agent}" or "${req.agent}:mcp" in --targets for this run (which replaces disabledTargets), or remove it from disabledTargets`,
       );
       return { exitCode: 2, stdout, stderr };
     }

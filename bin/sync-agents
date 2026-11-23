@@ -7,7 +7,8 @@ set -euo pipefail
 # Hub directory resolution order:
 #   1. --dir <path>
 #   2. $AGENTS_DIR environment variable
-#   3. ${XDG_CONFIG_HOME:-$HOME/.config}/agent-hub/config.json ("agentsDir")
+#   3. <XDG config base>/agent-hub/config.json ("agentsDir"); the base is $XDG_CONFIG_HOME when
+#      it is absolute, else $HOME/.config
 #   4. $HOME/.agents
 
 resolve_script_path() {

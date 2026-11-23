@@ -412,3 +412,12 @@ describe("Ownership is compared by physical path, not spelling (Baker Street PR 
     expect(JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers.alpha).toBeDefined();
   });
 });
+
+test("a relative XDG_STATE_HOME is ignored, as the XDG spec requires (Baker Street PR #18 blind pass B-F-3)", () => {
+  const { home, hub, base } = sandbox();
+  skill(hub, "demo");
+  expect(runSync({ ...base, xdgStateHome: "rel/state", cwd: home }).exitCode).toBe(0);
+  const { statePath } = getStatePaths(hub, home, undefined);
+  expect(statePath.startsWith(join(home, ".local", "state"))).toBe(true);
+  expect(loadOwnershipState(statePath, hub).existsOnDisk).toBe(true);
+});

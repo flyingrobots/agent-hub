@@ -1,0 +1,63 @@
+{
+  "version": 2,
+  "generation": 7,
+  "hubPath": "/private/var/folders/wt/s8clst9955x1l0qblsl4925w0000gn/T/agent-hub-fu-mAPOD4/.agents",
+  "links": {
+    "/private/var/folders/wt/s8clst9955x1l0qblsl4925w0000gn/T/agent-hub-fu-mAPOD4/.claude/CLAUDE.md": {
+      "kind": "rules",
+      "target": "/private/var/folders/wt/s8clst9955x1l0qblsl4925w0000gn/T/agent-hub-fu-mAPOD4/.agents/AGENTS.md",
+      "basis": "created",
+      "updatedAt": "2026-11-23T03:18:45.569Z"
+    },
+    "/private/var/folders/wt/s8clst9955x1l0qblsl4925w0000gn/T/agent-hub-fu-mAPOD4/.claude/skills/demo": {
+      "kind": "skill",
+      "target": "/private/var/folders/wt/s8clst9955x1l0qblsl4925w0000gn/T/agent-hub-fu-mAPOD4/.agents/skills/demo",
+      "basis": "created",
+      "updatedAt": "2026-11-23T03:18:45.570Z"
+    },
+    "/private/var/folders/wt/s8clst9955x1l0qblsl4925w0000gn/T/agent-hub-fu-mAPOD4/.codex/AGENTS.md": {
+      "kind": "rules",
+      "target": "/private/var/folders/wt/s8clst9955x1l0qblsl4925w0000gn/T/agent-hub-fu-mAPOD4/.agents/AGENTS.md",
+      "basis": "created",
+      "updatedAt": "2026-11-23T03:18:45.571Z"
+    },
+    "/private/var/folders/wt/s8clst9955x1l0qblsl4925w0000gn/T/agent-hub-fu-mAPOD4/.codex/skills/demo": {
+      "kind": "skill",
+      "target": "/private/var/folders/wt/s8clst9955x1l0qblsl4925w0000gn/T/agent-hub-fu-mAPOD4/.agents/skills/demo",
+      "basis": "created",
+      "updatedAt": "2026-11-23T03:18:45.572Z"
+    },
+    "/private/var/folders/wt/s8clst9955x1l0qblsl4925w0000gn/T/agent-hub-fu-mAPOD4/.gemini/GEMINI.md": {
+      "kind": "rules",
+      "target": "/private/var/folders/wt/s8clst9955x1l0qblsl4925w0000gn/T/agent-hub-fu-mAPOD4/.agents/AGENTS.md",
+      "basis": "created",
+      "updatedAt": "2026-11-23T03:18:45.573Z"
+    },
+    "/private/var/folders/wt/s8clst9955x1l0qblsl4925w0000gn/T/agent-hub-fu-mAPOD4/.gemini/config/AGENTS.md": {
+      "kind": "rules",
+      "target": "/private/var/folders/wt/s8clst9955x1l0qblsl4925w0000gn/T/agent-hub-fu-mAPOD4/.agents/AGENTS.md",
+      "basis": "created",
+      "updatedAt": "2026-11-23T03:18:45.573Z"
+    },
+    "/private/var/folders/wt/s8clst9955x1l0qblsl4925w0000gn/T/agent-hub-fu-mAPOD4/.gemini/skills/demo": {
+      "kind": "skill",
+      "target": "/private/var/folders/wt/s8clst9955x1l0qblsl4925w0000gn/T/agent-hub-fu-mAPOD4/.agents/skills/demo",
+      "basis": "created",
+      "updatedAt": "2026-11-23T03:18:45.574Z"
+    }
+  },
+  "mcp": {
+    "antigravity": {},
+    "claude": {},
+    "codex": {},
+    "cursor": {},
+    "opencode": {}
+  },
+  "resolvedLegacyV1": {
+    "antigravity": [],
+    "claude": [],
+    "codex": [],
+    "cursor": [],
+    "opencode": []
+  }
+}
