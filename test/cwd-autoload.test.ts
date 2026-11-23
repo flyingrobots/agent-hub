@@ -29,9 +29,12 @@ export function hostileSandbox() {
   const cwd = join(home, "checkout");
   mkdirSync(cwd, { recursive: true });
   writeFileSync(join(cwd, ".env"), `AGENTS_DIR=${decoy}/hub\nXDG_STATE_HOME=${decoy}/state\nXDG_CONFIG_HOME=${decoy}/config\n`);
+  // Bun also loads .env.local and .env.<NODE_ENV>.
+  writeFileSync(join(cwd, ".env.local"), `AGENTS_DIR=${decoy}/hub-local\n`);
+  writeFileSync(join(cwd, ".env.production"), `XDG_STATE_HOME=${decoy}/state-production\n`);
   writeFileSync(join(cwd, "preload.ts"), `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");\n`);
   writeFileSync(join(cwd, "bunfig.toml"), `preload = ["./preload.ts"]\n`);
-  const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home };
+  const env = { PATH: process.env.PATH ?? "/usr/bin:/bin", HOME: home, NODE_ENV: "production" };
   return { home, hub, decoy, marker, cwd, env };
 }
 
