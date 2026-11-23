@@ -65,33 +65,49 @@ export function renderJsonLine(event: OutputEvent, runId: string = RUN_ID): stri
 
 // A reader that stops reading (`| head -1`) closes the pipe. That is not an error of the run: the
 // rest of its output is dropped silently, as a prose CLI's would be, and the exit code stands.
-const closed = { stdout: false, stderr: false };
+// Any other write failure (a full disk, a bad descriptor) is a failed run: it is reported on the
+// other stream if that is still open, and the run exits 1 (see writeFailed).
+const state = { closed: { stdout: false, stderr: false }, failed: false, human: false };
 let guarded = false;
+
+/** Start a run with both streams open and no write failure (one CLI run per call). */
+export function resetOutput(human: boolean): void {
+  state.closed.stdout = false;
+  state.closed.stderr = false;
+  state.failed = false;
+  state.human = human;
+}
+
+/** True when a write failed for a reason other than a closed pipe. */
+export function writeFailed(): boolean {
+  return state.failed;
+}
+
+function streamFailed(name: "stdout" | "stderr", err: NodeJS.ErrnoException): void {
+  state.closed[name] = true;
+  if (err.code === "EPIPE") return;
+  state.failed = true;
+  process.exitCode = 1;
+  const other = name === "stdout" ? "stderr" : "stdout";
+  if (state.closed[other]) return;
+  const event: OutputEvent = {
+    stream: other,
+    id: "agent_hub.error",
+    message: `sync-agents: cannot write to ${name}: ${err.message}`,
+    data: { code: "internal", detail: `${err.code ?? "error"} writing ${name}` },
+  };
+  try {
+    process[other].write(`${state.human ? event.message : renderJsonLine(event)}\n`);
+  } catch {
+    state.closed[other] = true; // nothing more can be reported
+  }
+}
+
 function guardStreams(): void {
   if (guarded) return;
   guarded = true;
   for (const name of ["stdout", "stderr"] as const) {
-    process[name].on("error", (err: NodeJS.ErrnoException) => {
-      closed[name] = true;
-      if (err.code === "EPIPE") return;
-      // Any other write failure (a full disk, a bad descriptor) is a failed run: say so on the
-      // other stream if it is still open, and exit 1.
-      process.exitCode = 1;
-      const other = name === "stdout" ? "stderr" : "stdout";
-      if (!closed[other]) {
-        const line = renderJsonLine({
-          stream: other,
-          id: "agent_hub.error",
-          message: `sync-agents: cannot write to ${name}: ${err.message}`,
-          data: { code: "internal", detail: `${err.code ?? "error"} writing ${name}` },
-        });
-        try {
-          process[other].write(`${line}\n`);
-        } catch {
-          // nothing more can be reported
-        }
-      }
-    });
+    process[name].on("error", (err: NodeJS.ErrnoException) => streamFailed(name, err));
   }
 }
 
@@ -99,13 +115,12 @@ function guardStreams(): void {
 export function writeEvents(events: readonly OutputEvent[], human: boolean): void {
   guardStreams();
   for (const e of events) {
-    if (closed[e.stream]) continue;
+    if (state.closed[e.stream]) continue;
     const line = human ? e.message : renderJsonLine(e);
     try {
       process[e.stream].write(`${line}\n`);
     } catch (err) {
-      closed[e.stream] = true;
-      if ((err as NodeJS.ErrnoException).code !== "EPIPE") process.exitCode = 1;
+      streamFailed(e.stream, err as NodeJS.ErrnoException);
     }
   }
 }

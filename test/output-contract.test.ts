@@ -350,4 +350,48 @@ describe("JSON Lines output contract (flyingrobots/agent-hub#5)", () => {
     const { events } = decodeStream(p.stderr.toString(), "stderr");
     expect(events.some((e) => e.kind === "error" && e.code === "internal")).toBe(true);
   });
+
+  test("with --human, a write failure is reported in prose on the other stream", () => {
+    const { home, hub, env } = sandbox();
+    writeFileSync(join(home, ".claude.json"), JSON.stringify({ mcpServers: { alpha: { command: "/bin/user" } } }));
+    // stderr opened read-only: the conflict lines cannot be written there.
+    const p = Bun.spawnSync(["bash", "-c", `exec 2</dev/null; bun "${ENGINE}" --dir "${hub}" --targets claude --dry-run --human`], {
+      env,
+      cwd: home,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(p.exitCode).toBe(1);
+    const lines = p.stdout.toString().split("\n").filter(Boolean);
+    expect(lines.length).toBeGreaterThan(0);
+    for (const l of lines) expect(l.startsWith("{")).toBe(false);
+    expect(p.stdout.toString()).toContain("cannot write to stderr");
+  });
+
+  test("a write that throws synchronously (not a closed pipe) still fails the run and is reported", () => {
+    const { hub } = sandbox();
+    const savedExit = process.exitCode;
+    const orig = { stdout: process.stdout.write, stderr: process.stderr.write };
+    const errWrites: string[] = [];
+    (process.stdout as unknown as { write: () => boolean }).write = () => {
+      const e = new Error("no space left on device") as NodeJS.ErrnoException;
+      e.code = "ENOSPC";
+      throw e;
+    };
+    (process.stderr as unknown as { write: (s: string) => boolean }).write = (s: string) => {
+      errWrites.push(String(s));
+      return true;
+    };
+    let code: number;
+    try {
+      code = cliMain(["--print-dir", "--dir", hub]);
+    } finally {
+      process.stdout.write = orig.stdout;
+      process.stderr.write = orig.stderr;
+      process.exitCode = savedExit ?? 0;
+    }
+    expect(code).toBe(1);
+    const { events } = decodeStream(errWrites.join(""), "stderr");
+    expect(events.map((e) => e.code)).toEqual(["internal"]);
+  });
 });

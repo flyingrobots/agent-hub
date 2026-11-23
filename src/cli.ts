@@ -3,7 +3,7 @@ import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { xdgConfigBase } from "./adapters.ts";
-import { opData, SCHEMAS, schemaEvents, writeEvents, type OutputEvent, type SchemaId } from "./output.ts";
+import { opData, resetOutput, SCHEMAS, schemaEvents, writeEvents, writeFailed, type OutputEvent, type SchemaId } from "./output.ts";
 import { applyLinkOp, planLinkSync, type PlannedLinkOp } from "./links.ts";
 import {
   acquireApplyLock,
@@ -863,6 +863,9 @@ export function cliMain(
   run: typeof runSync = runSync,
 ): number {
   const human = wantsHuman(argv);
+  resetOutput(human);
+  // A failed write (not a closed pipe) makes the run fail whatever the sync returned.
+  const finish = (code: number) => (writeFailed() ? Math.max(code, 1) : code);
   try {
     let parsed;
     try {
@@ -873,16 +876,16 @@ export function cliMain(
         [{ stream: "stderr", id: "agent_hub.error", message: `${command}: ${msg}\n${usage}`, data: { code: "usage", detail: msg, usage } }],
         human,
       );
-      return 2;
+      return finish(2);
     }
     if (parsed.showSchema) {
       writeEvents(schemaEvents(), human);
-      return 0;
+      return finish(0);
     }
     if (parsed.showHelp) {
       // In prose, help is just the usage text.
       writeEvents(human ? helpEvents(command, usage).slice(0, 1) : helpEvents(command, usage), human);
-      return 0;
+      return finish(0);
     }
     if (parsed.printDir) {
       const dir = resolveCanonicalHubDir({
@@ -893,7 +896,7 @@ export function cliMain(
         xdgConfigHome: process.env.XDG_CONFIG_HOME,
       });
       writeEvents([{ stream: "stdout", id: "agent_hub.print_dir", message: dir, data: { hub: dir } }], human);
-      return 0;
+      return finish(0);
     }
     // Each line is printed as it happens, not buffered until the run ends.
     const res = run({
@@ -901,14 +904,14 @@ export function cliMain(
       ...(mcpOnly ? { mcpOnly: true } : {}),
       onEvent: (e) => writeEvents([e], human),
     });
-    return res.exitCode;
+    return finish(res.exitCode);
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     writeEvents(
       [{ stream: "stderr", id: "agent_hub.error", message: `${command}: internal error: ${msg}`, data: { code: "internal", detail: msg } }],
       human,
     );
-    return 1;
+    return finish(1);
   }
 }
 
