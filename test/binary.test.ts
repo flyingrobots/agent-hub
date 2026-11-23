@@ -205,7 +205,7 @@ describe.skipIf(compileUnavailable !== null)("compiled sync-agents binary", () =
     expect(readFileSync(join(REPO_ROOT, ".gitignore"), "utf8").split("\n")).toContain("dist/");
   });
 
-  test("the binary ignores a .env and a bunfig.toml preload in its working directory (flyingrobots/agent-hub#26)", () => {
+  test("the binary ignores a .env, a bunfig.toml preload and a tsconfig paths hijack in its working directory (flyingrobots/agent-hub#26)", () => {
     const { home, env } = makeSandbox();
     const cwd = join(home, "checkout");
     const marker = join(home, "PRELOAD-RAN");
@@ -213,6 +213,7 @@ describe.skipIf(compileUnavailable !== null)("compiled sync-agents binary", () =
     writeFileSync(join(cwd, ".env"), `AGENTS_DIR=${home}/decoy\n`);
     writeFileSync(join(cwd, "preload.ts"), `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "ran");\n`);
     writeFileSync(join(cwd, "bunfig.toml"), `preload = ["./preload.ts"]\n`);
+    writeFileSync(join(cwd, "tsconfig.json"), JSON.stringify({ compilerOptions: { paths: { "*": ["./preload.ts"] } } }));
     const r = run([BIN, "--print-dir"], env, cwd);
     expect(r.exitCode).toBe(0);
     expect(r.stdout.trim()).toBe(join(home, ".agents"));

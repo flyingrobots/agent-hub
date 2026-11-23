@@ -97,7 +97,7 @@ jobs:
         # Compile from a scratch directory: Bun 1.4.5 leaves a ~88 MB .bun-build file in the cwd.
         run: |
           mkdir -p release
-          (cd "$RUNNER_TEMP" && bun build "$GITHUB_WORKSPACE/src/cli.ts" --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --target="$TARGET" --outfile "$GITHUB_WORKSPACE/release/$ASSET")
+          (cd "$RUNNER_TEMP" && bun build "$GITHUB_WORKSPACE/src/cli.ts" --compile --no-compile-autoload-dotenv --no-compile-autoload-bunfig --no-compile-autoload-tsconfig --no-compile-autoload-package-json --target="$TARGET" --outfile "$GITHUB_WORKSPACE/release/$ASSET")
 
       # A cross-compiled darwin binary keeps the downloaded Bun runtime's Developer ID
       # signature, which the appended bundle invalidates, and macOS may SIGKILL it.

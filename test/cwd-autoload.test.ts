@@ -1,6 +1,7 @@
 /**
- * Bun loads `.env` and `bunfig.toml` from the working directory by default. Nothing a directory
- * holds may change where sync-agents reads or writes, or run code (flyingrobots/agent-hub#26).
+ * Bun loads `.env`, `bunfig.toml` and `tsconfig.json`/`jsconfig.json` (the last two also from
+ * parent directories) by default. Nothing a directory holds may change where sync-agents reads or
+ * writes, or run code (flyingrobots/agent-hub#26).
  */
 import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
@@ -49,7 +50,7 @@ function run(cmd: string[], env: Record<string, string>, cwd: string) {
   return { exitCode: p.exitCode, stdout: p.stdout.toString(), stderr: p.stderr.toString() };
 }
 
-describe("the working directory's .env and bunfig.toml are ignored (flyingrobots/agent-hub#26)", () => {
+describe("the working directory's .env, bunfig.toml and tsconfig/jsconfig are ignored (flyingrobots/agent-hub#26)", () => {
   test("wrapper --print-dir, through its bun config reader, is neither redirected nor preloaded", () => {
     const { home, hub, decoy, marker, cwd, env } = hostileSandbox();
     mkdirSync(join(home, ".config", "agent-hub"), { recursive: true });
@@ -83,7 +84,7 @@ describe("the working directory's .env and bunfig.toml are ignored (flyingrobots
     expect(JSON.parse(readFileSync(join(home, ".config", "agent-hub", "config.json"), "utf8")).agentsDir).toBe(hub);
   }, 30_000);
 
-  test("every bun invocation in bin/sync-agents and install.sh passes --config=/dev/null --no-env-file", () => {
+  test("every bun invocation in bin/sync-agents and install.sh passes the isolation flags", () => {
     for (const file of [WRAPPER, INSTALL_SH]) {
       const src = readFileSync(file, "utf8");
       expect(src).toContain("BUN_ISOLATED=(--config=/dev/null --no-env-file --tsconfig-override=/dev/null)");
@@ -102,12 +103,15 @@ describe("the working directory's .env and bunfig.toml are ignored (flyingrobots
     for (const r of runner) expect(r).toContain("${BUN_ISOLATED[@]}");
   });
 
-  test("the binary is compiled without .env or bunfig.toml autoloading, by build:bin and the release workflow", () => {
+  test("the binary is compiled without .env, bunfig.toml, tsconfig.json or package.json autoloading, by build:bin and the release workflow", () => {
     const build = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8")).scripts["build:bin"] as string;
     const release = readFileSync(join(REPO_ROOT, ".github", "workflows", "release.yml"), "utf8");
+    // All four, explicitly: tsconfig and package.json are off by default in Bun 1.4.5, but a
+    // default can change.
     for (const text of [build, release]) {
-      expect(text).toContain("--no-compile-autoload-dotenv");
-      expect(text).toContain("--no-compile-autoload-bunfig");
+      for (const flag of ["dotenv", "bunfig", "tsconfig", "package-json"]) {
+        expect(text).toContain(`--no-compile-autoload-${flag}`);
+      }
     }
   });
 });
