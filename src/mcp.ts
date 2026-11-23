@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { detectPlaintextSecrets, specFields } from "./env-refs.ts";
+import { detectPlaintextSecrets, specFields, validateSpecRefs } from "./env-refs.ts";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -186,6 +186,12 @@ export function parseSpecSnippet(raw: unknown, sourceLabel: string): McpServerSp
     spec.disabled = body.disabled;
   }
 
+  // Malformed references are reported against the file (or override) that holds them.
+  try {
+    validateSpecRefs(spec);
+  } catch (err) {
+    throw new Error(`${sourceLabel}: ${err instanceof Error ? err.message : String(err)}`);
+  }
   try {
     detectFamily(spec);
   } catch (err) {

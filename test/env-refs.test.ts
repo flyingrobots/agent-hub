@@ -396,3 +396,19 @@ describe("Baker Street PR #33 Moriarty repairs", () => {
     expect(detectPlaintextSecrets({ url: "https://h", headers: { Cookie: "c=1", "X-Auth-Key": "k" } }).map((w) => w.field).sort()).toEqual(["headers.Cookie", "headers.X-Auth-Key"]);
   });
 });
+
+describe("a malformed reference names the file that holds it (flyingrobots/agent-hub#40)", () => {
+  test("in a per-target mcp.json, the error names that file, not the base", () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-src-")));
+    const hub = path.join(home, ".agents");
+    fs.mkdirSync(path.join(hub, "mcp", "gh", "cursor"), { recursive: true });
+    fs.mkdirSync(path.join(hub, "skills"), { recursive: true });
+    fs.mkdirSync(path.join(home, ".cursor"), { recursive: true });
+    fs.writeFileSync(path.join(hub, "mcp", "gh", "mcp.json"), JSON.stringify({ mcp: { command: "/bin/gh" } }));
+    fs.writeFileSync(path.join(hub, "mcp", "gh", "cursor", "mcp.json"), JSON.stringify({ mcp: { env: { A: "${env:lower}" } } }));
+    const r = runSync({ hubDir: hub, homeDir: home, xdgConfigHome: path.join(home, ".config"), xdgStateHome: path.join(home, ".local", "state"), targets: [parseTargetSelector("cursor:mcp")!] });
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.join("\n")).toContain(path.join("mcp", "gh", "cursor", "mcp.json"));
+    expect(r.stderr.join("\n")).toContain("env.A");
+  });
+});
