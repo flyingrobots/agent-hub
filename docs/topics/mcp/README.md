@@ -96,12 +96,22 @@ Limits worth knowing:
   `headers` it reads some credential variables (its own `ANTHROPIC_*` keys, cloud and proxy
   tokens) as empty instead of expanding them. Use a name of your own, such as
   `EXAMPLE_TOKEN`.
-- An unset variable expands to empty in OpenCode and is left as written in Claude Code.
+- An unset variable expands to empty in OpenCode, and is left as written in Claude Code (which
+  warns in `claude mcp list`). In Codex, an unset `env_vars` name is simply not passed to the
+  server, an unset `env_http_headers` variable drops that header, and an unset
+  `bearer_token_env_var` stops the server from starting. Cursor does not document it.
+- Verified: Claude Code 2.1.323 expands `${VAR}` in a user-scope `~/.claude.json` entry's
+  `command`, `args` and `env` (`claude mcp list` started the server with the expanded values);
+  its documentation covers `url` and `headers` too. Cursor documents `${env:VAR}` in all five
+  fields for its MCP config, without saying whether that includes the global
+  `~/.cursor/mcp.json`.
 - Codex has no interpolation, so a reference anywhere else, or with text around it
   (`"Bearer ${env:X}-suffix"`), is refused for Codex. In `env` the key must be the variable's own
   name (`GITHUB_TOKEN = "${env:GITHUB_TOKEN}"`; `TOKEN = "${env:GH_TOKEN}"` is refused). The
   `Authorization` header name is matched in any case; the value must be exactly
-  `Bearer ${env:X}` with one space.
+  `Bearer ${env:X}` with one space, and a header set twice in different capitalizations is
+  refused. Only fields the transport writes are checked (a stdio server's leftover `headers`
+  are ignored).
 - Antigravity expands nothing, so a server that needs a reference is refused there; disable it
   for Antigravity, or give Antigravity a literal in `overrides.antigravity` (which keeps one
   plaintext copy, and is reported as below).
@@ -119,15 +129,21 @@ Limits worth knowing:
 
 ### Plaintext secrets
 
-On every run (sync, `--dry-run`, `--check`, `--explain`), `sync-agents` prints one
+On every run that plans MCP servers (sync, `--dry-run`, `--check`, `--explain`; not `--skill-only`,
+and not a read-only run that stops on a pending recovery), `sync-agents` prints one
 `agent_hub.warning` line per field, before the run's operations, for each literal value in a
 server spec that looks like a credential. Every layer is checked (the base `mcp`, inline
 overrides and `<target>/mcp.json` files, as each target resolves them); a field flagged for
 several targets is reported once. It does not refuse, and the exit code is
 unchanged; the value is never printed. It checks for known token patterns (`sk-…`, `ghp_…`, `github_pat_…`,
 Slack `xox?-…`, Google `AIza…`, AWS `AKIA…`, PEM private keys), any literal under an `env` key or
-header name that suggests a credential (`token`, `secret`, `password`, `api_key`, `auth`,
-`credential`, `private_key`, `session`, `cookie`), and a URL with an embedded user and password.
+header name with a credential word as one of its parts (split on `_`, `-`, `.` and camelCase:
+`token`, `secret`, `password`, `passwd`, `pwd`, `pass`, `passphrase`, `pat`, `apikey`,
+`credential(s)`, `authorization`, `bearer`; the pairs `api key`, `access key`, `private key`,
+`secret key`, `auth key`, `session key`, `auth token`; `password`, `secret`, `apikey` or
+`credential` inside a longer part, as in `PGPASSWORD`; or the `Cookie` header), and a URL with
+an embedded user and password. A second literal for the same field in another layer (a
+per-target `mcp.json`) is reported on its own.
 These are known token patterns and secret-bearing field names, not a scanner: a secret in any
 other shape is not noticed. To keep a literal you intend, name its field:
 
@@ -137,8 +153,10 @@ other shape is not noticed. To keep a literal you intend, name its field:
 
 `allowPlaintextFields` sits at the top level of `<hub>/mcp/<server>/mcp.json`, next to `mcp` and
 `overrides`, and applies to every target's resolved spec. Field paths are `command`, `args[i]`,
-`env.<KEY>`, `url` and `headers.<Name>`. Name matching is case-insensitive and by substring, so
-`X-Session-Id` or `AUTH_MODE` with a non-secret value is reported too: list such fields.
+`env.<KEY>`, `url` and `headers.<Name>`. Name matching is case-insensitive and by whole parts, so
+`GIT_AUTHOR_NAME`, `MAX_TOKENS` or `X-Session-Id` are not reported; a non-secret
+`SECRET_FILE` is, and can be listed. Paths match exactly (case-sensitive), and an entry naming
+a field that does not exist is accepted silently.
 
 ## What each target receives
 

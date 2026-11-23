@@ -153,4 +153,77 @@ describe("ownership records follow the spelling of the last run (flyingrobots/ag
     expect(out(r)).toMatch(/mcp-prune[^\n]*beta/);
     expect(out(r)).toMatch(/mcp-remove[^\n]*alpha/);
   });
+
+  // ~/.claude/skills is a symlink to ~/.codex/skills: the symlinked spelling sorts first.
+  function sharedSkillsReversed() {
+    const sb = sandbox();
+    mkdirSync(join(sb.home, ".codex", "skills"), { recursive: true });
+    symlinkSync(join(sb.home, ".codex", "skills"), join(sb.home, ".claude", "skills"));
+    const both = sb.opts(sb.home, ["claude:links", "codex:links"]);
+    return { ...sb, both };
+  }
+
+  test("the shared link's record lives under the spelling with no symlink in its path, whichever side sorts first", () => {
+    const { home, both, ledger } = sharedSkillsReversed();
+    expect(runSync(both).exitCode).toBe(0);
+    expect(ledger().links[join(home, ".codex", "skills", "demo")]).toBeDefined();
+    expect(ledger().links[join(home, ".claude", "skills", "demo")]).toBeUndefined();
+  });
+
+  test("splitting the symlinked side leaves both links agent-hub's, in both directions", () => {
+    for (const make of [sharedSkills, sharedSkillsReversed]) {
+      const { home, both } = make();
+      for (let i = 0; i < 2; i++) expect(runSync(both).exitCode).toBe(0);
+      const linkedSide = make === sharedSkills ? join(home, ".codex", "skills") : join(home, ".claude", "skills");
+      unlinkSync(linkedSide);
+      mkdirSync(linkedSide);
+      const r = runSync(both);
+      expect(out(r)).not.toContain("conflict");
+      expect(r.exitCode).toBe(0);
+      expect(lstatSync(join(home, ".codex", "skills", "demo")).isSymbolicLink()).toBe(true);
+      expect(lstatSync(join(home, ".claude", "skills", "demo")).isSymbolicLink()).toBe(true);
+    }
+  });
+
+  test("a record an earlier run left under the symlinked spelling moves to the physical one", () => {
+    const { home, opts, both, ledger } = sharedSkillsReversed();
+    // A claude-only run records the link under claude's (symlinked) spelling.
+    expect(runSync(opts(home, ["claude:links"])).exitCode).toBe(0);
+    expect(ledger().links[join(home, ".claude", "skills", "demo")]).toBeDefined();
+    const r = runSync(both);
+    expect(r.exitCode).toBe(0);
+    expect(ledger().links[join(home, ".codex", "skills", "demo")]).toBeDefined();
+    expect(ledger().links[join(home, ".claude", "skills", "demo")]).toBeUndefined();
+    unlinkSync(join(home, ".claude", "skills"));
+    mkdirSync(join(home, ".claude", "skills"));
+    const after = runSync(both);
+    expect(out(after)).not.toContain("conflict");
+    expect(after.exitCode).toBe(0);
+  });
+
+  test("with HOME reached through an alias, the record still lives under the spelling with fewer symlinks", () => {
+    const { alias, opts, ledger } = sharedSkillsReversed();
+    const both = opts(alias, ["claude:links", "codex:links"]);
+    expect(runSync(both).exitCode).toBe(0);
+    expect(ledger().links[join(alias, ".codex", "skills", "demo")]).toBeDefined();
+    expect(ledger().links[join(alias, ".claude", "skills", "demo")]).toBeUndefined();
+    unlinkSync(join(alias, ".claude", "skills"));
+    mkdirSync(join(alias, ".claude", "skills"));
+    const r = runSync(both);
+    expect(out(r)).not.toContain("conflict");
+    expect(r.exitCode).toBe(0);
+  });
+
+  test("a scoped run never moves another target's record into its own physical spelling", () => {
+    const { home, opts, ledger } = sharedSkillsReversed();
+    // claude's spelling is the symlinked one; a claude-only run records the link there.
+    expect(runSync(opts(home, ["claude:links"])).exitCode).toBe(0);
+    const claudeKey = join(home, ".claude", "skills", "demo");
+    expect(ledger().links[claudeKey]).toBeDefined();
+    const r = runSync(opts(home, ["codex:links"]));
+    expect(r.exitCode).toBe(0);
+    expect(out(r)).not.toMatch(/rekey-(link|mcp)-record/);
+    expect(ledger().links[claudeKey]).toBeDefined();
+    expect(ledger().links[join(home, ".codex", "skills", "demo")]).toBeUndefined();
+  });
 });
