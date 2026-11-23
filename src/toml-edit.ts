@@ -462,6 +462,30 @@ export function normalizeCodexComparable(entry: unknown): Record<string, unknown
   return copy;
 }
 
+/** Keys renderCodexSection writes itself; any other key is an `extra` native field. */
+const CODEX_MANAGED = new Set([
+  "command",
+  "args",
+  "url",
+  "env",
+  "env_vars",
+  "http_headers",
+  "bearer_token_env_var",
+  "env_http_headers",
+]);
+
+function tomlScalar(v: unknown, where: string): string {
+  if (typeof v === "string") return JSON.stringify(v);
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "number" && Number.isFinite(v)) return Number.isInteger(v) ? String(v) : String(v);
+  throw new TomlUnsupportedError(`${where}: only strings, finite numbers and booleans can be written to Codex TOML`);
+}
+
+function tomlScalarOrArray(v: unknown, where: string): string {
+  if (Array.isArray(v)) return `[${v.map((x, i) => tomlScalar(x, `${where}[${i}]`)).join(", ")}]`;
+  return tomlScalar(v, where);
+}
+
 export function renderCodexSection(
   name: string,
   entry: Record<string, unknown>,
@@ -485,6 +509,18 @@ export function renderCodexSection(
   if (Array.isArray(entry.env_vars) && entry.env_vars.length > 0) {
     lines.push(`env_vars = [${entry.env_vars.map((v) => JSON.stringify(v)).join(", ")}]`);
   }
+  // Native fields from overrides.codex.extra (flyingrobots/agent-hub#7): scalars and arrays of
+  // scalars as keys here, objects of scalars as subtables after the managed ones.
+  const extraKeys = Object.keys(entry).filter((k) => !CODEX_MANAGED.has(k)).sort();
+  const extraTables: string[] = [];
+  for (const k of extraKeys) {
+    const v = entry[k];
+    if (isPlainObject(v)) {
+      extraTables.push(k);
+      continue;
+    }
+    lines.push(`${formatTomlKey(k)} = ${tomlScalarOrArray(v, `mcp_servers.${name}.${k}`)}`);
+  }
   if (isPlainObject(entry.env) && Object.keys(entry.env).length > 0) {
     lines.push("");
     lines.push(`[mcp_servers.${key}.env]`);
@@ -503,6 +539,16 @@ export function renderCodexSection(
       )) {
         lines.push(`${formatTomlKey(k)} = ${JSON.stringify(v)}`);
       }
+    }
+  }
+  for (const t of extraTables) {
+    lines.push("");
+    lines.push(`[mcp_servers.${key}.${formatTomlKey(t)}]`);
+    for (const [k, v] of Object.entries(entry[t] as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b))) {
+      if (isPlainObject(v)) {
+        throw new TomlUnsupportedError(`mcp_servers.${name}.${t}.${k}: nested tables in extra are not supported`);
+      }
+      lines.push(`${formatTomlKey(k)} = ${tomlScalarOrArray(v, `mcp_servers.${name}.${t}.${k}`)}`);
     }
   }
   return lines.join(eol);
