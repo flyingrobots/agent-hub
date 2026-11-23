@@ -63,14 +63,76 @@ export function parseJsonFile(filePath: string): unknown {
  */
 export function parseStrictJsonTargetFile(filePath: string): unknown {
   const raw = readFileSync(filePath, "utf8");
+  let parsed: unknown;
   try {
-    return JSON.parse(raw) as unknown;
+    parsed = JSON.parse(raw) as unknown;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(
       `${filePath}: invalid JSON (${msg}). Strict JSON is required; JSONC comments and trailing commas are unsupported until a comment-preserving editor is added`,
     );
   }
+  // JSON.parse keeps only the last of duplicate keys; rewriting the file would then silently
+  // drop the earlier value (for example a user's own block of MCP servers). Refuse instead.
+  const dup = findDuplicateJsonKey(raw);
+  if (dup) {
+    throw new Error(
+      `${filePath}: duplicate key "${dup.key}" at ${dup.path}; JSON.parse would keep only the last value and a rewrite would silently drop the others. Merge the duplicates by hand first`,
+    );
+  }
+  return parsed;
+}
+
+/**
+ * Find the first object key that appears twice in the same object of a document that
+ * JSON.parse has already accepted. Keys are compared after decoding escapes, so "a" and
+ * "\u0061" collide. Returns the decoded key and a JSONPath-like location, or null.
+ */
+export function findDuplicateJsonKey(text: string): { key: string; path: string } | null {
+  type Frame = { kind: "object"; keys: Set<string>; path: string; pendingKey: string | null } | { kind: "array"; path: string; index: number };
+  const stack: Frame[] = [];
+  const childPath = (): string => {
+    const top = stack[stack.length - 1];
+    if (!top) return "$";
+    if (top.kind === "array") return `${top.path}[${top.index}]`;
+    return `${top.path}.${top.pendingKey ?? "?"}`;
+  };
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const ch = text[i]!;
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < n && text[j] !== '"') j += text[j] === "\\" ? 2 : 1;
+      const literal = text.slice(i, j + 1);
+      i = j + 1;
+      const top = stack[stack.length - 1];
+      if (top?.kind === "object" && top.pendingKey === null) {
+        let k = i;
+        while (k < n && /\s/.test(text[k]!)) k++;
+        if (text[k] === ":") {
+          const key = JSON.parse(literal) as string;
+          if (top.keys.has(key)) return { key, path: top.path };
+          top.keys.add(key);
+          top.pendingKey = key;
+          i = k + 1;
+        }
+      }
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      const path = childPath();
+      stack.push(ch === "{" ? { kind: "object", keys: new Set(), path, pendingKey: null } : { kind: "array", path, index: 0 });
+    } else if (ch === "}" || ch === "]") {
+      stack.pop();
+    } else if (ch === ",") {
+      const top = stack[stack.length - 1];
+      if (top?.kind === "object") top.pendingKey = null;
+      else if (top?.kind === "array") top.index++;
+    }
+    i++;
+  }
+  return null;
 }
 
 export function expandTilde(rawPath: string, homeDir: string): string {

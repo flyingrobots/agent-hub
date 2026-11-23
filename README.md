@@ -16,7 +16,9 @@ Keep your personal `~/.agents/` directory in its own private git repo while inst
 | **Cursor** | `~/.cursor/AGENTS.md` *(unverified / experimental)* | `~/.cursor/skills/<name>` | `~/.cursor/mcp.json` (`mcpServers`) | Supports `stdio`, `http`, `sse`. Global Cursor rules are settings-configured; `~/.cursor/AGENTS.md` effect is unverified |
 | **OpenCode** | `~/.config/opencode/AGENTS.md` | `~/.config/opencode/skills/<name>` | `~/.config/opencode/opencode.json` (`mcp`) | Supports `stdio` (`type: "local"`), `http`/`sse` (`type: "remote"`). Strict JSON only — `.jsonc` files with comments are refused until a comment-preserving editor is added |
 
-> **Strict JSON / JSONC notice:** All JSON MCP adapters (`antigravity`, `claude`, `cursor`, `opencode`) parse target configs strictly via `JSON.parse` and refuse to touch a target whenever a `.jsonc` sibling exists (e.g., `opencode.jsonc`), whether or not the `.json` file also exists. Commented JSONC files are unsupported until a comment-preserving editor is added.
+> **Strict JSON / JSONC notice:** All JSON MCP adapters (`antigravity`, `claude`, `cursor`, `opencode`) parse target configs strictly via `JSON.parse` and refuse to modify a target config whenever a `.jsonc` sibling exists (e.g., `opencode.jsonc`), whether or not the `.json` file also exists. They also refuse a config that contains comments, trailing commas, or the same key twice in one object (where `JSON.parse` would silently keep only the last value). Commented JSONC files are unsupported until a comment-preserving editor is added.
+>
+> **A refusal stops the whole run.** Every active target is planned before anything is written, so one refused target means no target is synced in that run, and `--check` fails too. The error names the target; to sync the others, leave it out with `--targets` or add it to `disabledTargets` (see [Choosing targets](#choosing-targets)). Do not strip comments from a tool's own config just to make `sync-agents` run.
 
 > **Important:** Structural synchronization verifies filesystem links, serialized JSON/TOML, and ownership state — it does not prove that a downstream agent application loaded and honored the configuration at runtime.
 
@@ -60,6 +62,26 @@ What `./install.sh` does (and does **not** do):
 3. `${XDG_CONFIG_HOME:-$HOME/.config}/agent-hub/config.json` (`"agentsDir"`)
 4. Default: `~/.agents`
 
+The same `config.json` also holds `"disabledTargets"`; see [Choosing targets](#choosing-targets). A `config.json` that is not a JSON object, or whose `disabledTargets` is invalid, makes every sync run exit `1` with the reason.
+
+### Choosing targets
+
+Every target whose root directory exists (`~/.claude`, `~/.codex`, `~/.gemini`, `~/.cursor`, `~/.config/opencode`) is synced by default.
+
+- **`disabledTargets`** in `${XDG_CONFIG_HOME:-$HOME/.config}/agent-hub/config.json` is an array of target names (`antigravity`, `claude`, `codex`, `cursor`, `opencode`) to leave out by default:
+
+  ```json
+  { "agentsDir": "~/.agents", "disabledTargets": ["cursor", "opencode"] }
+  ```
+
+  An unknown name or a non-array value makes the run exit `1`.
+- **`--targets <csv>`** (or `--targets=<csv>`) picks the targets for one run of sync, `--check`, `--dry-run`, or `--explain`. An unknown name exits `2`. An explicit `--targets` list **replaces** `disabledTargets` for that run, so `--targets cursor` acts on Cursor even when `"cursor"` is disabled.
+- **Excluded targets are left exactly as they are.** Nothing in them is pruned: symlinks and MCP entries that `sync-agents` placed earlier stay put, and hub changes (including removed servers) stop reaching them. `--check` reports on active targets only. When a target is enabled again, the next run catches it up, including any prunes it missed.
+
+### Upgrading from a three-target version
+
+Earlier versions synced MCP servers only to Claude, Codex, and Antigravity, though they already linked rules and skills into `~/.cursor` and `~/.config/opencode`. After upgrading, the first unscoped run also writes your hub's MCP servers into `~/.cursor/mcp.json` and `~/.config/opencode/opencode.json`, and `--check` reports that as pending work until it happens. That run is refused, with nothing written, if either file has a personal server with the same name as a hub server, or if an `opencode.jsonc` exists. To keep the old behavior, set `"disabledTargets": ["cursor", "opencode"]` before the first run, or pass `--targets antigravity,claude,codex`.
+
 ---
 
 ## Canonical Hub Layout
@@ -73,7 +95,7 @@ What `./install.sh` does (and does **not** do):
 └── mcp/
     └── <server-name>/
         ├── mcp.json            # Canonical MCP server spec (+ optional inline overrides)
-        └── <agent>/mcp.json    # Optional per-agent override (antigravity | claude | codex)
+        └── <agent>/mcp.json    # Optional per-agent override (antigravity | claude | codex | cursor | opencode)
 ```
 
 ### Canonical `mcp.json` Format & Transport Semantics
@@ -93,7 +115,7 @@ What `./install.sh` does (and does **not** do):
 }
 ```
 
-Remote server example (SSE enabled for Claude, omitted for adapters that do not support SSE):
+Remote server example (SSE enabled for Claude, Cursor, and OpenCode; omitted for Antigravity and Codex, which do not support SSE):
 
 ```json
 {
@@ -111,7 +133,7 @@ Remote server example (SSE enabled for Claude, omitted for adapters that do not 
 
 Rules:
 - **Explicit transport**: `command` infers `"transport": "stdio"` if omitted. A remote `url` **must** explicitly set `"transport": "http"` (streamable HTTP) or `"transport": "sse"`.
-- **Disabled-first precedence**: `"disabled": true` is evaluated *before* active transport validation and omits the server uniformly from that adapter (`antigravity`, `claude`, or `codex`).
+- **Disabled-first precedence**: `"disabled": true` is evaluated *before* active transport validation and omits the server uniformly from that adapter (`antigravity`, `claude`, `codex`, `cursor`, or `opencode`).
 - **Transport-family switching**: Overriding a remote base with a `stdio` override (or vice versa) cleanly clears opposite-family inherited fields (`url`/`headers` vs `command`/`args`/`env`).
 - **Override precedence**: base `mcp.json` -> inline `overrides.<agent>` -> `<agent>/mcp.json`. Legacy `gemini` override keys/directories fail with a migration message pointing to `antigravity`.
 
@@ -123,7 +145,7 @@ Rules:
 # Sync instructions, skills, and MCP configs
 sync-agents
 
-# Restrict sync/check to specific target(s) (untargeted adapters are never pruned)
+# Restrict sync/check/dry-run/explain to specific target(s) (excluded targets are never pruned)
 sync-agents --targets claude,codex
 
 # Opt out of specific targets by default in ~/.config/agent-hub/config.json:

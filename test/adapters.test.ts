@@ -388,3 +388,129 @@ describe("Phase 1 review fixes (CodeRabbit PR #2)", () => {
     expect(loadOwnershipState(statePath, hub).state.links[cursorLink]).toBeDefined();
   });
 });
+
+describe("Baker Street round 1 repairs (PR #2)", () => {
+  function writeHttpServer(hub: string) {
+    mkdirSync(join(hub, "mcp", "remote-srv"), { recursive: true });
+    writeFileSync(
+      join(hub, "mcp", "remote-srv", "mcp.json"),
+      JSON.stringify({
+        mcp: { transport: "http", url: "https://api.example.invalid/mcp", headers: { "X-K": "v" } },
+      }),
+    );
+  }
+
+  test("R-4a: invalid disabledTargets (unknown name, non-array) fails closed without mutating any target", () => {
+    const { home, hub, env } = makeSandbox();
+    writeHttpServer(hub);
+    const cfgDir = join(home, ".config", "agent-hub");
+    mkdirSync(cfgDir, { recursive: true });
+    const claudeBefore = readFileSync(join(home, ".claude.json"), "utf8");
+    for (const [value, needle] of [
+      [["gemini"], 'unknown target "gemini" in disabledTargets'],
+      ["cursor", '"disabledTargets" must be an array'],
+    ] as const) {
+      writeFileSync(join(cfgDir, "config.json"), JSON.stringify({ disabledTargets: value }));
+      const r = runCmd([SYNC_BIN], env);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain(needle);
+      expect(readFileSync(join(home, ".claude.json"), "utf8")).toBe(claudeBefore);
+      expect(existsSync(join(home, ".cursor", "mcp.json"))).toBe(false);
+      expect(existsSync(join(home, ".config", "opencode", "opencode.json"))).toBe(false);
+    }
+  });
+
+  test("R-4b: Cursor and OpenCode compile http servers to the documented shapes", () => {
+    const { home, hub, env } = makeSandbox();
+    writeHttpServer(hub);
+    expect(runCmd([SYNC_BIN, "--targets", "cursor,opencode"], env).exitCode).toBe(0);
+    const cursor = JSON.parse(readFileSync(join(home, ".cursor", "mcp.json"), "utf8"));
+    expect(cursor.mcpServers["remote-srv"]).toEqual({
+      url: "https://api.example.invalid/mcp",
+      headers: { "X-K": "v" },
+    });
+    const oc = JSON.parse(readFileSync(join(home, ".config", "opencode", "opencode.json"), "utf8"));
+    expect(oc.mcp["remote-srv"]).toEqual({
+      type: "remote",
+      url: "https://api.example.invalid/mcp",
+      headers: { "X-K": "v" },
+      enabled: true,
+    });
+  });
+
+  test("R-4c: --dry-run and --explain honor --targets and change nothing", () => {
+    const { home, hub, env } = makeSandbox();
+    writeHttpServer(hub);
+    for (const args of [["--dry-run", "--targets", "claude"], ["--explain", "--targets=claude"]]) {
+      const r = runCmd([SYNC_BIN, ...args], env);
+      expect(r.exitCode).toBe(0);
+      const out = r.stdout + r.stderr;
+      expect(out).toContain(".claude.json#remote-srv");
+      expect(out).not.toContain(".cursor");
+      expect(out).not.toContain("opencode");
+      expect(out).not.toContain(".codex");
+      expect(out).not.toContain(".gemini");
+    }
+    expect(existsSync(join(home, ".cursor", "mcp.json"))).toBe(false);
+    expect(JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers).toBeUndefined();
+  });
+
+  test("R-2: a JSONC refusal names its scope and the --targets/disabledTargets opt-out", () => {
+    const { home, hub, env } = makeSandbox();
+    writeHttpServer(hub);
+    writeFileSync(join(home, ".config", "opencode", "opencode.jsonc"), "// c\n{}\n");
+    const r = runCmd([SYNC_BIN], env);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("JSONC");
+    expect(r.stderr).toContain("--targets");
+    expect(r.stderr).toContain('"disabledTargets": ["opencode"]');
+    // The run as a whole is refused: Claude did not receive the server either.
+    expect(JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers).toBeUndefined();
+
+    // A commented .json gets the same remedy text, naming its own target.
+    rmSync(join(home, ".config", "opencode", "opencode.jsonc"));
+    writeFileSync(join(home, ".cursor", "mcp.json"), "// c\n{}\n");
+    const r2 = runCmd([SYNC_BIN], env);
+    expect(r2.exitCode).toBe(1);
+    expect(r2.stderr).toContain('"disabledTargets": ["cursor"]');
+  });
+
+  test("R-2: a conflict with a personal entry in one target names the opt-out, not only --force", () => {
+    const { home, hub, env } = makeSandbox();
+    writeHttpServer(hub);
+    const cursorPath = join(home, ".cursor", "mcp.json");
+    const mine = JSON.stringify({ mcpServers: { "remote-srv": { command: "/bin/mine" } } }, null, 2) + "\n";
+    writeFileSync(cursorPath, mine);
+    const r = runCmd([SYNC_BIN], env);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain("[conflict]");
+    expect(r.stderr).toContain('"disabledTargets": ["cursor"]');
+    expect(readFileSync(cursorPath, "utf8")).toBe(mine);
+  });
+
+  test("R-5: duplicate object keys in any JSON target fail closed and leave the file untouched", () => {
+    const { home, hub, env } = makeSandbox();
+    writeHttpServer(hub);
+    const cases: Array<[string, string, string]> = [
+      ["claude", join(home, ".claude.json"), "mcpServers"],
+      ["antigravity", join(home, ".gemini", "config", "mcp_config.json"), "mcpServers"],
+      ["cursor", join(home, ".cursor", "mcp.json"), "mcpServers"],
+      ["opencode", join(home, ".config", "opencode", "opencode.json"), "mcp"],
+    ];
+    for (const [target, path, root] of cases) {
+      const text = `{"${root}": {"mine": {"command": "/bin/mine"}}, "x": "https://a.invalid//b", "${root}": {}}\n`;
+      writeFileSync(path, text);
+      const r = runCmd([SYNC_BIN, "--targets", target], env);
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain(`duplicate key "${root}"`);
+      expect(readFileSync(path, "utf8")).toBe(text);
+      rmSync(path);
+    }
+    // Nested duplicates, including escape-equivalent spellings, are refused too.
+    const nested = '{"mcpServers": {"a": {"command": "/x", "comm\\u0061nd": "/y"}}}\n';
+    writeFileSync(join(home, ".cursor", "mcp.json"), nested);
+    const rn = runCmd([SYNC_BIN, "--targets", "cursor"], env);
+    expect(rn.exitCode).toBe(1);
+    expect(rn.stderr).toContain('duplicate key "command"');
+  });
+});

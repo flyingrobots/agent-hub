@@ -991,6 +991,15 @@ function planRemovedLegacyOp(
   }
 }
 
+/**
+ * Remedy appended to every refusal or conflict that is specific to one target. Planning
+ * covers all active targets before anything is applied, so one target's refusal stops the
+ * whole run; excluding that target is how an operator syncs the rest.
+ */
+export function targetOptOutHint(agent: AgentId): string {
+  return `to sync the other targets without ${agent}, pass --targets with the targets you want, or add "disabledTargets": ["${agent}"] to agent-hub/config.json under $XDG_CONFIG_HOME (default ~/.config)`;
+}
+
 function planSingleMcpTarget(
   adapter: McpAdapterDef,
   homeDir: string,
@@ -1017,7 +1026,7 @@ function planSingleMcpTarget(
   // Checked whether or not the .json exists: with both present, the tool's effective config is ambiguous.
   if (adapter.format === "json" && existsSync(`${configPath}c`)) {
     throw new Error(
-      `mcp-sync: ${configPath}c exists: JSONC files with comments are unsupported until a comment-preserving editor is added; refusing to ${beforeSnapshot.kind === "absent" ? "create a separate" : "modify"} ${configPath}`,
+      `mcp-sync: ${configPath}c exists: JSONC files with comments are unsupported until a comment-preserving editor is added; refusing to ${beforeSnapshot.kind === "absent" ? "create a separate" : "modify"} ${configPath}. No target is synced in this run; ${targetOptOutHint(adapter.id)}`,
     );
   }
 
@@ -1040,7 +1049,13 @@ function planSingleMcpTarget(
         ? { ...(parsed.mcp_servers as Record<string, unknown>) }
         : {};
     } else {
-      const parsed = parseStrictJsonTargetFile(configPath);
+      let parsed: unknown;
+      try {
+        parsed = parseStrictJsonTargetFile(configPath);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`mcp-sync: ${msg}. No target is synced in this run; ${targetOptOutHint(adapter.id)}`);
+      }
       if (!isPlainObject(parsed)) {
         throw new Error(`mcp-sync: ${configPath} must contain a JSON object`);
       }
@@ -1108,6 +1123,12 @@ function planSingleMcpTarget(
     if (servers.has(legacyName)) continue;
     if (Object.prototype.hasOwnProperty.call(prevManaged, legacyName)) continue;
     planRemovedLegacyOp(ctx, legacyName, disownSet);
+  }
+
+  for (const op of ctx.ops) {
+    if (op.status === "conflict") {
+      op.nextStep = op.nextStep ? `${op.nextStep}; or ${targetOptOutHint(adapter.id)}` : targetOptOutHint(adapter.id);
+    }
   }
 
   let renderedContent: string | undefined;

@@ -1,6 +1,6 @@
 ---
 name: agent-hub
-description: Manage local AI coding agent configuration through a canonical agents hub directory (default ~/.agents/) and the sync-agents CLI. Use whenever the user asks to install, update, create, or remove an agent skill; add, override, disable, or remove an MCP server; edit global agent instructions; or sync/check drift across Claude Code, Codex, and Antigravity.
+description: Manage local AI coding agent configuration through a canonical agents hub directory (default ~/.agents/) and the sync-agents CLI. Use whenever the user asks to install, update, create, or remove an agent skill; add, override, disable, or remove an MCP server; edit global agent instructions; or sync/check drift across Claude Code, Codex, Antigravity, Cursor, and OpenCode.
 ---
 
 # Agent Hub (`sync-agents`)
@@ -144,10 +144,22 @@ Edit `<hub>/AGENTS.md` directly. Run `sync-agents --check` to confirm all manage
 | `sync-agents --targets <csv>` | Restrict sync/check to specific adapter(s) (`antigravity`, `claude`, `codex`, `cursor`, `opencode`); untargeted adapters are never pruned. An explicit `--targets` list replaces `disabledTargets` for that run |
 | `sync-agents --explain` | Show observed state, intended state, ownership basis, reason, and next step (read-only) |
 | `sync-agents --dry-run` (`-n`) | Show `[plan]` actions without modifying final destinations, state, journals, or locks |
-| `sync-agents --check` | Exit `0` iff targets, ownership ledger, and recovery state all require zero work |
+| `sync-agents --check` | Exit `0` iff the active targets, ownership ledger, and recovery state all require zero work (excluded targets are not checked) |
 | `sync-agents --adopt` | Adopt unmanaged identical symlinks/MCP entries or strictly equivalent files/dirs (checks `.git`, bytes, mode bits, owner/group, raw xattr values, ACLs) |
 | `sync-agents --force-skill` | Allow `--skill` to replace differing canonical skill(s) ONLY |
 | `sync-agents --force` (`-f`) | Allow replacing differing canonical skills, unmanaged/modified symlinks, and differing/disabled unmanaged MCP entries |
 | `sync-agents --disown-legacy <agent>:<name>` | Retire an unverified legacy v1 claim without modifying the target config |
 
 **Safety rule on conflicts:** `sync-agents` fails closed before Phase 2 when any conflict is detected (reporting any Phase 0 recovery separately). Always run `sync-agents --explain` before using `--adopt`, `--force-skill`, or `--force`.
+
+### Scoping and opting out of targets
+
+- **`disabledTargets`** lives in `${XDG_CONFIG_HOME:-~/.config}/agent-hub/config.json` as an array of target names: `{ "disabledTargets": ["cursor"] }`. Valid names: `antigravity`, `claude`, `codex`, `cursor`, `opencode`. An unknown name or non-array value makes every run exit `1`.
+- **`--targets <csv>`** / **`--targets=<csv>`** picks targets for one run (sync, `--check`, `--dry-run`, `--explain`); an unknown name exits `2`. It **replaces** `disabledTargets` for that run.
+- **Excluded targets are never pruned or checked.** What agent-hub placed there earlier stays; hub removals stop reaching them until the target is active again. When a user asks to stop syncing a tool, add it to `disabledTargets`; do not delete its links or entries unless they ask for that too.
+
+### Strict JSON refusals
+
+The four JSON adapters (`antigravity`, `claude`, `cursor`, `opencode`) refuse a target config when a `.jsonc` sibling exists (e.g. `~/.config/opencode/opencode.jsonc`), or when the `.json` has comments, trailing commas, or a key repeated in one object. **A refusal stops the whole run**: no target is synced. The error names the target and the remedy.
+
+When you hit one: tell the user which file was refused and why, then offer to exclude that target (`--targets` for this run, or `disabledTargets` permanently). **Never edit, rename, reformat, or strip comments from the user's `.jsonc`/`.json` yourself, and never reach for `--force`, unless the user explicitly asks.** The same goes for a `[conflict]` on a personal MCP entry in one tool's config: excluding that target is the non-destructive way to sync the rest.

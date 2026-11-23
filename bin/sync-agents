@@ -147,9 +147,10 @@ Options:
                                    modifying the target config (requires canonical server removed)
       --explain                    Print observed state, intended state, ownership basis, reason,
                                    and next step for each object without modifying disk
-      --targets <csv>              Restrict sync/check to specific target(s):
+      --targets <csv>              Restrict sync/check/dry-run/explain to specific target(s):
                                    antigravity, claude, codex, cursor, opencode
-                                   (untargeted adapters are never pruned)
+                                   (excluded targets are never pruned). Replaces the
+                                   config.json "disabledTargets" list for this run
       --print-dir                  Print the canonical resolved hub directory and exit
   -h, --help                       Show this help
 EOF
