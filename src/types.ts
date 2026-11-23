@@ -133,7 +133,7 @@ export type RecoveryReport = {
 export type OpStatus = "ok" | "change" | "conflict" | "error";
 
 export type PlannedOp = {
-  domain: "skill" | "link" | "mcp" | "recovery";
+  domain: "skill" | "link" | "mcp" | "rules" | "recovery";
   action: string;
   status: OpStatus;
   destination: string;

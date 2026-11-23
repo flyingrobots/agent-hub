@@ -206,6 +206,9 @@ export function decompileEntry(agent: AgentId, raw: unknown, where = `${agent} e
       break;
     }
   }
+  // An empty map carries nothing; every adapter's comparable form drops it too.
+  if (spec.env && Object.keys(spec.env).length === 0) delete spec.env;
+  if (spec.headers && Object.keys(spec.headers).length === 0) delete spec.headers;
   consumed = managedKeys(agent, transport!);
   const extra: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(e)) if (!consumed.includes(k)) extra[k] = v;
@@ -243,7 +246,7 @@ export function roundTripDiff(agent: AgentId, raw: unknown, d: Decompiled): stri
 type ServerDoc = { mcp: Record<string, unknown>; overrides?: Record<string, Record<string, unknown>> };
 
 /** The canonical spec as a hub mcp.json `mcp` object, keys in a fixed order. */
-function orderedSpec(spec: McpServerSpec): Record<string, unknown> {
+export function orderedSpec(spec: McpServerSpec): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   const sortRec = (r: Record<string, string>) => Object.fromEntries(Object.entries(r).sort(([a], [b]) => a.localeCompare(b)));
   if (spec.transport !== undefined) out.transport = spec.transport;
@@ -257,7 +260,7 @@ function orderedSpec(spec: McpServerSpec): Record<string, unknown> {
 }
 
 /** The smallest override that, layered on base with mergeSpec, gives spec; null when none does. */
-function minimalOverride(base: McpServerSpec, spec: McpServerSpec): McpServerSpec | null {
+export function minimalOverride(base: McpServerSpec, spec: McpServerSpec): McpServerSpec | null {
   const ov: McpServerSpec = {};
   for (const k of ["transport", "command", "args", "url"] as const) {
     if (stableJson(base[k]) !== stableJson(spec[k])) (ov as Record<string, unknown>)[k] = spec[k];

@@ -3,6 +3,7 @@ import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { xdgConfigBase } from "./adapters.ts";
+import { IMPORT_USAGE, parseSubcommand, PULL_USAGE, runImport, runPull, type ParsedSubcommand, type PullOptions } from "./import-cli.ts";
 import { opData, resetOutput, SCHEMAS, schemaEvents, writeEvents, writeFailed, type OutputEvent, type SchemaId } from "./output.ts";
 import { applyLinkOp, planLinkSync, type PlannedLinkOp } from "./links.ts";
 import {
@@ -45,6 +46,8 @@ import {
 } from "./types.ts";
 
 export const CLI_USAGE = `Usage: sync-agents [OPTIONS]
+       sync-agents import [OPTIONS]     (see sync-agents import --help)
+       sync-agents pull --from <agent> <mcp/<name>|skill/<name>> [OPTIONS]
 
 Install skills into your canonical hub directory (default ~/.agents/) and sync
 AGENTS.md, skills/, and mcp/ configs across local AI coding agents.
@@ -865,6 +868,37 @@ export function helpEvents(command: string, usage: string): OutputEvent[] {
   ];
 }
 
+/** `sync-agents import` / `pull`: parse, resolve the hub as a sync does, run, print. */
+function runSubcommandCli(cmd: "import" | "pull", argv: string[], human: boolean): number {
+  let parsed: ParsedSubcommand;
+  const usage = cmd === "import" ? IMPORT_USAGE : PULL_USAGE;
+  try {
+    parsed = parseSubcommand(cmd, argv);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    writeEvents([{ stream: "stderr", id: "agent_hub.error", message: `sync-agents ${cmd}: ${msg}\n${usage}`, data: { code: "usage", detail: msg, usage } }], human);
+    return 2;
+  }
+  if (parsed.kind === "help") {
+    writeEvents(human ? helpEvents(parsed.command, parsed.usage).slice(0, 1) : helpEvents(parsed.command, parsed.usage), human);
+    return 0;
+  }
+  const hubDir = resolveCanonicalHubDir({
+    hubDir: parsed.opts.hubDir,
+    envAgentsDir: parsed.opts.hubDir ? undefined : process.env.AGENTS_DIR,
+    homeDir: homedir(),
+    cwd: process.cwd(),
+    xdgConfigHome: process.env.XDG_CONFIG_HOME,
+  });
+  const onEvent = (e: OutputEvent) => writeEvents([e], human);
+  const env = { homeDir: homedir(), xdgConfigHome: process.env.XDG_CONFIG_HOME, xdgStateHome: process.env.XDG_STATE_HOME };
+  const res =
+    parsed.kind === "import"
+      ? runImport({ ...parsed.opts, ...env, hubDir, onEvent })
+      : runPull({ ...(parsed.opts as PullOptions), ...env, hubDir, onEvent });
+  return res.exitCode;
+}
+
 /**
  * The CLI boundary: parse, run, and print every outcome as events, including usage errors and
  * unexpected throws, so stdout and stderr only ever carry schema'd lines (or prose with --human).
@@ -882,6 +916,9 @@ export function cliMain(
   // A failed write (not a closed pipe) makes the run fail whatever the sync returned.
   const finish = (code: number) => (writeFailed() ? Math.max(code, 1) : code);
   try {
+    if (!mcpOnly && (argv[0] === "import" || argv[0] === "pull")) {
+      return finish(runSubcommandCli(argv[0], argv.slice(1), human));
+    }
     let parsed;
     try {
       parsed = parseCliArgs(argv);
