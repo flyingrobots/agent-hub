@@ -554,6 +554,16 @@ export function planLinkSync(
   // run under an aliased HOME) keep one record, preferring the spelling desired now; the others
   // are retired ledger-only, so the same symlink is never pruned twice.
   const desiredSpellings = new Set(desired.keys());
+  // One order decides which spelling of a physical link holds its record, here and in the
+  // planner below: a spelling desired now, then one whose path crosses no symlink (splitting a
+  // shared directory replaces the symlinked side, so the real side keeps the link), then one
+  // already recorded, then by name.
+  const isPhysicalSpelling = (p: string) => physicalPath(p) === p;
+  const preferSpelling = (a: string, b: string) =>
+    Number(!desiredSpellings.has(a)) - Number(!desiredSpellings.has(b)) ||
+    Number(!isPhysicalSpelling(a)) - Number(!isPhysicalSpelling(b)) ||
+    Number(!state.links[a]) - Number(!state.links[b]) ||
+    (a < b ? -1 : a > b ? 1 : 0);
   const byPhysical = new Map<string, string[]>();
   for (const key of Object.keys(state.links).sort()) {
     const phys = physicalPath(key);
@@ -562,7 +572,7 @@ export function planLinkSync(
   const recordedByPhysical = new Map<string, string>();
   const duplicateKeys = new Set<string>();
   for (const [phys, keys] of byPhysical) {
-    const primary = keys.find((k) => desiredSpellings.has(k)) ?? keys[0]!;
+    const primary = [...keys].sort(preferSpelling)[0]!;
     recordedByPhysical.set(phys, primary);
     for (const k of keys) if (k !== primary) duplicateKeys.add(k);
   }
@@ -601,11 +611,7 @@ export function planLinkSync(
   // ~/.claude/skills). It is one object: plan it once, under the spelling that holds its record,
   // or else the first in order.
   const plannedPhysical = new Set<string>();
-  const physicalOrder = [...desired.keys()].sort((a, b) => {
-    const ra = state.links[a] ? 0 : 1;
-    const rb = state.links[b] ? 0 : 1;
-    return ra - rb || a.localeCompare(b);
-  });
+  const physicalOrder = [...desired.keys()].sort(preferSpelling);
   for (const dst of physicalOrder) {
     const entry = desired.get(dst)!;
     const phys = physicalPath(dst);
@@ -621,7 +627,10 @@ export function planLinkSync(
     if (recordedKey !== dst) {
       const recordedOwner = resolveLinkTargetId(recordedKey, homeDir, configBase);
       const dstOwner = resolveLinkTargetId(dst, homeDir, configBase);
-      if (desired.has(recordedKey) || (recordedOwner !== null && recordedOwner !== dstOwner)) {
+      // Another desired spelling of the same link: move the record here only when this one is the
+      // physical spelling and that one is not (both targets are in this run).
+      const intoPhysical = desired.has(recordedKey) && isPhysicalSpelling(dst) && !isPhysicalSpelling(recordedKey);
+      if (!intoPhysical && (desired.has(recordedKey) || (recordedOwner !== null && recordedOwner !== dstOwner))) {
         plans.push(planDesiredLinkOp(recordedKey, entry.src, entry.kind, stagedSrcDir, state.links[recordedKey], opts));
         continue;
       }
