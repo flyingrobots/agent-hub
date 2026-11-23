@@ -74,8 +74,9 @@ function seedHub(repo: string, servers: Record<string, unknown> = { fs: { mcp: {
   return hub;
 }
 
-function run(sb: Sandbox, args: string[], opts: { cwd?: string } = {}) {
-  const p = Bun.spawnSync(["bun", ENGINE, ...args], { env: sb.env, cwd: opts.cwd ?? sb.root, stdout: "pipe", stderr: "pipe" });
+function run(sb: Sandbox, args: string[], opts: { cwd?: string; timeout?: number } = {}) {
+  // A timeout kills a hung run, so a regression fails instead of hanging the suite.
+  const p = Bun.spawnSync(["bun", ENGINE, ...args], { env: sb.env, cwd: opts.cwd ?? sb.root, stdout: "pipe", stderr: "pipe", ...(opts.timeout ? { timeout: opts.timeout } : {}) });
   const stdout = p.stdout.toString();
   const stderr = p.stderr.toString();
   const decoded = decodeOutput(stdout, stderr);
@@ -83,7 +84,7 @@ function run(sb: Sandbox, args: string[], opts: { cwd?: string } = {}) {
 }
 
 function project(sb: Sandbox, repo: string, ...extra: string[]) {
-  return run(sb, ["--project", "--dir", repo, ...extra]);
+  return run(sb, ["--project", "--dir", repo, ...extra], { timeout: 30_000 });
 }
 
 function git(sb: Sandbox, cwd: string, ...args: string[]) {
@@ -513,10 +514,20 @@ describe("project mode secrets and scope (flyingrobots/agent-hub#11)", () => {
     const sb = sandbox();
     seedHub(sb.repo, { fs: { mcp: { command: "npx", env: { TOKEN: "${env:TOKEN}" } } } });
     const before = treeDigest(sb.home);
-    expect(project(sb, sb.repo).exitCode).toBe(0);
-    expect(project(sb, sb.repo, "--check").exitCode).toBe(0);
+    expect(project(sb, sb.repo, "--check").exitCode).toBe(1);
     expect(project(sb, sb.repo, "--explain").exitCode).toBe(0);
     expect(project(sb, sb.repo, "--dry-run").exitCode).toBe(0);
+    // Read-only modes leave the home byte-identical, state directory included.
+    expect(treeDigest(sb.home)).toBe(before);
+    expect(project(sb, sb.repo).exitCode).toBe(0);
+    expect(project(sb, sb.repo, "--check").exitCode).toBe(0);
+    // An apply run's only trace is its writer lock (never a config, ledger or grant): remove
+    // exactly that file and its directories, and the home is byte-identical again.
+    const locks = join(sb.home, ".local", "state", "agent-hub", "project-locks");
+    const lockFiles = readdirSync(locks);
+    expect(lockFiles.length).toBe(1);
+    expect(lockFiles[0]).toMatch(/^[0-9a-f]{64}\.lock$/);
+    rmSync(join(sb.home, ".local"), { recursive: true, force: true });
     expect(treeDigest(sb.home)).toBe(before);
   });
 
@@ -540,4 +551,217 @@ test("the lock entry validator accepts known names only for their kind (flyingro
   expect(validateLockEntryPath(".mcp.json", "file")).toBeNull();
   expect(validateLockEntryPath(".mcp.json", "link")).not.toBeNull();
   expect(validateLockEntryPath(".claude/skills/demo", "link")).toBeNull();
+});
+
+describe("Baker Street repairs (flyingrobots/agent-hub#11, PR flyingrobots/agent-hub#52)", () => {
+  const leakServer = (secret: string) => `${JSON.stringify({ mcp: { command: "/bin/echo", env: { API_KEY: secret } }, allowPlaintextFields: ["env.API_KEY"] })}\n`;
+  const noLeak = (sb: Sandbox, needle: string, res: { raw: string }) => {
+    expect(res.raw).not.toContain(needle);
+    const walk = (d: string): void => {
+      for (const n of readdirSync(d)) {
+        const p = join(d, n);
+        const st = lstatSync(p);
+        if (st.isDirectory()) walk(p);
+        else if (st.isFile()) expect(readFileSync(p, "utf8")).not.toContain(needle);
+      }
+    };
+    walk(sb.repo);
+  };
+
+  test("a symlinked mcp.json pointing outside the repo is refused and its secret is never written", () => {
+    const sb = sandbox();
+    seedHub(sb.repo, {});
+    const secret = "sk-live-VICTIMSECRET0123456789abcdef";
+    writeFileSync(join(sb.outside, "mcp.json"), leakServer(secret));
+    mkdirSync(join(sb.repo, ".agents", "mcp", "stolen"), { recursive: true });
+    symlinkSync(join(sb.outside, "mcp.json"), join(sb.repo, ".agents", "mcp", "stolen", "mcp.json"));
+    const res = project(sb, sb.repo);
+    expect(res.exitCode).toBe(1);
+    expect(errorCodes(res.events)).toEqual(["config"]);
+    expect(res.stderr).toContain(".agents/mcp/stolen/mcp.json");
+    for (const f of OUTPUT_FILES) expect(existsSync(join(sb.repo, f))).toBe(false);
+    noLeak(sb, secret, res);
+  });
+
+  test("a symlinked .agents/mcp directory is refused", () => {
+    const sb = sandbox();
+    seedHub(sb.repo, {});
+    rmSync(join(sb.repo, ".agents", "mcp"), { recursive: true, force: true });
+    mkdirSync(join(sb.outside, "mcp", "leak"), { recursive: true });
+    writeFileSync(join(sb.outside, "mcp", "leak", "mcp.json"), `${JSON.stringify({ mcp: { command: "/bin/echo", args: ["OUTSIDE_ARG"] } })}\n`);
+    symlinkSync(join(sb.outside, "mcp"), join(sb.repo, ".agents", "mcp"));
+    const res = project(sb, sb.repo);
+    expect(res.exitCode).toBe(1);
+    expect(errorCodes(res.events)).toEqual(["config"]);
+    noLeak(sb, "OUTSIDE_ARG", res);
+  });
+
+  test("a symlinked per-agent override file is refused", () => {
+    const sb = sandbox();
+    seedHub(sb.repo);
+    writeFileSync(join(sb.outside, "ov.json"), `${JSON.stringify({ mcp: { args: ["OUTSIDE_OVERRIDE"] } })}\n`);
+    mkdirSync(join(sb.repo, ".agents", "mcp", "fs", "cursor"));
+    symlinkSync(join(sb.outside, "ov.json"), join(sb.repo, ".agents", "mcp", "fs", "cursor", "mcp.json"));
+    const res = project(sb, sb.repo);
+    expect(res.exitCode).toBe(1);
+    expect(errorCodes(res.events)).toEqual(["config"]);
+    noLeak(sb, "OUTSIDE_OVERRIDE", res);
+  });
+
+  test("a FIFO at a hub mcp.json fails closed instead of hanging", () => {
+    const sb = sandbox();
+    seedHub(sb.repo, {});
+    mkdirSync(join(sb.repo, ".agents", "mcp", "f"), { recursive: true });
+    expect(Bun.spawnSync(["mkfifo", join(sb.repo, ".agents", "mcp", "f", "mcp.json")]).exitCode).toBe(0);
+    for (const extra of [[], ["--check"]]) {
+      const res = project(sb, sb.repo, ...extra);
+      expect(res.exitCode).toBe(1);
+      expect(errorCodes(res.events)).toEqual(["config"]);
+    }
+  }, 90_000);
+
+  test("a FIFO lockfile fails closed in a normal run and is replaced by --relock without hanging", () => {
+    const sb = sandbox();
+    seedHub(sb.repo);
+    expect(Bun.spawnSync(["mkfifo", join(sb.repo, LOCK)]).exitCode).toBe(0);
+    const res = project(sb, sb.repo);
+    expect(res.exitCode).toBe(1);
+    expect(errorCodes(res.events)).toEqual(["config"]);
+    const relock = project(sb, sb.repo, "--relock");
+    expect(relock.exitCode).toBe(0);
+    expect(lstatSync(join(sb.repo, LOCK)).isFile()).toBe(true);
+  }, 90_000);
+
+  test("a symlinked lockfile is refused by a normal run and replaced with a regular file by --relock", () => {
+    const sb = sandbox();
+    seedHub(sb.repo);
+    expect(project(sb, sb.repo).exitCode).toBe(0);
+    const lockText = readFileSync(join(sb.repo, LOCK), "utf8");
+    writeFileSync(join(sb.outside, "lock.json"), lockText);
+    rmSync(join(sb.repo, LOCK));
+    symlinkSync(join(sb.outside, "lock.json"), join(sb.repo, LOCK));
+    const res = project(sb, sb.repo);
+    expect(res.exitCode).toBe(1);
+    expect(errorCodes(res.events)).toEqual(["config"]);
+    const relock = project(sb, sb.repo, "--relock");
+    expect(relock.exitCode).toBe(0);
+    expect(lstatSync(join(sb.repo, LOCK)).isSymbolicLink()).toBe(false);
+    expect(readFileSync(join(sb.repo, LOCK), "utf8")).toBe(lockText);
+    expect(readFileSync(join(sb.outside, "lock.json"), "utf8")).toBe(lockText);
+    expect(project(sb, sb.repo, "--check").exitCode).toBe(0);
+  });
+
+  test("a git toplevel that is not an ancestor of the working directory is refused", () => {
+    const sb = sandbox();
+    seedHub(sb.repo);
+    git(sb, sb.repo, "init", "-q");
+    const victim = join(sb.outside, "victimdir");
+    seedHub(victim);
+    const victimDigest = treeDigest(sb.outside);
+    git(sb, sb.repo, "config", "core.worktree", victim);
+    const res = run(sb, ["--project"], { cwd: sb.repo, timeout: 30_000 });
+    expect(res.exitCode).toBe(1);
+    expect(errorCodes(res.events)).toEqual(["config"]);
+    expect(treeDigest(sb.outside)).toBe(victimDigest);
+    expect(existsSync(join(sb.repo, ".mcp.json"))).toBe(false);
+  });
+
+  test("prototype names are never lockfile keys", async () => {
+    const validateLockEntryPath = await validator();
+    for (const k of ["toString", "constructor", "__proto__", "hasOwnProperty", "valueOf"]) {
+      expect(validateLockEntryPath(k, "file")).not.toBeNull();
+      expect(validateLockEntryPath(k, "link")).not.toBeNull();
+    }
+    const sb = sandbox();
+    seedHub(sb.repo);
+    for (const k of ["toString", "constructor", "__proto__"]) {
+      writeFileSync(join(sb.repo, LOCK), `{"version": 1, "files": {${JSON.stringify(k)}: "sha256:${"0".repeat(64)}"}, "links": {}}\n`);
+      const res = project(sb, sb.repo);
+      expect(res.exitCode).toBe(1);
+      expect(errorCodes(res.events)).toEqual(["config"]);
+      expect(existsSync(join(sb.repo, ".mcp.json"))).toBe(false);
+    }
+  });
+
+  test("a duplicate key that would otherwise parse cleanly fails closed and is named", () => {
+    const sb = sandbox();
+    seedHub(sb.repo);
+    writeFileSync(join(sb.repo, LOCK), '{"version": 1, "files": {}, "links": {}, "links": {}}\n');
+    const res = project(sb, sb.repo);
+    expect(res.exitCode).toBe(1);
+    expect(errorCodes(res.events)).toEqual(["config"]);
+    expect(res.stderr).toContain('duplicate key "links"');
+    expect(existsSync(join(sb.repo, ".mcp.json"))).toBe(false);
+  });
+
+  test("a lock entry under a symlinked ancestor inside the repo fails closed before any output is written", () => {
+    const sb = sandbox();
+    // Cursor gets no server, so the locked .cursor/mcp.json would be a prune.
+    seedHub(sb.repo, { fs: { mcp: { command: "npx" }, overrides: { cursor: { disabled: true } } } });
+    mkdirSync(join(sb.repo, "realcursor"));
+    writeFileSync(join(sb.repo, "realcursor", "mcp.json"), '{"mcpServers": {}}\n');
+    symlinkSync("realcursor", join(sb.repo, ".cursor"));
+    writeFileSync(join(sb.repo, LOCK), `${JSON.stringify({ version: 1, files: { ".cursor/mcp.json": sha(join(sb.repo, "realcursor", "mcp.json")) }, links: {} })}\n`);
+    const res = project(sb, sb.repo);
+    expect(res.exitCode).toBe(1);
+    expect(errorCodes(res.events)).toEqual(["config"]);
+    expect(res.events.some((e) => e._schema.id === "agent_hub.op")).toBe(false);
+    for (const f of [".mcp.json", "opencode.json", ".codex", "CLAUDE.md", "AGENTS.md", ".claude"]) expect(existsSync(join(sb.repo, f))).toBe(false);
+    expect(existsSync(join(sb.repo, "realcursor", "mcp.json"))).toBe(true);
+  });
+
+  test("a destination that changes between planning and apply is not overwritten", async () => {
+    const sb = sandbox();
+    seedHub(sb.repo);
+    const { runSync } = await import("./jsonl.ts");
+    const res = runSync(
+      { project: true, hubDir: sb.repo, cwd: sb.root, homeDir: sb.home, xdgStateHome: join(sb.home, ".local", "state") },
+      { afterPlanBeforeApply: () => writeFileSync(join(sb.repo, ".mcp.json"), '{"raced": true}\n') },
+    );
+    expect(res.exitCode).toBe(1);
+    expect(res.events.filter((e) => e.id === "agent_hub.error").map((e) => e.data.code)).toEqual(["apply"]);
+    expect(readFileSync(join(sb.repo, ".mcp.json"), "utf8")).toBe('{"raced": true}\n');
+    expect(existsSync(join(sb.repo, LOCK))).toBe(false);
+  });
+
+  const caseInsensitive = (() => {
+    const d = realpathSync(mkdtempSync(join(tmpdir(), "agent-hub-case-")));
+    writeFileSync(join(d, "a"), "");
+    const ci = existsSync(join(d, "A"));
+    rmSync(d, { recursive: true, force: true });
+    return ci;
+  })();
+
+  test.skipIf(!caseInsensitive)("a case-only skill rename on a case-insensitive volume fails before writing anything", () => {
+    const sb = sandbox();
+    seedHub(sb.repo);
+    expect(project(sb, sb.repo).exitCode).toBe(0);
+    const lockText = readFileSync(join(sb.repo, LOCK), "utf8");
+    rmSync(join(sb.repo, ".claude", "skills", "demo"));
+    Bun.spawnSync(["mv", join(sb.repo, ".agents", "skills", "demo"), join(sb.repo, ".agents", "skills", "Demo")]);
+    const res = project(sb, sb.repo);
+    expect(res.exitCode).toBe(1);
+    expect(errorCodes(res.events)).toEqual(["config"]);
+    expect(readdirSync(join(sb.repo, ".claude", "skills"))).toEqual([]);
+    expect(readFileSync(join(sb.repo, LOCK), "utf8")).toBe(lockText);
+  });
+
+  test("a second project run on the same repo waits for the writer lock and writes nothing", async () => {
+    const sb = sandbox();
+    seedHub(sb.repo);
+    const { acquireApplyLock, releaseApplyLock } = await import("../src/lock.ts");
+    const { projectLockPath } = (await import("../src/project.ts" as string)) as { projectLockPath: (repo: string, home: string, xdgStateHome?: string) => string };
+    const held = acquireApplyLock(projectLockPath(sb.repo, sb.home, join(sb.home, ".local", "state")), sb.repo);
+    try {
+      const res = project(sb, sb.repo);
+      expect(res.exitCode).toBe(1);
+      expect(errorCodes(res.events)).toEqual(["lock"]);
+      expect(existsSync(join(sb.repo, ".mcp.json"))).toBe(false);
+      // Read-only modes never take the lock.
+      expect(project(sb, sb.repo, "--dry-run").exitCode).toBe(0);
+    } finally {
+      releaseApplyLock(held);
+    }
+    expect(project(sb, sb.repo).exitCode).toBe(0);
+  });
 });
