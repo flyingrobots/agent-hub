@@ -30,7 +30,7 @@ import { formatExplainBlock, formatOpSummary, opData, type OutputEvent, type Sch
 import { atomicWriteDurable, expandTilde, findDuplicateJsonKey, isPlainObject, sha256Hex } from "./paths.ts";
 import { renderCodexSection } from "./toml-edit.ts";
 import { resolveTargetScope, type AgentId, type PlannedOp, type SyncOptions, type SyncRunResult, type TargetScope } from "./types.ts";
-import { findGrant, loadGrants, vaultStateDir } from "./vault.ts";
+import { findGrant, loadGrants, realProgram, vaultStateDir } from "./vault.ts";
 
 export const LOCK_REL = ".agents/sync.lock.json";
 
@@ -441,7 +441,10 @@ export function runProjectSync(options: SyncOptions): SyncRunResult {
       try {
         const grants = loadGrants(vaultStateDir(homeDir, options.xdgStateHome ?? process.env.XDG_STATE_HOME));
         const missing = new Map<string, string>();
-        for (const v of invocations) if (!findGrant(grants, v, v.argv)) missing.set(`${v.server}\0${v.key}`, `sync-agents secret grant ${v.key} --to ${v.server} --dir ${hub}`);
+        for (const v of invocations) {
+          const program = realProgram(v.argv[0] ?? "");
+          if (!program || !findGrant(grants, v, v.argv, program, v.keep)) missing.set(`${v.server}\0${v.key}`, `sync-agents secret grant ${v.key} --to ${v.server} --dir ${hub}`);
+        }
         if (missing.size > 0) grantHint = ` ${missing.size} vault key(s) have no grant on this machine; exec refuses them until you run: ${[...missing.values()].join("; ")}`;
       } catch {
         grantHint = " The machine's vault grants could not be read; exec refuses vault keys until grants.json is fixed.";
