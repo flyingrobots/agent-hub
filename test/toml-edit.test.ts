@@ -254,3 +254,22 @@ describe("toml-edit: a UTF-8 BOM (flyingrobots/agent-hub#28)", () => {
     expect(out).toBe('﻿model = "m"\n[mcp_servers.a]\ncommand = "/new"\n');
   });
 });
+
+describe("toml-edit: control characters in values (flyingrobots/agent-hub#39)", () => {
+  test("every control character, DEL included, round-trips through a Codex rewrite", () => {
+    const all = Array.from({ length: 32 }, (_, i) => String.fromCharCode(i)).join("") + "\u007f";
+    const entry = { command: `/bin/x${all}`, args: [all], env: { K: all }, url: undefined };
+    const out = rewriteCodexToml("", new Map([["s", { command: entry.command, args: entry.args, env: entry.env }]]));
+    expect(Bun.TOML.parse(out)).toEqual({ mcp_servers: { s: { command: entry.command, args: entry.args, env: entry.env } } });
+  });
+
+  test("property: random strings survive render then parse", () => {
+    let seed = 99;
+    const rnd = () => ((seed = (Math.imul(seed, 1103515245) + 12345) >>> 0) / 0x100000000);
+    for (let i = 0; i < 500; i++) {
+      const v = Array.from({ length: Math.floor(rnd() * 20) }, () => String.fromCharCode(Math.floor(rnd() * 0x3000))).join("").replace(/[\ud800-\udfff]/g, "x");
+      const out = rewriteCodexToml("", new Map([["s", { command: "/x", env: { K: v } }]]));
+      expect((Bun.TOML.parse(out) as any).mcp_servers.s.env.K).toBe(v);
+    }
+  });
+});

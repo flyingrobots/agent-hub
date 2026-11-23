@@ -56,6 +56,7 @@ under `test/`; the documentation gate fails if a cited test does not exist.
 | MCP-TOML-16 | Cutting a table holding a 3000-line multiline string whose lines start with `#` is linear, LF and CRLF | Cut under 50 ms; trailing user comment kept | Unit | Implemented | `toml-cut.test.ts › a multiline string of 3000 #-led lines in a managed table is cut after the string, quickly, LF and CRLF` |
 | MCP-TOML-17 | A literal multiline string whose last lines start with `#` is never cut inside | Remainder byte equality | Unit | Implemented | `toml-cut.test.ts › a literal multiline string whose last lines start with # is never cut inside` |
 | MCP-TOML-18 | A UTF-8 BOM before the first table or root key is kept and does not hide a managed header | Output starts with the BOM; rewrite(BOM + doc) = BOM + rewrite(doc) over the corpus | Unit | Implemented | `toml-edit.test.ts › a BOM before the first managed header is kept, and the table is rewritten in place`, `toml-cut.test.ts › with a BOM prefix, every corpus rewrite is the BOM plus the rewrite without it (flyingrobots/agent-hub#28)` |
+| MCP-TOML-19 | Every control character, DEL included, round-trips through Codex TOML | Parsed values equal; 500-string property | Unit | Implemented | `toml-edit.test.ts › every control character, DEL included, round-trips through a Codex rewrite`, `toml-edit.test.ts › property: random strings survive render then parse` |
 
 ## Strict JSON refusals
 
