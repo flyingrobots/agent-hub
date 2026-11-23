@@ -65,11 +65,11 @@ application expands them is up to that application.
 | `codex` | `~/.codex/config.toml` `[mcp_servers.<name>]` | `command`, `args?`, `env?` | `url`, `http_headers?` | refused | `0600` |
 | `antigravity` | `~/.gemini/config/mcp_config.json` `mcpServers` | `{command, args?, env?, disabled: false}` | `{serverUrl, headers?, disabled: false}` | refused | `0644` |
 | `cursor` | `~/.cursor/mcp.json` `mcpServers` | `{type: "stdio", command, args?, env?}` | `{url, headers?}` | `{url, headers?}` | `0600` |
-| `opencode` | `~/.config/opencode/opencode.json` `mcp` | `{type: "local", command: [cmd, ...args], environment?, enabled: true}` | `{type: "remote", url, headers?, enabled: true}` | same as http | `0600` |
+| `opencode` | `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json` `mcp` | `{type: "local", command: [cmd, ...args], environment?, enabled: true}` | `{type: "remote", url, headers?, enabled: true}` | same as http | `0600` |
 
 An existing file keeps its mode. Keys outside the MCP map, and servers agent-hub does not manage,
 are preserved. A target's MCP config is planned only when its MCP root exists: `~/.claude`,
-`~/.codex`, `~/.gemini/config`, `~/.cursor` or `~/.config/opencode`.
+`~/.codex`, `~/.gemini/config`, `~/.cursor` or `${XDG_CONFIG_HOME:-~/.config}/opencode`.
 
 OpenCode's published schema still accepts servers written directly under `mcp.<name>` with
 `enabled`, but marks that layout deprecated in favor of `mcp.servers`. Moving to the newer layout
@@ -108,9 +108,8 @@ indentation: values and key order survive, other formatting does not.
 
 **A refusal stops the whole run.** Every active target is planned before anything is written, so
 no Phase 2 target or ledger change is applied, and `--check` fails too. Phase 0 recovery of an
-earlier interrupted write may still complete. For the refusals listed here the error names the
-target, the resolved `config.json` path and the remedy (the Codex editor's own refusals do not
-yet; tracked in flyingrobots/agent-hub#3): add `"<target>:mcp"` to `disabledTargets`, which leaves only
+earlier interrupted write may still complete. Every refusal listed here, including the Codex
+editor's own, names the target, the resolved `config.json` path and the remedy: add `"<target>:mcp"` to `disabledTargets`, which leaves only
 that tool's MCP config alone while its rules and skill links keep syncing. Do not strip comments
 from a tool's own config just to make `sync-agents` run.
 

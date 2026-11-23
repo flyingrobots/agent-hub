@@ -14,7 +14,7 @@ Your hub can live in its own private git repository. The runtime installs separa
 | Codex | `~/.codex/AGENTS.md`, `~/.codex/skills/` | `~/.codex/config.toml` |
 | Antigravity | `~/.gemini/GEMINI.md`, `~/.gemini/config/AGENTS.md`, `~/.gemini/skills/` | `~/.gemini/config/mcp_config.json` |
 | Cursor | `~/.cursor/AGENTS.md` (effect unverified), `~/.cursor/skills/` | `~/.cursor/mcp.json` |
-| OpenCode | `~/.config/opencode/AGENTS.md`, `~/.config/opencode/skills/` | `~/.config/opencode/opencode.json` |
+| OpenCode | `${XDG_CONFIG_HOME:-~/.config}/opencode/AGENTS.md`, `…/opencode/skills/` | `…/opencode/opencode.json` |
 
 `sync-agents` only changes what its ownership ledger says it owns, plans every change before
 writing any, and recovers from interruption. The full model is in the

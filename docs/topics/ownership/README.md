@@ -6,8 +6,8 @@ model. Contracts are tracked in [test-plan.md](test-plan.md).
 
 ## The ownership ledger
 
-Machine-local state lives under `${XDG_STATE_HOME:-$HOME/.local/state}/agent-hub/`, never in the
-hub, so the hub can live in its own git repository:
+Machine-local state lives under `${XDG_STATE_HOME:-$HOME/.local/state}/agent-hub/` (a relative
+`XDG_STATE_HOME` is ignored), never in the hub, so the hub can live in its own git repository:
 
 | File | Contents |
 | --- | --- |

@@ -35,5 +35,10 @@ jobs:
       - name: TypeScript typecheck
         run: bun run typecheck
 
+      # Nonexistent XDG values make any test that falls back to the runner's real environment
+      # (instead of its sandbox) fail here rather than silently touch the runner's home.
       - name: Run native Bun test suite
+        env:
+          XDG_CONFIG_HOME: /nonexistent/xdg-config
+          XDG_STATE_HOME: /nonexistent/xdg-state
         run: bun test

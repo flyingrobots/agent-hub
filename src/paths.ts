@@ -135,6 +135,18 @@ export function findDuplicateJsonKey(text: string): { key: string; path: string 
   return null;
 }
 
+/**
+ * The physical identity of a destination path: its parent directory resolved through symlinks
+ * (deepest existing ancestor), joined with its own name, which is not resolved, because the
+ * destination itself may be a symlink that sync-agents manages. Two spellings of one location
+ * (a symlinked ~/.config, an aliased HOME) have the same physical path.
+ */
+export function physicalPath(p: string): string {
+  const parent = dirname(p);
+  if (parent === p) return p;
+  return join(canonicalizeHubPath(parent, "/", "/"), p.slice(parent.length === 1 ? 1 : parent.length + 1));
+}
+
 export function expandTilde(rawPath: string, homeDir: string): string {
   if (rawPath === "~") return homeDir;
   if (rawPath.startsWith("~/")) return join(homeDir, rawPath.slice(2));

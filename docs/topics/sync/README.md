@@ -56,10 +56,10 @@ point at the same place. `sync-agents --print-dir` prints the resolved hub.
 | `codex` | `~/.codex/AGENTS.md` | `~/.codex/skills/<name>` | `~/.codex/config.toml` (`[mcp_servers.*]`) |
 | `antigravity` | `~/.gemini/GEMINI.md` and `~/.gemini/config/AGENTS.md` | `~/.gemini/skills/<name>` | `~/.gemini/config/mcp_config.json` (`mcpServers`) |
 | `cursor` | `~/.cursor/AGENTS.md` | `~/.cursor/skills/<name>` | `~/.cursor/mcp.json` (`mcpServers`) |
-| `opencode` | `~/.config/opencode/AGENTS.md` | `~/.config/opencode/skills/<name>` | `~/.config/opencode/opencode.json` (`mcp`) |
+| `opencode` | `<oc>/AGENTS.md` | `<oc>/skills/<name>` | `<oc>/opencode.json` (`mcp`) |
 
 A target is synced only when its root directory (`~/.claude`, `~/.codex`, `~/.gemini`,
-`~/.cursor`, `~/.config/opencode`) exists. Antigravity's `~/.gemini/config/AGENTS.md` link and
+`~/.cursor`, `<oc>`) exists. `<oc>` is `${XDG_CONFIG_HOME:-~/.config}/opencode`, where OpenCode itself reads its global config. Antigravity's `~/.gemini/config/AGENTS.md` link and
 its MCP config additionally need `~/.gemini/config`. Cursor reads global rules from its settings, so the
 effect of `~/.cursor/AGENTS.md` is unverified. Gemini CLI's `~/.gemini/settings.json` is not a
 target.
@@ -89,7 +89,8 @@ domain suffix: `opencode:mcp`, `cursor:links`.
 - **`--targets <csv>`** (or `--targets=<csv>`) picks the selectors for one run of sync,
   `--check`, `--dry-run` or `--explain`, for example `--targets claude,opencode:links`. An
   unknown selector exits `2`. An explicit `--targets` list **replaces** `disabledTargets` for
-  that run: `--targets cursor` acts on Cursor even when `"cursor"` is disabled.
+  that run: `--targets cursor` acts on Cursor even when `"cursor"` is disabled. Give `--targets`
+  once; repeating it exits `2`.
 
 A run never plans changes for an excluded target or domain:
 
@@ -99,12 +100,21 @@ A run never plans changes for an excluded target or domain:
 - When the target is active again, the next run catches it up, including any prunes it missed.
 - The one exception is Phase 0 recovery, which acts on `sync-agents`' own interrupted write
   whatever its target (see [Write-ahead recovery](../ownership/README.md#write-ahead-recovery)).
-- `--disown-legacy` naming an excluded target currently does nothing and says nothing; tracked
-  in flyingrobots/agent-hub#3.
+- `--disown-legacy <target>:<name>` needs that target's MCP domain in scope; otherwise the run
+  exits `2` and names the selector to add.
 
 A link is attributed to a target only when its path is exactly that target's rules file or a
-direct child of its skills directory under the current `HOME`. A scoped run keeps any record it
-cannot attribute, such as one written under a different `HOME`.
+direct child of its skills directory under the current `HOME` (for OpenCode, under the current
+XDG config base). A scoped run keeps any record it cannot attribute, such as one written under a
+different `HOME` or `XDG_CONFIG_HOME`.
+
+`XDG_CONFIG_HOME` is used only when it is an absolute path, as the XDG spec requires. Ownership
+is decided by physical location, not spelling: a link or MCP entry recorded under one spelling of
+a directory (a symlinked `~/.config`, a `HOME` reached through a symlink) is recognized under any
+other while that spelling still resolves, so switching between such spellings causes no
+conflict, duplicate or prune. If a recorded spelling stops resolving (for example a `HOME` alias
+symlink is removed), its records no longer match: the run reports conflicts (and may describe
+MCP records as moved) and changes nothing; `--adopt` then records the current spelling.
 
 ## Installing skills
 
@@ -122,8 +132,8 @@ directory first. Symlinks that escape the skill, absolute symlinks and cycles ar
 
 Earlier versions compiled MCP servers only for Claude, Codex and Antigravity, though they already
 linked rules and skills into `~/.cursor` and `~/.config/opencode`. After upgrading, the first
-unscoped run also writes hub MCP servers into `~/.cursor/mcp.json` and
-`~/.config/opencode/opencode.json`, and `--check` reports that as pending work until it happens.
+unscoped run also writes hub MCP servers into `~/.cursor/mcp.json` and `<oc>/opencode.json`, and
+`--check` reports that as pending work until it happens.
 The strict JSON refusals and `config.json` validation are also new, and apply to every target.
 
 That run applies no Phase 2 change if either file has a personal server with the same name as a
@@ -131,3 +141,21 @@ hub server, or if either config is refused (see
 [strict JSON refusals](../mcp/README.md#strict-json-refusals)). To leave Cursor's and OpenCode's
 MCP configs untouched, as before, set `"disabledTargets": ["cursor:mcp", "opencode:mcp"]` before
 the first run.
+
+### If you set `XDG_CONFIG_HOME`
+
+Earlier versions always used `~/.config/opencode`, even when `XDG_CONFIG_HOME` pointed elsewhere,
+so OpenCode never read what they wrote. Now `<oc>` is `$XDG_CONFIG_HOME/opencode`. On the first
+unscoped run after upgrading:
+
+- **Links.** The old rules and skill links under `~/.config/opencode` are pruned (they are
+  `sync-agents`' own symlinks) and created under `<oc>`. A scoped run keeps the old links until
+  an unscoped run, because it cannot attribute them to OpenCode any more.
+- **MCP entries.** Hub servers are written into `<oc>/opencode.json`. The ownership records for
+  the servers written into `~/.config/opencode/opencode.json` are retired (`retire-moved-record`
+  in `--dry-run`), and that old file is **left untouched**: remove its entries by hand if you no
+  longer want them. A record never claims a same-named entry in the new file. If
+  `<oc>/opencode.json` already has a server with a hub server's name, the run stops as a
+  conflict; pass `--adopt` if it is identical, or rename one of them.
+
+Run `sync-agents --dry-run` first to see each of these before anything is written.

@@ -14,9 +14,9 @@ Run `sync-agents --print-dir` to confirm the canonical resolved hub path.
 ## Golden Rule
 
 1. **Always edit inside the canonical hub (`~/.agents/`)** — never edit per-agent synced targets directly:
-   - Instructions symlinks: `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, `~/.gemini/config/AGENTS.md`, `~/.config/opencode/AGENTS.md`, `~/.cursor/AGENTS.md` *(unverified)*
-   - Per-skill symlinks: `~/.claude/skills/<name>`, `~/.codex/skills/<name>`, `~/.gemini/skills/<name>`, `~/.config/opencode/skills/<name>`, `~/.cursor/skills/<name>`
-   - Compiled MCP entries: `~/.gemini/config/mcp_config.json` (`antigravity`), `mcpServers` in `~/.claude.json` (`claude`), `[mcp_servers.*]` in `~/.codex/config.toml` (`codex`), `mcpServers` in `~/.cursor/mcp.json` (`cursor`), `mcp` in `~/.config/opencode/opencode.json` (`opencode`)
+   - Instructions symlinks: `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`, `~/.gemini/GEMINI.md`, `~/.gemini/config/AGENTS.md`, `${XDG_CONFIG_HOME:-~/.config}/opencode/AGENTS.md`, `~/.cursor/AGENTS.md` *(unverified)*
+   - Per-skill symlinks: `~/.claude/skills/<name>`, `~/.codex/skills/<name>`, `~/.gemini/skills/<name>`, `${XDG_CONFIG_HOME:-~/.config}/opencode/skills/<name>`, `~/.cursor/skills/<name>`
+   - Compiled MCP entries: `~/.gemini/config/mcp_config.json` (`antigravity`), `mcpServers` in `~/.claude.json` (`claude`), `[mcp_servers.*]` in `~/.codex/config.toml` (`codex`), `mcpServers` in `~/.cursor/mcp.json` (`cursor`), `mcp` in `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json` (`opencode`)
 2. **Always finish with `sync-agents` and verify with `sync-agents --check`.**
 
 ---
@@ -148,7 +148,7 @@ Edit `<hub>/AGENTS.md` directly. Run `sync-agents --check` to confirm all manage
 | `sync-agents --adopt` | Adopt unmanaged identical symlinks/MCP entries or strictly equivalent files/dirs (checks `.git`, bytes, mode bits, owner/group, raw xattr values, ACLs) |
 | `sync-agents --force-skill` | Allow `--skill` to replace differing canonical skill(s) ONLY |
 | `sync-agents --force` (`-f`) | Allow replacing differing canonical skills, unmanaged/modified symlinks, and differing/disabled unmanaged MCP entries |
-| `sync-agents --disown-legacy <agent>:<name>` | Retire an unverified legacy v1 claim without modifying the target config |
+| `sync-agents --disown-legacy <agent>:<name>` | Retire an unverified legacy v1 claim without modifying the target config. That agent's MCP domain must be in scope, and it cannot be combined with `--skill-only`; otherwise exit `2` |
 
 **Safety rule on conflicts:** `sync-agents` fails closed before Phase 2 when any conflict is detected (reporting any Phase 0 recovery separately). Always run `sync-agents --explain` before using `--adopt`, `--force-skill`, or `--force`.
 
@@ -156,11 +156,11 @@ Edit `<hub>/AGENTS.md` directly. Run `sync-agents --check` to confirm all manage
 
 - **Selectors:** a target name (`antigravity`, `claude`, `codex`, `cursor`, `opencode`) means both of its domains; `<name>:mcp` means only its MCP config file; `<name>:links` means only its rules and skill symlinks.
 - **`disabledTargets`** lives in `${XDG_CONFIG_HOME:-~/.config}/agent-hub/config.json` as an array of selectors: `{ "disabledTargets": ["cursor", "opencode:mcp"] }`. An unknown selector or non-array value makes every run exit `1`.
-- **`--targets <csv>`** / **`--targets=<csv>`** picks selectors for one run (sync, `--check`, `--dry-run`, `--explain`); an unknown selector exits `2`. It **replaces** `disabledTargets` for that run.
+- **`--targets <csv>`** / **`--targets=<csv>`** picks selectors for one run (sync, `--check`, `--dry-run`, `--explain`); an unknown selector exits `2`. Give it once; a repeated `--targets` exits `2`. It **replaces** `disabledTargets` for that run.
 - **Excluded targets are never planned.** What agent-hub placed there earlier stays; hub removals stop reaching them until the target is active again. (Phase 0 recovery still finishes agent-hub's own interrupted write on any target.) `--check` covers active targets plus any pending recovery journal. When a user asks to stop syncing a tool, add it to `disabledTargets`; do not delete its links or entries unless they ask for that too.
 
 ### Strict JSON refusals
 
-The four JSON adapters (`antigravity`, `claude`, `cursor`, `opencode`) refuse a target config when a `.jsonc` sibling exists (e.g. `~/.config/opencode/opencode.jsonc`), or when the `.json` has comments, trailing commas, or a key repeated in one object. **A refusal stops the whole run**: no Phase 2 target or ledger change is applied. The error names the target, the resolved `config.json` path, and the remedy.
+The four JSON adapters (`antigravity`, `claude`, `cursor`, `opencode`) refuse a target config when a `.jsonc` sibling exists (e.g. `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.jsonc`), or when the `.json` has comments, trailing commas, or a key repeated in one object. **A refusal stops the whole run**: no Phase 2 target or ledger change is applied. The error names the target, the resolved `config.json` path, and the remedy.
 
 When you hit one: tell the user which file was refused and why, then offer to add `"<target>:mcp"` to `disabledTargets`, which leaves only that tool's MCP config alone and keeps its rules and skills syncing. **Never edit, rename, reformat, or strip comments from the user's `.jsonc`/`.json` yourself, and never reach for `--force`, unless the user explicitly asks.** The same goes for a `[conflict]` on a personal MCP entry in one tool's config: excluding that target is the non-destructive way to sync the rest.

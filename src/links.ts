@@ -12,8 +12,9 @@ import {
   unlinkSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { LINK_TARGETS, resolveLinkTargetId } from "./adapters.ts";
+import { LINK_TARGETS, linkTargetRoot, resolveLinkTargetId } from "./adapters.ts";
 import {
+  physicalPath,
   captureSymlinkOrAbsentSnapshot,
   captureTreeSnapshot,
   checkAdoptionEquivalence,
@@ -49,6 +50,7 @@ export type LinkActionKind =
   | "adopt-symlink"
   | "link-prune"
   | "drop-absent-link"
+  | "drop-duplicate-record"
   | "conflict";
 
 export type PlannedLinkOp = {
@@ -462,7 +464,7 @@ function planPruneLinkOp(dst: string, rec: ManagedLinkRecord): PlannedLinkOp {
         observed: `managed symlink -> ${rec.target}`,
         intended: "remove stale managed symlink",
         ownershipBasis: rec.basis,
-        reason: "canonical source was removed and destination matches recorded managed target",
+        reason: "no longer a desired link (its canonical source was removed, or its target root moved) and destination matches recorded managed target",
         targetMutation: true,
         ledgerMutation: true,
       },
@@ -503,8 +505,11 @@ export function planLinkSync(
     force: boolean;
     activeTargets?: ReadonlySet<AgentId>;
     plannedSkillSources?: Map<string, string>;
+    /** XDG config base (`$XDG_CONFIG_HOME` or `~/.config`); defaults to `~/.config`. */
+    configBase?: string;
   },
 ): PlannedLinkOp[] {
+  const configBase = opts.configBase ?? join(homeDir, ".config");
   const plans: PlannedLinkOp[] = [];
   const canonicalRules = join(canonicalHubPath, "AGENTS.md");
   const canonicalSkills = join(canonicalHubPath, "skills");
@@ -518,7 +523,7 @@ export function planLinkSync(
 
   for (const target of LINK_TARGETS) {
     if (opts.activeTargets && !opts.activeTargets.has(target.targetId)) continue;
-    const rootDir = join(homeDir, target.rootRel);
+    const rootDir = linkTargetRoot(target, homeDir, configBase);
     if (!existsSync(rootDir) || !statSync(rootDir).isDirectory()) continue;
 
     if (target.rulesRel && hasRules) {
@@ -538,12 +543,66 @@ export function planLinkSync(
     }
   }
 
+  // Ownership is decided by physical path: when a desired destination is already recorded under
+  // another spelling of the same location (a symlinked ~/.config, an aliased HOME), plan against
+  // the recorded spelling, so it is neither duplicated, nor reported as an unmanaged conflict,
+  // nor pruned as stale.
+  // Group records by physical path. Two spellings of one destination (left by an older version
+  // run under an aliased HOME) keep one record, preferring the spelling desired now; the others
+  // are retired ledger-only, so the same symlink is never pruned twice.
+  const desiredSpellings = new Set(desired.keys());
+  const byPhysical = new Map<string, string[]>();
+  for (const key of Object.keys(state.links).sort()) {
+    const phys = physicalPath(key);
+    byPhysical.set(phys, [...(byPhysical.get(phys) ?? []), key]);
+  }
+  const recordedByPhysical = new Map<string, string>();
+  const duplicateKeys = new Set<string>();
+  for (const [phys, keys] of byPhysical) {
+    const primary = keys.find((k) => desiredSpellings.has(k)) ?? keys[0]!;
+    recordedByPhysical.set(phys, primary);
+    for (const k of keys) if (k !== primary) duplicateKeys.add(k);
+  }
+  const scoped = opts.activeTargets !== undefined && opts.activeTargets.size < ALL_AGENTS.length;
+  for (const dup of [...duplicateKeys].sort()) {
+    // A scoped run only retires duplicates it can attribute to an active target; the others are
+    // kept untouched (and are skipped by the prune loop below), like any excluded target's record.
+    if (scoped) {
+      const primary = recordedByPhysical.get(physicalPath(dup))!;
+      const owner =
+        resolveLinkTargetId(primary, homeDir, configBase) ?? resolveLinkTargetId(dup, homeDir, configBase);
+      if (owner === null || !opts.activeTargets!.has(owner)) continue;
+    }
+    const rec = state.links[dup]!;
+    plans.push({
+      actionKind: "drop-duplicate-record",
+      linkKind: rec.kind,
+      dst: dup,
+      beforeSnapshot: { kind: "absent" },
+      op: {
+        domain: "link",
+        action: "drop-duplicate-record",
+        status: "change",
+        destination: dup,
+        observed: `second ownership record for ${recordedByPhysical.get(physicalPath(dup))} under another spelling`,
+        intended: "remove the duplicate record from the ownership ledger; the link itself is unchanged",
+        ownershipBasis: rec.basis,
+        reason: "two ledger records name the same physical destination",
+        targetMutation: false,
+        ledgerMutation: true,
+      },
+    });
+  }
+  const desiredPhysical = new Set<string>();
   for (const dst of [...desired.keys()].sort()) {
     const entry = desired.get(dst)!;
+    const phys = physicalPath(dst);
+    desiredPhysical.add(phys);
+    const recordedKey = state.links[dst] ? dst : (recordedByPhysical.get(phys) ?? dst);
     const stagedSrcDir =
       entry.skillName !== undefined ? opts.plannedSkillSources?.get(entry.skillName) : undefined;
     plans.push(
-      planDesiredLinkOp(dst, entry.src, entry.kind, stagedSrcDir, state.links[dst], opts),
+      planDesiredLinkOp(recordedKey, entry.src, entry.kind, stagedSrcDir, state.links[recordedKey], opts),
     );
   }
 
@@ -551,9 +610,9 @@ export function planLinkSync(
   // Untargeted adapters are never pruned. A record whose owner cannot be resolved under the
   // current HOME is kept too: a restricted run cannot prove it belongs to an active target.
   for (const dst of Object.keys(state.links).sort()) {
-    if (desired.has(dst)) continue;
+    if (duplicateKeys.has(dst) || desired.has(dst) || desiredPhysical.has(physicalPath(dst))) continue;
     if (opts.activeTargets && opts.activeTargets.size < ALL_AGENTS.length) {
-      const ownerTarget = resolveLinkTargetId(dst, homeDir);
+      const ownerTarget = resolveLinkTargetId(dst, homeDir, configBase);
       if (ownerTarget === null || !opts.activeTargets.has(ownerTarget)) continue;
     }
     plans.push(planPruneLinkOp(dst, state.links[dst]!));
@@ -616,6 +675,14 @@ export function applyLinkOp(
       destination: plan.dst,
       record: rec,
     });
+    saveOwnershipState(statePath, nextState);
+    return nextState;
+  }
+
+  if (plan.actionKind === "drop-duplicate-record") {
+    // Ledger-only: the destination is owned through another record of the same physical path.
+    hooks?.beforeLedgerOnlyCommit?.(`drop-duplicate-record ${plan.dst}`);
+    const nextState = applyStateDelta(state, { kind: "link-delete", destination: plan.dst });
     saveOwnershipState(statePath, nextState);
     return nextState;
   }

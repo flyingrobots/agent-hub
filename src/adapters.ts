@@ -3,13 +3,15 @@
  * Consolidates per-agent paths, default file modes, transport capabilities,
  * compilation rules, and comparable normalizers.
  */
-import { join, sep } from "node:path";
+import { isAbsolute, join, sep } from "node:path";
 import { isPlainObject } from "./paths.ts";
 import { normalizeCodexComparable } from "./toml-edit.ts";
 import type { AgentId, McpServerSpec, McpTransport } from "./types.ts";
 
 export type LinkTargetDef = {
   readonly targetId: AgentId;
+  /** Root relative to HOME, or to the XDG config base (`$XDG_CONFIG_HOME` or `~/.config`). */
+  readonly base?: "home" | "config";
   readonly rootRel: string;
   readonly rulesRel: string | null;
   readonly skillsRel: string | null;
@@ -20,12 +22,30 @@ export const LINK_TARGETS: readonly LinkTargetDef[] = [
   { targetId: "claude", rootRel: ".claude", rulesRel: "CLAUDE.md", skillsRel: "skills" },
   { targetId: "antigravity", rootRel: ".gemini", rulesRel: "GEMINI.md", skillsRel: "skills" },
   { targetId: "antigravity", rootRel: ".gemini/config", rulesRel: "AGENTS.md", skillsRel: null },
-  { targetId: "opencode", rootRel: ".config/opencode", rulesRel: "AGENTS.md", skillsRel: "skills" },
+  // OpenCode roots its global config at ${XDG_CONFIG_HOME:-~/.config}/opencode
+  // (anomalyco/opencode packages/util/src/global-roots.ts).
+  { targetId: "opencode", base: "config", rootRel: "opencode", rulesRel: "AGENTS.md", skillsRel: "skills" },
   { targetId: "cursor", rootRel: ".cursor", rulesRel: "AGENTS.md", skillsRel: "skills" },
 ] as const;
 
 /**
- * Determine which target owns a recorded link destination under the current HOME, so a
+ * The XDG config base: `$XDG_CONFIG_HOME` when it is an absolute path, else `~/.config`. A relative
+ * value is ignored, as the XDG Base Directory spec requires. The value is used as spelled; two
+ * spellings of one directory (a symlinked `~/.config`, an aliased HOME) are reconciled where
+ * ownership is decided, by comparing physical paths (see physicalPath).
+ */
+export function xdgConfigBase(homeDir: string, xdgConfigHome?: string): string {
+  if (xdgConfigHome && isAbsolute(xdgConfigHome)) return xdgConfigHome;
+  return join(homeDir, ".config");
+}
+
+/** Absolute root directory of a link target. */
+export function linkTargetRoot(target: LinkTargetDef, homeDir: string, configBase: string): string {
+  return join(target.base === "config" ? configBase : homeDir, target.rootRel);
+}
+
+/**
+ * Determine which target owns a recorded link destination under the current HOME (OpenCode: under the current XDG config base), so a
  * scoped run never prunes an excluded target's links.
  *
  * Ownership is recognized only for an exact layout path: a target's rules file
@@ -36,9 +56,13 @@ export const LINK_TARGETS: readonly LinkTargetDef[] = [
  * basename, an exact layout match is unambiguous. Anything else returns null, and scoped runs
  * keep records they cannot attribute.
  */
-export function resolveLinkTargetId(dstPath: string, homeDir: string): AgentId | null {
+export function resolveLinkTargetId(
+  dstPath: string,
+  homeDir: string,
+  configBase: string = join(homeDir, ".config"),
+): AgentId | null {
   for (const target of LINK_TARGETS) {
-    const rootAbs = join(homeDir, target.rootRel);
+    const rootAbs = linkTargetRoot(target, homeDir, configBase);
     if (target.rulesRel && dstPath === join(rootAbs, target.rulesRel)) return target.targetId;
     if (target.skillsRel) {
       const skillsAbs = join(rootAbs, target.skillsRel);
@@ -56,8 +80,8 @@ export type McpAdapterDef = {
   readonly rootKey?: "mcpServers" | "mcp";
   readonly defaultMode: number;
   readonly supportedTransports: readonly McpTransport[];
-  readonly rootDir: (homeDir: string) => string;
-  readonly configPath: (homeDir: string) => string;
+  readonly rootDir: (homeDir: string, configBase: string) => string;
+  readonly configPath: (homeDir: string, configBase: string) => string;
   readonly compile: (
     transport: McpTransport,
     spec: McpServerSpec,
@@ -233,8 +257,8 @@ export const MCP_ADAPTERS: readonly McpAdapterDef[] = [
     rootKey: "mcp",
     defaultMode: 0o600,
     supportedTransports: ["stdio", "http", "sse"],
-    rootDir: (homeDir) => join(homeDir, ".config", "opencode"),
-    configPath: (homeDir) => join(homeDir, ".config", "opencode", "opencode.json"),
+    rootDir: (_homeDir, configBase) => join(configBase, "opencode"),
+    configPath: (_homeDir, configBase) => join(configBase, "opencode", "opencode.json"),
     compile(transport, spec) {
       if (transport === "stdio") {
         const out: Record<string, unknown> = {

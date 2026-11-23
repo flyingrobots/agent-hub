@@ -1,5 +1,5 @@
 import { existsSync, lstatSync, renameSync, rmSync, symlinkSync, unlinkSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import {
   atomicWriteDurable,
   captureFileSnapshot,
@@ -208,7 +208,9 @@ export function getStatePaths(
   xdgStateHome?: string,
 ): StatePaths {
   const base =
-    xdgStateHome && xdgStateHome.length > 0 ? xdgStateHome : join(homeDir, ".local", "state");
+    // A relative XDG_STATE_HOME is ignored, as the XDG spec requires (it would put the ledger
+    // relative to whatever directory a run starts in).
+    xdgStateHome && isAbsolute(xdgStateHome) ? xdgStateHome : join(homeDir, ".local", "state");
   const stateDir = join(base, "agent-hub");
   const hubHash = sha256Hex(canonicalHubPath).slice(0, 16);
   return {

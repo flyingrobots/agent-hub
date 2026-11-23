@@ -11,8 +11,8 @@ changes are called out under **Changed** with what to do.
 ### Added
 
 - Cursor (`~/.cursor/mcp.json`, `~/.cursor/skills/`) and OpenCode
-  (`~/.config/opencode/opencode.json`, `~/.config/opencode/skills/`,
-  `~/.config/opencode/AGENTS.md`) MCP adapters, compiling `stdio`, `http` and
+  (`${XDG_CONFIG_HOME:-~/.config}/opencode/` `opencode.json`, `skills/`, `AGENTS.md`)
+  MCP adapters, compiling `stdio`, `http` and
   `sse` servers.
 - Target scoping: `--targets <csv>` for one run and `"disabledTargets"` in
   `agent-hub/config.json` by default. A selector is a target name or one of its
@@ -28,6 +28,20 @@ changes are called out under **Changed** with what to do.
 
 ### Changed
 
+- OpenCode's rules, skills and `opencode.json` live under
+  `${XDG_CONFIG_HOME:-~/.config}/opencode`, matching OpenCode itself. If you set an absolute
+  `XDG_CONFIG_HOME`, the first unscoped sync after upgrading moves the links there, writes hub
+  servers into the new `opencode.json` (a same-named entry already there stops the run as a
+  conflict; use `--adopt` if identical), and retires the records for the old
+  `~/.config/opencode/opencode.json` without editing it: remove its entries by hand if unwanted.
+  Run `sync-agents --dry-run` first. A relative `XDG_CONFIG_HOME` or `XDG_STATE_HOME` is now ignored, per the XDG spec.
+- Link and MCP ownership is compared by physical location, so a symlinked `~/.config` or an
+  aliased `HOME` no longer turns into conflicts, duplicates or prunes while the recorded spelling
+  still resolves; duplicate records for one link are retired (`drop-duplicate-record`).
+- MCP ownership records apply only to the config file they were written for; a record for a
+  moved file can no longer claim, overwrite or prune a same-named entry in the new file.
+- `--disown-legacy` for a target whose MCP domain is out of scope, and a repeated
+  `--targets`, now exit 2 instead of being silently ignored.
 - Upgrading from a three-target build: the first unscoped run also writes hub MCP
   servers into Cursor and OpenCode configs where those directories exist. Set
   `"disabledTargets": ["cursor:mcp", "opencode:mcp"]` first to leave those two MCP
@@ -39,6 +53,8 @@ changes are called out under **Changed** with what to do.
 
 ### Fixed
 
+- `src/cli.ts --print-dir` ignored a valid `agentsDir` when `disabledTargets` was
+  invalid. Codex editor refusals now carry the `codex:mcp` remedy.
 - The Codex TOML editor no longer deletes a comment that sits between a managed
   `[mcp_servers.<name>]` table and the next table, and an updated table stays where
   it was instead of moving to the end of the file (flyingrobots/agent-hub#15).
