@@ -65,15 +65,24 @@ application expands them is up to that application.
 | `codex` | `~/.codex/config.toml` `[mcp_servers.<name>]` | `command`, `args?`, `env?` | `url`, `http_headers?` | refused | `0600` |
 | `antigravity` | `~/.gemini/config/mcp_config.json` `mcpServers` | `{command, args?, env?, disabled: false}` | `{serverUrl, headers?, disabled: false}` | refused | `0644` |
 | `cursor` | `~/.cursor/mcp.json` `mcpServers` | `{type: "stdio", command, args?, env?}` | `{url, headers?}` | `{url, headers?}` | `0600` |
-| `opencode` | `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json` `mcp` | `{type: "local", command: [cmd, ...args], environment?, enabled: true}` | `{type: "remote", url, headers?, enabled: true}` | same as http | `0600` |
+| `opencode` | `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json` `mcp.servers` | `{type: "local", command: [cmd, ...args], environment?}` | `{type: "remote", url, headers?}` | same as http | `0600` |
 
 An existing file keeps its mode. Keys outside the MCP map, and servers agent-hub does not manage,
 are preserved. A target's MCP config is planned only when its MCP root exists: `~/.claude`,
 `~/.codex`, `~/.gemini/config`, `~/.cursor` or `${XDG_CONFIG_HOME:-~/.config}/opencode`.
 
-OpenCode's published schema still accepts servers written directly under `mcp.<name>` with
-`enabled`, but marks that layout deprecated in favor of `mcp.servers`. Moving to the newer layout
-is tracked in flyingrobots/agent-hub#13.
+OpenCode entries use its current layout, `mcp.servers.<name>` (see its schema at
+`https://opencode.ai/config.json`). Everything else under `mcp`, such as `mcp.timeout`, is kept.
+Entries in the previous layout, directly under `mcp.<name>`:
+
+- one that `sync-agents` wrote, and that is unchanged since (its ledger digest matches), is
+  moved to `mcp.servers.<name>` (`mcp-migrate-layout` in `--dry-run`);
+- one that it did not write, or that was edited, and that has a hub server's name, stops the
+  run as a conflict; rename or remove it by hand;
+- any other is left where it is.
+
+The hub server names `servers` and `timeout` are refused for OpenCode, because those keys are
+OpenCode's own; disable the server for OpenCode or rename it.
 
 ### Codex TOML editing
 

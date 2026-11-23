@@ -133,17 +133,16 @@ describe("Phase 1: Cursor & OpenCode adapters, --targets/disabledTargets, and un
     const ocCfg = JSON.parse(readFileSync(ocPath, "utf8"));
     expect(ocCfg.$schema).toBe("https://opencode.ai/config.json");
     expect(ocCfg.model).toBe("claude-sonnet");
-    expect(ocCfg.mcp["local-srv"]).toEqual({
+    // OpenCode's current layout: mcp.servers, no `enabled` flag (flyingrobots/agent-hub#13).
+    expect(ocCfg.mcp.servers["local-srv"]).toEqual({
       type: "local",
       command: ["/usr/bin/local-srv", "--flag"],
       environment: { BASE: "1", OC: "yes" },
-      enabled: true,
     });
-    expect(ocCfg.mcp["sse-srv"]).toEqual({
+    expect(ocCfg.mcp.servers["sse-srv"]).toEqual({
       type: "remote",
       url: "https://example.invalid/sse",
       headers: { "X-Client": "agent-hub" },
-      enabled: true,
     });
     expect(statSync(ocPath).mode & 0o777).toBe(0o600);
 
@@ -155,7 +154,7 @@ describe("Phase 1: Cursor & OpenCode adapters, --targets/disabledTargets, and un
     rmSync(join(hub, "mcp", "sse-srv"), { recursive: true, force: true });
     expect(runCmd([SYNC_BIN], env).exitCode).toBe(0);
     expect(JSON.parse(readFileSync(cursorPath, "utf8")).mcpServers).toEqual({});
-    expect(JSON.parse(readFileSync(ocPath, "utf8")).mcp).toEqual({});
+    expect(JSON.parse(readFileSync(ocPath, "utf8")).mcp).toEqual({ servers: {} });
     expect(runCmd([SYNC_BIN, "--check"], env).exitCode).toBe(0);
   });
 
@@ -433,11 +432,10 @@ describe("Baker Street round 1 repairs (PR #2)", () => {
       headers: { "X-K": "v" },
     });
     const oc = JSON.parse(readFileSync(join(home, ".config", "opencode", "opencode.json"), "utf8"));
-    expect(oc.mcp["remote-srv"]).toEqual({
+    expect(oc.mcp.servers["remote-srv"]).toEqual({
       type: "remote",
       url: "https://api.example.invalid/mcp",
       headers: { "X-K": "v" },
-      enabled: true,
     });
   });
 
