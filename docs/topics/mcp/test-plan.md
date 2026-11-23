@@ -47,6 +47,9 @@ under `test/`; the documentation gate fails if a cited test does not exist.
 | MCP-TOML-12 | A multiline string whose last line starts with `#` is cut with its table; no stale fragment remains | Fragment absent; following comment present | Unit | Implemented | `toml-edit.test.ts › a multiline string whose last line starts with # is cut with its section, leaking no stale value` |
 | MCP-TOML-13 | A trailing comment that mentions `"""` or `'''` survives update and prune | Comment text present | Unit | Implemented | `toml-edit.test.ts › a trailing comment that mentions triple quotes survives update and prune` |
 | MCP-TOML-14 | Repeated rewrites of a mid-file server with `env` or `http_headers` subtables are byte-stable | Second rewrite byte-equal to first; no blank-line growth | Unit | Implemented | `toml-edit.test.ts › repeated rewrites of a mid-file server with env and http_headers subtables are byte-stable` |
+| MCP-TOML-15 | A managed table is cut after its last token as the scanner reads it, identical to the previous parse-equivalence search, with no whole-span fallbacks on valid documents | Cut equality per section over PR #16 fuzz seeds 1-3; fallback count 0 | Unit | Implemented | `toml-cut.test.ts › cuts match the previous parse-equivalence search on the PR #16 fuzz corpus (seeds 1-3) with zero fallbacks` |
+| MCP-TOML-16 | Cutting a table holding a 3000-line multiline string whose lines start with `#` is linear, LF and CRLF | Cut under 50 ms; trailing user comment kept | Unit | Implemented | `toml-cut.test.ts › a multiline string of 3000 #-led lines in a managed table is cut after the string, quickly, LF and CRLF` |
+| MCP-TOML-17 | A literal multiline string whose last lines start with `#` is never cut inside | Remainder byte equality | Unit | Implemented | `toml-cut.test.ts › a literal multiline string whose last lines start with # is never cut inside` |
 
 ## Strict JSON refusals
 
