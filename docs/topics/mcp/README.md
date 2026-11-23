@@ -145,8 +145,14 @@ and not a read-only run that stops on a pending recovery), `sync-agents` prints 
 `agent_hub.warning` line per field, before the run's operations, for each literal value in a
 server spec that looks like a credential. Every layer is checked (the base `mcp`, inline
 overrides and `<target>/mcp.json` files, as each target resolves them); a field flagged for
-several targets is reported once. It does not refuse, and the exit code is
-unchanged; the value is never printed. It checks for known token patterns (`sk-…`, `ghp_…`, `github_pat_…`,
+several targets is reported once. Each such field also gets an `agent_hub.conflict`, so the run
+**refuses**, as it does for any conflict: it writes nothing (no target, no ledger) and exits 1.
+`--force` does not override it. The value is never printed. A server with `disabled: true` still
+blocks (the literal is still in the hub). A run that plans no MCP servers (`--skill-only`, or
+`--targets` naming only `:links`) does not check, and a literal only in the override file of a
+target the run excludes does not block that run. Fix it by writing the field as
+`${env:NAME}` (above) or `${vault:KEY}` (below), or by naming it in `allowPlaintextFields` if it
+is not secret. It checks for known token patterns (`sk-…`, `ghp_…`, `github_pat_…`,
 Slack `xox?-…`, Google `AIza…`, AWS `AKIA…`, PEM private keys), any literal under an `env` key or
 header name with a credential word as one of its parts (split on `_`, `-`, `.` and camelCase:
 `token`, `secret`, `password`, `passwd`, `pwd`, `pass`, `passphrase`, `pat`, `apikey`,

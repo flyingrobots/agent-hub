@@ -85,6 +85,20 @@ describe("documentation gate", () => {
     expect(broken).toEqual([]);
   });
 
+  test("every requirement ID in a docs test-plan.md is unique within its ledger", () => {
+    const dups: string[] = [];
+    for (const f of markdownFiles().filter((x) => x.endsWith("test-plan.md"))) {
+      const seen = new Set<string>();
+      for (const line of readFileSync(f, "utf8").split("\n")) {
+        const id = /^\| ([A-Z]+(?:-[A-Z0-9]+)+) \|/.exec(line)?.[1];
+        if (!id) continue;
+        if (seen.has(id)) dups.push(`${f}: ${id}`);
+        seen.add(id);
+      }
+    }
+    expect(dups).toEqual([]);
+  });
+
   test("every test cited in a docs test-plan.md exists with that exact name", () => {
     const declared = declaredTests();
     const plans = markdownFiles().filter((f) => f.endsWith("test-plan.md"));
