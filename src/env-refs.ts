@@ -29,10 +29,11 @@ export function parseEnvRefs(s: string): EnvRefPart[] {
     }
     if (at > i) parts.push({ kind: "literal", text: s.slice(i, at) });
     const close = s.indexOf("}", at + OPEN.length);
-    if (close === -1) throw new EnvRefError(`unterminated \${env:...} reference in "${s}"`);
+    // Messages never quote the value: it may hold a secret next to the broken reference.
+    if (close === -1) throw new EnvRefError("unterminated ${env:...} reference");
     const name = s.slice(at + OPEN.length, close);
     if (!ENV_NAME.test(name)) {
-      throw new EnvRefError(`invalid \${env:${name}} reference: names must match ^[A-Z_][A-Z0-9_]*$`);
+      throw new EnvRefError("invalid ${env:...} reference: the name must match ^[A-Z_][A-Z0-9_]*$");
     }
     parts.push({ kind: "ref", name });
     i = close + 1;
@@ -82,9 +83,15 @@ export function mapSpecRefs(spec: McpServerSpec, render: (name: string) => strin
   return out;
 }
 
-/** Throws EnvRefError for any malformed reference in the spec. */
+/** Throws EnvRefError, naming the field, for any malformed reference in the spec. */
 export function validateSpecRefs(spec: McpServerSpec): void {
-  for (const [, v] of specFields(spec)) parseEnvRefs(v);
+  for (const [field, v] of specFields(spec)) {
+    try {
+      parseEnvRefs(v);
+    } catch (err) {
+      throw new EnvRefError(`${field}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 }
 
 export type PlaintextWarning = { field: string; reason: string };

@@ -1,5 +1,5 @@
 import { randomBytes } from "node:crypto";
-import { detectPlaintextSecrets } from "./env-refs.ts";
+import { detectPlaintextSecrets, specFields } from "./env-refs.ts";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -379,6 +379,8 @@ export function loadCanonicalServers(
       // excluded by --targets/disabledTargets must not reject a transport it does not support.
       if (activeTargets && !activeTargets.has(agent)) continue;
       let resolved: McpServerSpec = { ...baseSpec };
+      // The layer that last set each field, so a warning names the file to edit.
+      const layers: Array<[McpServerSpec, string]> = [[baseSpec, basePath]];
 
       if (rawDoc.overrides && rawDoc.overrides[agent] !== undefined) {
         const inlineOv = parseSpecSnippet(
@@ -386,6 +388,7 @@ export function loadCanonicalServers(
           `${basePath}#overrides.${agent}`,
         );
         resolved = mergeSpec(resolved, inlineOv, `${basePath}#overrides.${agent}`);
+        layers.push([inlineOv, `${basePath}#overrides.${agent}`]);
       }
 
       const subPath = join(serverDir, agent, "mcp.json");
@@ -393,13 +396,16 @@ export function loadCanonicalServers(
         const subRaw = parseJsonFile(subPath);
         const subOv = parseSpecSnippet(subRaw, subPath);
         resolved = mergeSpec(resolved, subOv, subPath);
+        layers.push([subOv, subPath]);
       }
 
       if (warnings) {
         for (const w of detectPlaintextSecrets(resolved, allowPlaintext)) {
           if (warnedFields.has(w.field)) continue;
           warnedFields.add(w.field);
-          warnings.push({ server: name, field: w.field, reason: w.reason, source: basePath });
+          const fieldIn = (s: McpServerSpec) => specFields(s).some(([f]) => f === w.field);
+          const source = [...layers].reverse().find(([s]) => fieldIn(s))?.[1] ?? basePath;
+          warnings.push({ server: name, field: w.field, reason: w.reason, source });
         }
       }
       compiled[agent] = compileAgentEntry(agent, name, resolved, basePath);

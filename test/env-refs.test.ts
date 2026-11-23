@@ -279,3 +279,63 @@ describe("a sync warns about plaintext secrets and still syncs (flyingrobots/age
     }
   });
 });
+
+describe("refusals never print a value (Baker Street PR #33 Holmes F1)", () => {
+  test("a malformed reference next to a literal token names the field, not the value", () => {
+    const token = "ghp_0123456789abcdefghijABCDEFGHIJ012345";
+    for (const value of [`Bearer ${token} \${env:TOK`, `\${env:${token.toLowerCase()}}`]) {
+      let message = "";
+      try {
+        MCP_ADAPTER_BY_ID.claude.compile("http", { url: "https://h", headers: { Authorization: value } }, "srv", "mcp/srv/mcp.json");
+      } catch (err) {
+        message = String(err);
+      }
+      expect(message).toContain("headers.Authorization");
+      expect(message).not.toContain(token);
+      expect(message.toLowerCase()).not.toContain(token.toLowerCase());
+    }
+  });
+});
+
+describe("references through a real sync, every native target (Baker Street PR #33 Holmes F5, F8)", () => {
+  function full() {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-envall-")));
+    const hub = path.join(home, ".agents");
+    for (const d of ["skills", "mcp/gh", "mcp/api"]) fs.mkdirSync(path.join(hub, d), { recursive: true });
+    for (const d of [".claude", ".cursor", ".codex", ".config/opencode"]) fs.mkdirSync(path.join(home, d), { recursive: true });
+    fs.writeFileSync(path.join(hub, "mcp", "gh", "mcp.json"), JSON.stringify({ mcp: { command: "/bin/gh", env: { GITHUB_TOKEN: "${env:GITHUB_TOKEN}" } } }));
+    fs.writeFileSync(
+      path.join(hub, "mcp", "api", "mcp.json"),
+      JSON.stringify({ mcp: { transport: "http", url: "https://api.invalid/mcp", headers: { Authorization: "Bearer ${env:API_TOKEN}" } } }),
+    );
+    const mcp = ["claude", "cursor", "codex", "opencode"].map((t) => parseTargetSelector(`${t}:mcp`)!);
+    return { home, hub, opts: { hubDir: hub, homeDir: home, xdgConfigHome: path.join(home, ".config"), xdgStateHome: path.join(home, ".local", "state"), targets: mcp } };
+  }
+
+  test("Claude, Cursor, OpenCode and Codex each get their native form, and a second run changes nothing", () => {
+    const { home, opts } = full();
+    expect(runSync(opts).exitCode).toBe(0);
+    const claude = JSON.parse(fs.readFileSync(path.join(home, ".claude.json"), "utf8")).mcpServers;
+    expect(claude.gh.env.GITHUB_TOKEN).toBe("${GITHUB_TOKEN}");
+    expect(claude.api.headers.Authorization).toBe("Bearer ${API_TOKEN}");
+    const cursor = JSON.parse(fs.readFileSync(path.join(home, ".cursor", "mcp.json"), "utf8")).mcpServers;
+    expect(cursor.gh.env.GITHUB_TOKEN).toBe("${env:GITHUB_TOKEN}");
+    const oc = JSON.parse(fs.readFileSync(path.join(home, ".config", "opencode", "opencode.json"), "utf8")).mcp.servers;
+    expect(oc.gh.environment.GITHUB_TOKEN).toBe("{env:GITHUB_TOKEN}");
+    expect(oc.api.headers.Authorization).toBe("Bearer {env:API_TOKEN}");
+    const codex = Bun.TOML.parse(fs.readFileSync(path.join(home, ".codex", "config.toml"), "utf8")) as Record<string, any>;
+    expect(codex.mcp_servers.gh).toEqual({ command: "/bin/gh", env_vars: ["GITHUB_TOKEN"] });
+    expect(codex.mcp_servers.api).toEqual({ url: "https://api.invalid/mcp", bearer_token_env_var: "API_TOKEN" });
+    const again = runSync(opts);
+    expect(again.events.filter((e) => e.id === "agent_hub.op" && e.data.phase === "sync")).toEqual([]);
+    expect(runSync({ ...opts, checkOnly: true }).exitCode).toBe(0);
+  });
+
+  test("a warning names the file that sets the field: a per-target mcp.json, not the base", () => {
+    const { hub, opts } = full();
+    fs.mkdirSync(path.join(hub, "mcp", "gh", "cursor"), { recursive: true });
+    fs.writeFileSync(path.join(hub, "mcp", "gh", "cursor", "mcp.json"), JSON.stringify({ mcp: { env: { GITHUB_TOKEN: "ghp_0123456789abcdefghijABCDEFGHIJ012345" } } }));
+    const w = runSync({ ...opts, dryRun: true }).events.filter((e) => e.id === "agent_hub.warning");
+    expect(w.map((e) => String(e.data.source).endsWith(path.join("mcp", "gh", "cursor", "mcp.json")))).toEqual([true]);
+  });
+});

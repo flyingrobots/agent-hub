@@ -96,7 +96,15 @@ Limits worth knowing:
   `headers` it reads some credential variables (its own `ANTHROPIC_*` keys, cloud and proxy
   tokens) as empty instead of expanding them. Use a name of your own, such as
   `EXAMPLE_TOKEN`.
-- An unset variable expands to empty in OpenCode and is left as written in Claude Code.
+- An unset variable expands to empty in OpenCode, and is left as written in Claude Code (which
+  warns in `claude mcp list`). In Codex, an unset `env_vars` name is simply not passed to the
+  server, an unset `env_http_headers` variable drops that header, and an unset
+  `bearer_token_env_var` stops the server from starting. Cursor does not document it.
+- Verified: Claude Code 2.1.323 expands `${VAR}` in a user-scope `~/.claude.json` entry's
+  `command`, `args` and `env` (`claude mcp list` started the server with the expanded values);
+  its documentation covers `url` and `headers` too. Cursor documents `${env:VAR}` in all five
+  fields for its MCP config, without saying whether that includes the global
+  `~/.cursor/mcp.json`.
 - Codex has no interpolation, so a reference anywhere else, or with text around it
   (`"Bearer ${env:X}-suffix"`), is refused for Codex. In `env` the key must be the variable's own
   name (`GITHUB_TOKEN = "${env:GITHUB_TOKEN}"`; `TOKEN = "${env:GH_TOKEN}"` is refused). The
@@ -119,7 +127,8 @@ Limits worth knowing:
 
 ### Plaintext secrets
 
-On every run (sync, `--dry-run`, `--check`, `--explain`), `sync-agents` prints one
+On every run that plans MCP servers (sync, `--dry-run`, `--check`, `--explain`; not `--skill-only`,
+and not a read-only run that stops on a pending recovery), `sync-agents` prints one
 `agent_hub.warning` line per field, before the run's operations, for each literal value in a
 server spec that looks like a credential. Every layer is checked (the base `mcp`, inline
 overrides and `<target>/mcp.json` files, as each target resolves them); a field flagged for
