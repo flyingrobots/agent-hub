@@ -185,7 +185,8 @@ describe("agent-hub sync-agents", () => {
     rmSync(mcpDir, { recursive: true, force: true });
     const pruneRes = runCmd([SYNC_BIN], env);
     expect(pruneRes.exitCode).toBe(0);
-    expect(existsSync(join(home, ".claude", "skills", "demo-skill"))).toBe(false);
+    // lstat, not existsSync: the skill source was deleted, so a surviving link would dangle.
+    expect(() => lstatSync(join(home, ".claude", "skills", "demo-skill"))).toThrow();
     expect(
       JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers?.["demo-mcp"],
     ).toBeUndefined();

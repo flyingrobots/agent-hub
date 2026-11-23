@@ -179,7 +179,8 @@ describe("Phase 1: Cursor & OpenCode adapters, --targets/disabledTargets, and un
     const partialRes = runCmd([SYNC_BIN, "--targets", "claude"], env);
     expect(partialRes.exitCode).toBe(0);
 
-    expect(existsSync(join(home, ".claude", "skills", "demo-skill"))).toBe(false);
+    // lstat, not existsSync: the skill source was deleted, so a surviving link would dangle.
+    expect(() => lstatSync(join(home, ".claude", "skills", "demo-skill"))).toThrow();
     expect(JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers.demo).toBeUndefined();
     // Cursor's link, MCP entry, AND ledger records are preserved verbatim!
     expect(lstatSync(cursorLink).isSymbolicLink()).toBe(true);
@@ -620,5 +621,25 @@ describe("Every whole-run MCP refusal names the opt-out", () => {
     expect(r3.exitCode).toBe(1);
     expect(r3.stderr).toContain('"disabledTargets": ["codex:mcp"]');
     expect(readFileSync(toml, "utf8")).toBe('mcp_servers = "x"\n');
+  });
+});
+
+describe("Scoped runs still prune the active target's own stale links", () => {
+  test("--targets cursor:links prunes a removed skill from Cursor and keeps Claude's", () => {
+    const { home, hub, env } = makeSandbox();
+    for (const n of ["keep", "gone"]) {
+      mkdirSync(join(hub, "skills", n), { recursive: true });
+      writeFileSync(join(hub, "skills", n, "SKILL.md"), `---\nname: ${n}\ndescription: d\n---\n`);
+    }
+    expect(runCmd([SYNC_BIN], env).exitCode).toBe(0);
+    rmSync(join(hub, "skills", "gone"), { recursive: true });
+    const r = runCmd([SYNC_BIN, "--targets", "cursor:links"], env);
+    expect(r.exitCode).toBe(0);
+    // lstat, not existsSync: a dangling link must count as present.
+    expect(() => lstatSync(join(home, ".cursor", "skills", "gone"))).toThrow();
+    expect(lstatSync(join(home, ".cursor", "skills", "keep")).isSymbolicLink()).toBe(true);
+    expect(lstatSync(join(home, ".claude", "skills", "gone")).isSymbolicLink()).toBe(true);
+    expect(runCmd([SYNC_BIN, "--check", "--targets", "cursor:links"], env).exitCode).toBe(0);
+    expect(runCmd([SYNC_BIN, "--check"], env).exitCode).toBe(1);
   });
 });
