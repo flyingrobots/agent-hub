@@ -1,0 +1,27 @@
+# agent-hub documentation
+
+This is the routing index. Each page below describes behavior that exists on `main`; each
+topic's `test-plan.md` is the contract ledger that ties those statements to tests.
+
+Start with the [README](../README.md) for installation and a first sync.
+
+## Topics
+
+| Topic | Reference | Contract ledger | Read it when |
+| --- | --- | --- | --- |
+| Sync and targets | [sync/README.md](topics/sync/README.md) | [sync/test-plan.md](topics/sync/test-plan.md) | You want to know what `sync-agents` writes where, how to scope a run, or how to upgrade |
+| MCP servers | [mcp/README.md](topics/mcp/README.md) | [mcp/test-plan.md](topics/mcp/test-plan.md) | You are writing a canonical `mcp.json`, or a target config was refused |
+| Ownership and recovery | [ownership/README.md](topics/ownership/README.md) | [ownership/test-plan.md](topics/ownership/test-plan.md) | You need to know what `sync-agents` considers its own, how it recovers from interruption, or how to migrate legacy v1 state |
+
+## Other records
+
+- [CHANGELOG.md](../CHANGELOG.md): what changed in each release.
+- GitHub issues carry planned work, in the `issue-dag/2` format read by the
+  issue templates in [`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/config.yml).
+  Planned behavior never appears in a topic reference.
+
+## Checking the docs
+
+`bun test test/docs.test.ts` fails if a relative link or heading anchor in `README.md`,
+`CHANGELOG.md` or `docs/` does not resolve, if a test cited in a `test-plan.md` does not exist
+with that exact name, or if a page under `docs/` is not linked from this index.

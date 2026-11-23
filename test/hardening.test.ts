@@ -34,6 +34,8 @@ const REPO_ROOT = resolve(import.meta.dir, "..");
 const SYNC_BIN = join(REPO_ROOT, "bin", "sync-agents");
 const MCP_SYNC = join(REPO_ROOT, "src", "mcp-sync.ts");
 const INSTALL_SH = join(REPO_ROOT, "install.sh");
+// install.sh copies a runtime and syncs; ~3 s alone, so the 5 s default flakes under a full parallel suite.
+const INSTALLER_TIMEOUT_MS = 30_000;
 const tempRoots: string[] = [];
 
 function makeSandbox() {
@@ -262,7 +264,7 @@ describe("hardening regressions (v4 code-review findings)", () => {
     const rRel = runCmd([INSTALL_SH, "--prefix", prefix, "--bin-dir", binDir, "--no-skill"], env, otherCwd);
     expect(rRel.exitCode).toBe(0);
     expect(readlinkSync(join(binDir, "sync-agents"))).toBe(join(prefix, "bin", "sync-agents"));
-  });
+  }, INSTALLER_TIMEOUT_MS);
 
   test("F9: --adopt --skill <src> installs and adopts identical existing target copy in a single pass", () => {
     const { home, hub, env } = makeSandbox();

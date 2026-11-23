@@ -1,0 +1,133 @@
+# Sync and targets
+
+`sync-agents` projects one canonical hub directory into the configuration of each local AI
+coding agent it supports. This page is the reference for what it writes, where, and how a run is
+scoped. Contracts are tracked in [test-plan.md](test-plan.md).
+
+## What a run does
+
+A run has three phases:
+
+1. **Phase 0, recovery.** If an earlier run was interrupted mid-write, finish or safely stop that
+   write first. See [Ownership and recovery](../ownership/README.md#write-ahead-recovery).
+2. **Phase 1, preflight.** Plan every change for every active target, and stop with no writes if
+   anything conflicts or is refused.
+3. **Phase 2, apply.** Write each planned change, journaled and re-verified against the planned
+   snapshot.
+
+`--dry-run` (`-n`), `--check` and `--explain` run Phase 1 only. They never modify targets, the
+ownership ledger, journals or the lock file. If a recovery journal is pending, they report it
+instead of a plan: `--check` exits `1`, and the next real run handles it in Phase 0.
+
+| Command | Result |
+| --- | --- |
+| `sync-agents` | Recover, plan, apply |
+| `sync-agents --dry-run` | Print `[plan]` lines for the changes a sync would make |
+| `sync-agents --check` | Exit `0` if nothing needs doing, `1` if anything does |
+| `sync-agents --explain` | Print observed state, intended state, ownership basis, reason and next step per object |
+
+A conflict or refusal exits `1`. A usage error, such as an unknown flag or an unknown
+`--targets` selector, exits `2`.
+
+## The hub
+
+The hub directory is resolved, in order, from:
+
+1. `--dir <path>`
+2. `$AGENTS_DIR`
+3. `"agentsDir"` in `${XDG_CONFIG_HOME:-$HOME/.config}/agent-hub/config.json`
+4. `~/.agents`
+
+The path is canonicalized to a real absolute path, so links written from any working directory
+point at the same place. `sync-agents --print-dir` prints the resolved hub.
+
+```text
+<hub>/
+├── AGENTS.md                  # Shared global instructions
+├── skills/<name>/SKILL.md     # One directory per skill
+└── mcp/<server>/mcp.json      # One directory per MCP server; see the MCP topic
+```
+
+## Targets
+
+| Target | Rules link | Skill links | MCP config |
+| --- | --- | --- | --- |
+| `claude` | `~/.claude/CLAUDE.md` | `~/.claude/skills/<name>` | `~/.claude.json` (`mcpServers`) |
+| `codex` | `~/.codex/AGENTS.md` | `~/.codex/skills/<name>` | `~/.codex/config.toml` (`[mcp_servers.*]`) |
+| `antigravity` | `~/.gemini/GEMINI.md` and `~/.gemini/config/AGENTS.md` | `~/.gemini/skills/<name>` | `~/.gemini/config/mcp_config.json` (`mcpServers`) |
+| `cursor` | `~/.cursor/AGENTS.md` | `~/.cursor/skills/<name>` | `~/.cursor/mcp.json` (`mcpServers`) |
+| `opencode` | `~/.config/opencode/AGENTS.md` | `~/.config/opencode/skills/<name>` | `~/.config/opencode/opencode.json` (`mcp`) |
+
+A target is synced only when its root directory (`~/.claude`, `~/.codex`, `~/.gemini`,
+`~/.cursor`, `~/.config/opencode`) exists. Antigravity's `~/.gemini/config/AGENTS.md` link and
+its MCP config additionally need `~/.gemini/config`. Cursor reads global rules from its settings, so the
+effect of `~/.cursor/AGENTS.md` is unverified. Gemini CLI's `~/.gemini/settings.json` is not a
+target.
+
+Rules and skills are symlinks into the hub. MCP servers are compiled per target; see
+[MCP servers](../mcp/README.md).
+
+Syncing proves that links, serialized configs and the ledger are in the intended state. It does
+not prove that an agent application loaded and honored that configuration.
+
+## Choosing targets
+
+Each target has two sync domains: **`links`** (its rules and skill symlinks) and **`mcp`** (its
+MCP config file). A **selector** is a target name, meaning both domains, or a target name with a
+domain suffix: `opencode:mcp`, `cursor:links`.
+
+- **`disabledTargets`** in `${XDG_CONFIG_HOME:-$HOME/.config}/agent-hub/config.json` lists
+  selectors to leave out by default:
+
+  ```json
+  { "agentsDir": "~/.agents", "disabledTargets": ["cursor", "opencode:mcp"] }
+  ```
+
+  This leaves Cursor out entirely and syncs OpenCode's rules and skills but not
+  `opencode.json`. An unknown selector, a non-string entry or a non-array value makes every run
+  exit `1`, as does a `config.json` that is not a JSON object.
+- **`--targets <csv>`** (or `--targets=<csv>`) picks the selectors for one run of sync,
+  `--check`, `--dry-run` or `--explain`, for example `--targets claude,opencode:links`. An
+  unknown selector exits `2`. An explicit `--targets` list **replaces** `disabledTargets` for
+  that run: `--targets cursor` acts on Cursor even when `"cursor"` is disabled.
+
+A run never plans changes for an excluded target or domain:
+
+- Links and MCP entries placed there earlier stay as they are. Hub changes, including removed
+  skills and servers, stop reaching them.
+- `--check` reports drift for active targets only, plus any pending recovery journal.
+- When the target is active again, the next run catches it up, including any prunes it missed.
+- The one exception is Phase 0 recovery, which acts on `sync-agents`' own interrupted write
+  whatever its target (see [Write-ahead recovery](../ownership/README.md#write-ahead-recovery)).
+- `--disown-legacy` naming an excluded target currently does nothing and says nothing; tracked
+  in flyingrobots/agent-hub#3.
+
+A link is attributed to a target only when its path is exactly that target's rules file or a
+direct child of its skills directory under the current `HOME`. A scoped run keeps any record it
+cannot attribute, such as one written under a different `HOME`.
+
+## Installing skills
+
+`sync-agents --skill <source>` copies a skill into `<hub>/skills/<name>` (the name comes from
+`SKILL.md` frontmatter) and then syncs. A source is a directory, a Git URL, a `.bundle`, a
+`.zip` or `.skill` archive, or a tarball. Archives and repositories are unpacked into a temporary
+directory first. Symlinks that escape the skill, absolute symlinks and cycles are refused.
+
+- An installed skill that differs from the source is a conflict. `--force-skill` replaces only
+  the differing canonical skill; it never authorizes replacing links or MCP entries.
+- `--skill-only` installs into the hub without syncing targets.
+- `--dry-run --skill <source>` inspects the source and changes nothing.
+
+## Upgrading from a three-target version
+
+Earlier versions compiled MCP servers only for Claude, Codex and Antigravity, though they already
+linked rules and skills into `~/.cursor` and `~/.config/opencode`. After upgrading, the first
+unscoped run also writes hub MCP servers into `~/.cursor/mcp.json` and
+`~/.config/opencode/opencode.json`, and `--check` reports that as pending work until it happens.
+The strict JSON refusals and `config.json` validation are also new, and apply to every target.
+
+That run applies no Phase 2 change if either file has a personal server with the same name as a
+hub server, or if either config is refused (see
+[strict JSON refusals](../mcp/README.md#strict-json-refusals)). To leave Cursor's and OpenCode's
+MCP configs untouched, as before, set `"disabledTargets": ["cursor:mcp", "opencode:mcp"]` before
+the first run.
