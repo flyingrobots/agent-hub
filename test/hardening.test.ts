@@ -493,3 +493,20 @@ test("install.sh refuses a --prefix that is an exported AGENTS_DIR even when --a
   expect(r.stderr.toString()).toContain("from AGENTS_DIR");
   expect(existsSync(join(home, "envhub"))).toBe(false);
 }, INSTALLER_TIMEOUT_MS);
+
+test("the hub-overlap guard handles a hub path containing a pipe character (Baker Street PR #17 recheck R-1)", () => {
+  const home = realpathSync(mkdtempSync(join(tmpdir(), "agent-hub-pipe-")));
+  tempRoots.push(home);
+  const hub = `${home}/a|b`;
+  const env = {
+    PATH: process.env.PATH ?? "/usr/bin:/bin",
+    HOME: home,
+    XDG_CONFIG_HOME: join(home, ".config"),
+    XDG_STATE_HOME: join(home, ".local", "state"),
+    AGENTS_DIR: hub,
+  };
+  const r = Bun.spawnSync(["bash", INSTALL_SH, "--prefix", hub, "--bin-dir", join(home, ".local", "bin"), "--no-skill"], { env, stdout: "pipe", stderr: "pipe" });
+  expect(r.exitCode).toBe(1);
+  expect(r.stderr.toString()).toContain("overlaps hub directory");
+  expect(existsSync(hub)).toBe(false);
+}, INSTALLER_TIMEOUT_MS);

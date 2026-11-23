@@ -333,17 +333,28 @@ CANON_HOME="$(canonicalize_path "$HOME")"
 # an exported AGENTS_DIR (which the engine prefers over config.json at run time), the wrapper's
 # view, and with --binary the binary's own view (it reads config.json without Bun or python3).
 # The prefix must overlap none of them.
-HUB_CANDIDATES=()
+HUB_PATHS=()
+HUB_SOURCES=()
+# Each path is captured by a plain assignment first, so a failing resolver (refusing to guess, or a
+# newline in a path) aborts install.sh under set -e instead of adding an empty candidate.
+add_hub_candidate() {
+  HUB_PATHS+=("$1")
+  HUB_SOURCES+=("$2")
+}
 if [[ -n "$CONFIG_AGENTS_DIR" ]]; then
-  HUB_CANDIDATES+=("$(canonicalize_path "$CONFIG_AGENTS_DIR")|--agents-dir")
+  hub_path="$(canonicalize_path "$CONFIG_AGENTS_DIR")"
+  add_hub_candidate "$hub_path" "--agents-dir"
 fi
 if [[ -n "${AGENTS_DIR:-}" ]]; then
-  HUB_CANDIDATES+=("$(canonicalize_path "$AGENTS_DIR")|AGENTS_DIR")
+  hub_path="$(canonicalize_path "$AGENTS_DIR")"
+  add_hub_candidate "$hub_path" "AGENTS_DIR"
 fi
 if [[ -z "$CONFIG_AGENTS_DIR" ]]; then
-  HUB_CANDIDATES+=("$("$REPO_DIR/bin/sync-agents" --print-dir)|bin/sync-agents --print-dir")
+  hub_path="$("$REPO_DIR/bin/sync-agents" --print-dir)"
+  add_hub_candidate "$hub_path" "bin/sync-agents --print-dir"
   if [[ -n "$BINARY_SRC" ]]; then
-    HUB_CANDIDATES+=("$("$BINARY_SRC" --print-dir)|the binary's --print-dir")
+    hub_path="$("$BINARY_SRC" --print-dir)"
+    add_hub_candidate "$hub_path" "the binary's --print-dir"
   fi
 fi
 
@@ -352,11 +363,9 @@ if [[ "$INSTALL_DIR" == "/" || "$INSTALL_DIR" == "$CANON_HOME" ]]; then
   exit 1
 fi
 
-for candidate in "${HUB_CANDIDATES[@]}"; do
-  hub="${candidate%%|*}"
-  source_label="${candidate#*|}"
-  if paths_overlap "$INSTALL_DIR" "$hub"; then
-    echo "install.sh: refusing --prefix ($INSTALL_DIR) that overlaps hub directory ($hub, from $source_label)" >&2
+for i in "${!HUB_PATHS[@]}"; do
+  if paths_overlap "$INSTALL_DIR" "${HUB_PATHS[$i]}"; then
+    echo "install.sh: refusing --prefix ($INSTALL_DIR) that overlaps hub directory (${HUB_PATHS[$i]}, from ${HUB_SOURCES[$i]})" >&2
     exit 1
   fi
 done

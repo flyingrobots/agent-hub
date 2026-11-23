@@ -19,7 +19,8 @@ import { getStatePaths, loadOwnershipState } from "../src/state.ts";
 import { parseTargetSelector, type SyncOptions, type TargetSelector } from "../src/types.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
-const SYNC_BIN = join(REPO_ROOT, "bin", "sync-agents");
+// AGENT_HUB_BINARY runs this suite against a compiled binary instead of the source wrapper.
+const SYNC_BIN = process.env.AGENT_HUB_BINARY || join(REPO_ROOT, "bin", "sync-agents");
 const tempRoots: string[] = [];
 
 afterEach(() => {

@@ -13,6 +13,7 @@ exist.
 | INST-SRC-3 | Relative shim resolution, missing-argument exit 2, `--opt=val`, and an atomic runtime swap | Per case | E2E | Implemented | `hardening.test.ts › F7 & F8 & F13: install.sh relative shim resolution, missing-arg exit 2, --opt=val, and atomic swap` |
 | INST-SRC-5 | Bash canonicalizers agree with the engine: relative paths from a symlinked cwd, unreadable `config.json`, newline | Equal `--print-dir`; refusals | E2E | Implemented | `hardening.test.ts › a relative AGENTS_DIR with '..' from a symlinked cwd resolves like the engine (physical cwd)` |
 | INST-SRC-7 | A prefix that is an exported `AGENTS_DIR` is refused even when `--agents-dir` names another hub | Exit 1 naming `AGENTS_DIR`; prefix not created | E2E | Implemented | `hardening.test.ts › install.sh refuses a --prefix that is an exported AGENTS_DIR even when --agents-dir names another hub (Baker Street PR #17 CK-F-3)` |
+| INST-SRC-8 | The hub-overlap guard handles a hub path containing `\|` | Exit 1; prefix not created | E2E | Implemented | `hardening.test.ts › the hub-overlap guard handles a hub path containing a pipe character (Baker Street PR #17 recheck R-1)` |
 | INST-SRC-4 | The hub-overlap guard and the engine agree on `..` paths, so a prefix that is the hub is refused | Both `--print-dir` paths equal; install exit 1, prefix not created | E2E | Implemented | `hardening.test.ts › AGENTS_DIR=<h>/nope/../rt with --prefix <h>/rt is refused as overlapping, and both print-dir paths agree` |
 
 ## Binary layout

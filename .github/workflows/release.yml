@@ -117,7 +117,7 @@ jobs:
           ASSET: ${{ matrix.asset }}
         run: |
           export AGENT_HUB_BINARY="$PWD/release/$ASSET"
-          bun test test/binary.test.ts test/adapters.test.ts test/agent-hub.test.ts test/hardening.test.ts
+          bun test test/binary.test.ts test/adapters.test.ts test/agent-hub.test.ts test/hardening.test.ts test/followups.test.ts
 
       - name: Smoke-run cross-compiled binary when x86_64 execution is available
         if: ${{ !matrix.native }}
