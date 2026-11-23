@@ -72,6 +72,9 @@ changes are called out under **Changed** with what to do.
   two, above) the directory `sync-agents` or `install.sh` was run from could redirect the hub,
   config and state paths, or run its own code, because Bun loads them by default. Every `bun`
   call now ignores them, and binaries are compiled not to load them.
+- Ownership records now move to the spelling of the run that plans them (ledger only), so a
+  `HOME` or `~/.config` alias removed after syncing under the real path no longer turns into
+  conflicts or "moved" MCP records.
 - Rewriting a Codex table that holds a long hand-written multiline string whose lines start
   with `#` no longer takes time quadratic in its length; the cut comes from the TOML scanner.
 - `src/cli.ts --print-dir` ignored a valid `agentsDir` when `disabledTargets` was

@@ -1115,11 +1115,16 @@ function planSingleMcpTarget(
   // file they describe is left untouched.
   const prevManaged: Record<string, ManagedMcpRecord> = {};
   const staleRecords: Array<[string, ManagedMcpRecord]> = [];
+  // Records naming this file under another spelling are re-keyed to the spelling used now, so
+  // they still match after the old spelling stops resolving.
+  const rekeyed: Array<[string, string]> = [];
   for (const [recName, rec] of Object.entries(state.mcp[adapter.id])) {
-    if (rec.configPath === configPath || physicalPath(rec.configPath) === physicalPath(configPath)) {
+    if (rec.configPath === configPath) {
       prevManaged[recName] = rec;
-    }
-    else staleRecords.push([recName, rec]);
+    } else if (physicalPath(rec.configPath) === physicalPath(configPath)) {
+      prevManaged[recName] = { ...rec, configPath };
+      rekeyed.push([recName, rec.configPath]);
+    } else staleRecords.push([recName, rec]);
   }
   const legacySet = legacyV1?.managed[adapter.id] ?? new Set<string>();
 
@@ -1269,6 +1274,23 @@ function planSingleMcpTarget(
         ledgerMutation: false,
       });
     }
+  }
+
+  for (const [recName, oldPath] of rekeyed.sort(([a], [b]) => a.localeCompare(b))) {
+    ctx.ledgerMutation = true;
+    ctx.changeSummaries.push(`rekey record ${recName} to ${configPath}`);
+    ctx.ops.push({
+      domain: "mcp",
+      action: "rekey-mcp-record",
+      status: "change",
+      destination: `${configPath}#${recName}`,
+      observed: `ownership record for "${recName}" stored under another spelling of this file, ${oldPath}`,
+      intended: `store it under ${configPath}; the config file is unchanged`,
+      ownershipBasis: prevManaged[recName]!.basis,
+      reason: "the recorded spelling names the same physical file as the current one",
+      targetMutation: false,
+      ledgerMutation: true,
+    });
   }
 
   for (const [recName, rec] of staleRecords.sort(([a], [b]) => a.localeCompare(b))) {

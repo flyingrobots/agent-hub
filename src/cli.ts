@@ -163,6 +163,9 @@ function formatExplainBlock(op: PlannedOp): string[] {
   return lines;
 }
 
+/** Ledger-only actions that move a record to the current spelling of its path. */
+const REKEY_ACTIONS = new Set(["rekey-link-record", "rekey-mcp-record"]);
+
 function formatOpSummary(prefix: string, op: PlannedOp): string {
   const ledgerTag = !op.targetMutation && op.ledgerMutation ? " [state]" : "";
   return `[${prefix}]${ledgerTag} ${op.action} ${op.destination} — ${op.reason}`;
@@ -402,11 +405,14 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
         stderr.push(`${cmdLabel}: ${plan.conflicts.length} conflict(s) found; refusing to overwrite.`);
         return { exitCode: 1, stdout, stderr };
       }
-      if (checkOnly && plan.changeOps.length > 0) {
-        stderr.push(`${cmdLabel}: out of sync (${plan.changeOps.length} change(s) needed).`);
+      // Re-keying a record to the spelling of this run is ledger housekeeping, not drift: --check
+      // under another spelling of the same paths stays clean, and any sync performs it.
+      const driftOps = plan.changeOps.filter((op) => !REKEY_ACTIONS.has(op.action));
+      if (checkOnly && driftOps.length > 0) {
+        stderr.push(`${cmdLabel}: out of sync (${driftOps.length} change(s) needed).`);
         return { exitCode: 1, stdout, stderr };
       }
-      if (plan.changeOps.length === 0 && !explain) {
+      if ((checkOnly ? driftOps.length : plan.changeOps.length) === 0 && !explain) {
         stdout.push(`${cmdLabel}: everything is in sync.`);
       }
       return { exitCode: 0, stdout, stderr };

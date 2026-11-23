@@ -51,6 +51,7 @@ export type LinkActionKind =
   | "link-prune"
   | "drop-absent-link"
   | "drop-duplicate-record"
+  | "rekey-link-record"
   | "conflict";
 
 export type PlannedLinkOp = {
@@ -59,6 +60,8 @@ export type PlannedLinkOp = {
   linkKind: "rules" | "skill";
   src?: string;
   dst: string;
+  /** rekey-link-record: the spelling the record is stored under now. */
+  fromDst?: string;
   basis?: OwnershipBasis;
   beforeSnapshot: TargetSnapshot;
   srcSnapshot?: Extract<TargetSnapshot, { kind: "tree" }>;
@@ -601,9 +604,31 @@ export function planLinkSync(
     const recordedKey = state.links[dst] ? dst : (recordedByPhysical.get(phys) ?? dst);
     const stagedSrcDir =
       entry.skillName !== undefined ? opts.plannedSkillSources?.get(entry.skillName) : undefined;
-    plans.push(
-      planDesiredLinkOp(recordedKey, entry.src, entry.kind, stagedSrcDir, state.links[recordedKey], opts),
-    );
+    if (recordedKey !== dst) {
+      // The record names this destination under another spelling. Move it to the spelling that
+      // resolves now (ledger only), so it still matches after the old spelling stops resolving.
+      const rec = state.links[recordedKey]!;
+      plans.push({
+        actionKind: "rekey-link-record",
+        linkKind: rec.kind,
+        dst,
+        fromDst: recordedKey,
+        beforeSnapshot: { kind: "absent" },
+        op: {
+          domain: "link",
+          action: "rekey-link-record",
+          status: "change",
+          destination: dst,
+          observed: `ownership record for this link stored under another spelling, ${recordedKey}`,
+          intended: "store the record under the spelling used now; the link itself is unchanged",
+          ownershipBasis: rec.basis,
+          reason: "the recorded spelling names the same physical destination as the current one",
+          targetMutation: false,
+          ledgerMutation: true,
+        },
+      });
+    }
+    plans.push(planDesiredLinkOp(dst, entry.src, entry.kind, stagedSrcDir, state.links[recordedKey], opts));
   }
 
   // Prune ONLY verified v2 state.links records for ACTIVE targets.
@@ -675,6 +700,21 @@ export function applyLinkOp(
       destination: plan.dst,
       record: rec,
     });
+    saveOwnershipState(statePath, nextState);
+    return nextState;
+  }
+
+  if (plan.actionKind === "rekey-link-record") {
+    // Ledger-only: one save moves the record from its old spelling to the current one.
+    const rec = state.links[plan.fromDst!];
+    if (!rec) throw new Error(`rekey: no ownership record at ${plan.fromDst}`);
+    hooks?.beforeLedgerOnlyCommit?.(`rekey-link-record ${plan.fromDst} -> ${plan.dst}`);
+    const moved = applyStateDelta(state, { kind: "link-delete", destination: plan.fromDst! });
+    // One save, one generation.
+    const nextState = {
+      ...applyStateDelta(moved, { kind: "link-set", destination: plan.dst, record: rec }),
+      generation: state.generation + 1,
+    };
     saveOwnershipState(statePath, nextState);
     return nextState;
   }
