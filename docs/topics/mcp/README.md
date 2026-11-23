@@ -85,8 +85,10 @@ Entries in the previous layout, directly under `mcp.<name>`:
   because `sync-agents` will not move or replace an entry it cannot prove it wrote. Move the
   entry to `mcp.servers.<name>` yourself, rename or remove it, rename the hub server, or leave
   OpenCode's MCP config out with `"opencode:mcp"`. If the edit was deliberate, such as turning
-  the server off with `enabled: false`, say so in the hub instead
-  (`overrides.opencode.disabled: true`), or removing the entry will bring the server back;
+  the server off with `enabled: false`, say so in the hub (`overrides.opencode.disabled: true`)
+  and then remove `mcp.<name>` by hand; removing it without the override brings the server back.
+  An unmanaged entry that carries `enabled` cannot be adopted, because the current layout has no
+  such key;
 - any other is left where it is, and `--explain` lists it (`leave-legacy-unmanaged`). A file
   holding both layouts is valid under OpenCode's schema, which still accepts the old one as
   deprecated; whether OpenCode itself still loads the old entries once `mcp.servers` exists has

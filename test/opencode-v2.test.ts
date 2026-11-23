@@ -147,6 +147,9 @@ describe("OpenCode adapter writes the current mcp.servers layout (flyingrobots/a
     );
     const r = runSync(base);
     expect(out(r)).not.toContain("conflict");
+    // The move itself writes the current shape; no follow-up update is needed to drop `enabled`.
+    expect(out(r)).toContain("mcp-migrate-layout");
+    expect(out(r)).not.toContain("mcp-update");
     expect(r.exitCode).toBe(0);
     const doc = JSON.parse(readFileSync(cfg, "utf8"));
     expect(doc.mcp.alpha).toBeUndefined();

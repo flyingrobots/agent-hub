@@ -134,11 +134,6 @@ export function normalizeCursorComparable(entry: unknown): Record<string, unknow
 }
 
 /**
- * Comparable form of an OpenCode server entry in either layout. OpenCode's current `mcp.servers`
- * objects use `disabled` (default false); the deprecated direct `mcp.<name>` objects use `enabled`
- * (default true). Both map to the current form, so a migrated entry compares equal.
- */
-/**
  * The comparable form of an entry in OpenCode's current mcp.servers layout. `enabled` is not a
  * key of that layout, so it is kept: an entry carrying it differs from what agent-hub writes.
  */

@@ -1214,7 +1214,7 @@ function planSingleMcpTarget(
       : null;
     const inNested = Object.prototype.hasOwnProperty.call(existingMap, name);
     if (rec && !inNested && legacyDigest === rec.digest) {
-      // Write it in the current shape (the comparable form drops the legacy `enabled` flag).
+      // Write it in the current shape: legacyToCurrent turns the old `enabled` into `disabled`.
       const migratedEntry = adapter.normalizeComparable(
         adapter.legacyToCurrent ? adapter.legacyToCurrent(entry) : entry,
       );
