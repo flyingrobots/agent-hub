@@ -47,7 +47,11 @@ export { normalizeAntigravityComparable, normalizeClaudeComparable };
 
 const SERVER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
-export type CompiledServerMap = Map<string, Record<AgentId, Record<string, unknown> | null>>;
+/**
+ * Per-server compiled entries, keyed by agent. `null` means the server is disabled for that agent;
+ * an agent outside the run's scope has no key at all, so it can never be mistaken for disabled.
+ */
+export type CompiledServerMap = Map<string, Partial<Record<AgentId, Record<string, unknown> | null>>>;
 
 export type PlannedMcpTarget = {
   agent: AgentId;
@@ -351,16 +355,12 @@ export function loadCanonicalServers(
       }
     }
 
-    const compiled = {} as Record<AgentId, Record<string, unknown> | null>;
+    const compiled: Partial<Record<AgentId, Record<string, unknown> | null>> = {};
 
     for (const agent of ALL_AGENTS) {
       // Inactive targets are never planned, so skip compiling for them: an adapter that is
       // excluded by --targets/disabledTargets must not reject a transport it does not support.
-      // The null placeholder is never read, because planMcpSync skips inactive adapters.
-      if (activeTargets && !activeTargets.has(agent)) {
-        compiled[agent] = null;
-        continue;
-      }
+      if (activeTargets && !activeTargets.has(agent)) continue;
       let resolved: McpServerSpec = { ...baseSpec };
 
       if (rawDoc.overrides && rawDoc.overrides[agent] !== undefined) {
@@ -1010,12 +1010,12 @@ function planSingleMcpTarget(
   legacyV1: LegacyManifestV1 | null,
   disownSet: Set<string>,
   now: string,
-  opts: { adopt: boolean; force: boolean; configPath: string },
+  opts: { adopt: boolean; force: boolean; configPath: string; configBase: string },
 ): PlannedMcpTarget | null {
-  const rootDir = adapter.rootDir(homeDir);
+  const rootDir = adapter.rootDir(homeDir, opts.configBase);
   if (!existsSync(rootDir) || !statSync(rootDir).isDirectory()) return null;
 
-  const configPath = adapter.configPath(homeDir);
+  const configPath = adapter.configPath(homeDir, opts.configBase);
   const beforeSnapshot = captureFileSnapshot(configPath);
   if (beforeSnapshot.kind !== "absent" && beforeSnapshot.kind !== "file") {
     throw new Error(`mcp-sync: expected regular file at ${configPath}; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`);
@@ -1102,7 +1102,10 @@ function planSingleMcpTarget(
   };
 
   for (const [name, compiledPerAgent] of servers) {
-    const desired = compiledPerAgent[adapter.id];
+    if (!Object.prototype.hasOwnProperty.call(compiledPerAgent, adapter.id)) {
+      throw new Error(`mcp-sync: internal error: ${adapter.id} was planned but not compiled for "${name}"`);
+    }
+    const desired = compiledPerAgent[adapter.id]!;
     const hasExisting = Object.prototype.hasOwnProperty.call(ctx.existingMap, name);
     const managedRec = Object.prototype.hasOwnProperty.call(prevManaged, name)
       ? prevManaged[name]!
@@ -1141,7 +1144,12 @@ function planSingleMcpTarget(
   let renderedContent: string | undefined;
   if (ctx.targetMutation) {
     if (adapter.format === "toml") {
-      renderedContent = rewriteCodexToml(originalText, ctx.codexUpdates);
+      try {
+        renderedContent = rewriteCodexToml(originalText, ctx.codexUpdates);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        throw new Error(`mcp-sync: ${configPath}: ${msg}; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`);
+      }
     } else {
       const nextDoc = { ...jsonDoc, [rootKey]: ctx.existingMap };
       renderedContent = `${JSON.stringify(nextDoc, null, 2)}\n`;
@@ -1176,6 +1184,8 @@ export function planMcpSync(
     activeTargets?: ReadonlySet<AgentId>;
     /** Resolved agent-hub config.json path, quoted in opt-out remedies. */
     configPath?: string;
+    /** XDG config base (`$XDG_CONFIG_HOME` or `~/.config`); defaults to `~/.config`. */
+    configBase?: string;
     disownLegacy: Array<{ agent: AgentId; name: string }>;
   },
 ): { targets: PlannedMcpTarget[]; globalOps: PlannedOp[] } {
@@ -1198,6 +1208,7 @@ export function planMcpSync(
         adopt: opts.adopt,
         force: opts.force,
         configPath: opts.configPath ?? "~/.config/agent-hub/config.json",
+        configBase: opts.configBase ?? join(homeDir, ".config"),
       },
     );
     if (plan) targets.push(plan);

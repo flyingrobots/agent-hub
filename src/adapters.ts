@@ -10,6 +10,8 @@ import type { AgentId, McpServerSpec, McpTransport } from "./types.ts";
 
 export type LinkTargetDef = {
   readonly targetId: AgentId;
+  /** Root relative to HOME, or to the XDG config base (`$XDG_CONFIG_HOME` or `~/.config`). */
+  readonly base?: "home" | "config";
   readonly rootRel: string;
   readonly rulesRel: string | null;
   readonly skillsRel: string | null;
@@ -20,7 +22,9 @@ export const LINK_TARGETS: readonly LinkTargetDef[] = [
   { targetId: "claude", rootRel: ".claude", rulesRel: "CLAUDE.md", skillsRel: "skills" },
   { targetId: "antigravity", rootRel: ".gemini", rulesRel: "GEMINI.md", skillsRel: "skills" },
   { targetId: "antigravity", rootRel: ".gemini/config", rulesRel: "AGENTS.md", skillsRel: null },
-  { targetId: "opencode", rootRel: ".config/opencode", rulesRel: "AGENTS.md", skillsRel: "skills" },
+  // OpenCode roots its global config at ${XDG_CONFIG_HOME:-~/.config}/opencode
+  // (anomalyco/opencode packages/util/src/global-roots.ts).
+  { targetId: "opencode", base: "config", rootRel: "opencode", rulesRel: "AGENTS.md", skillsRel: "skills" },
   { targetId: "cursor", rootRel: ".cursor", rulesRel: "AGENTS.md", skillsRel: "skills" },
 ] as const;
 
@@ -36,9 +40,23 @@ export const LINK_TARGETS: readonly LinkTargetDef[] = [
  * basename, an exact layout match is unambiguous. Anything else returns null, and scoped runs
  * keep records they cannot attribute.
  */
-export function resolveLinkTargetId(dstPath: string, homeDir: string): AgentId | null {
+/** `$XDG_CONFIG_HOME` when set and non-empty, else `~/.config`. */
+export function xdgConfigBase(homeDir: string, xdgConfigHome?: string): string {
+  return xdgConfigHome && xdgConfigHome.length > 0 ? xdgConfigHome : join(homeDir, ".config");
+}
+
+/** Absolute root directory of a link target. */
+export function linkTargetRoot(target: LinkTargetDef, homeDir: string, configBase: string): string {
+  return join(target.base === "config" ? configBase : homeDir, target.rootRel);
+}
+
+export function resolveLinkTargetId(
+  dstPath: string,
+  homeDir: string,
+  configBase: string = join(homeDir, ".config"),
+): AgentId | null {
   for (const target of LINK_TARGETS) {
-    const rootAbs = join(homeDir, target.rootRel);
+    const rootAbs = linkTargetRoot(target, homeDir, configBase);
     if (target.rulesRel && dstPath === join(rootAbs, target.rulesRel)) return target.targetId;
     if (target.skillsRel) {
       const skillsAbs = join(rootAbs, target.skillsRel);
@@ -56,8 +74,8 @@ export type McpAdapterDef = {
   readonly rootKey?: "mcpServers" | "mcp";
   readonly defaultMode: number;
   readonly supportedTransports: readonly McpTransport[];
-  readonly rootDir: (homeDir: string) => string;
-  readonly configPath: (homeDir: string) => string;
+  readonly rootDir: (homeDir: string, configBase: string) => string;
+  readonly configPath: (homeDir: string, configBase: string) => string;
   readonly compile: (
     transport: McpTransport,
     spec: McpServerSpec,
@@ -233,8 +251,8 @@ export const MCP_ADAPTERS: readonly McpAdapterDef[] = [
     rootKey: "mcp",
     defaultMode: 0o600,
     supportedTransports: ["stdio", "http", "sse"],
-    rootDir: (homeDir) => join(homeDir, ".config", "opencode"),
-    configPath: (homeDir) => join(homeDir, ".config", "opencode", "opencode.json"),
+    rootDir: (_homeDir, configBase) => join(configBase, "opencode"),
+    configPath: (_homeDir, configBase) => join(configBase, "opencode", "opencode.json"),
     compile(transport, spec) {
       if (transport === "stdio") {
         const out: Record<string, unknown> = {

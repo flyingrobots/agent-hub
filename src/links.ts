@@ -12,7 +12,7 @@ import {
   unlinkSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { LINK_TARGETS, resolveLinkTargetId } from "./adapters.ts";
+import { LINK_TARGETS, linkTargetRoot, resolveLinkTargetId } from "./adapters.ts";
 import {
   captureSymlinkOrAbsentSnapshot,
   captureTreeSnapshot,
@@ -503,8 +503,11 @@ export function planLinkSync(
     force: boolean;
     activeTargets?: ReadonlySet<AgentId>;
     plannedSkillSources?: Map<string, string>;
+    /** XDG config base (`$XDG_CONFIG_HOME` or `~/.config`); defaults to `~/.config`. */
+    configBase?: string;
   },
 ): PlannedLinkOp[] {
+  const configBase = opts.configBase ?? join(homeDir, ".config");
   const plans: PlannedLinkOp[] = [];
   const canonicalRules = join(canonicalHubPath, "AGENTS.md");
   const canonicalSkills = join(canonicalHubPath, "skills");
@@ -518,7 +521,7 @@ export function planLinkSync(
 
   for (const target of LINK_TARGETS) {
     if (opts.activeTargets && !opts.activeTargets.has(target.targetId)) continue;
-    const rootDir = join(homeDir, target.rootRel);
+    const rootDir = linkTargetRoot(target, homeDir, configBase);
     if (!existsSync(rootDir) || !statSync(rootDir).isDirectory()) continue;
 
     if (target.rulesRel && hasRules) {
@@ -553,7 +556,7 @@ export function planLinkSync(
   for (const dst of Object.keys(state.links).sort()) {
     if (desired.has(dst)) continue;
     if (opts.activeTargets && opts.activeTargets.size < ALL_AGENTS.length) {
-      const ownerTarget = resolveLinkTargetId(dst, homeDir);
+      const ownerTarget = resolveLinkTargetId(dst, homeDir, configBase);
       if (ownerTarget === null || !opts.activeTargets.has(ownerTarget)) continue;
     }
     plans.push(planPruneLinkOp(dst, state.links[dst]!));

@@ -2,6 +2,7 @@
 import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { xdgConfigBase } from "./adapters.ts";
 import { applyLinkOp, planLinkSync, type PlannedLinkOp } from "./links.ts";
 import {
   acquireApplyLock,
@@ -85,9 +86,7 @@ type HubUserConfig = {
 };
 
 function readUserConfig(homeDir: string, xdgConfigHome?: string): HubUserConfig {
-  const cfgBase =
-    xdgConfigHome && xdgConfigHome.length > 0 ? xdgConfigHome : join(homeDir, ".config");
-  const cfgPath = join(cfgBase, "agent-hub", "config.json");
+  const cfgPath = join(xdgConfigBase(homeDir, xdgConfigHome), "agent-hub", "config.json");
   if (!existsSync(cfgPath)) return { disabledTargets: [], configPath: cfgPath };
   const parsed = parseJsonFile(cfgPath);
   if (!isPlainObject(parsed)) {
@@ -115,9 +114,20 @@ function readUserConfig(homeDir: string, xdgConfigHome?: string): HubUserConfig 
   return { agentsDir, disabledTargets, configPath: cfgPath };
 }
 
+/**
+ * Read only `agentsDir`, independent of `disabledTargets` validation, so hub resolution (and
+ * `--print-dir`) agrees with the bin/sync-agents wrapper even when another field is invalid.
+ * A sync run still fails on the invalid field through readUserConfig.
+ */
 function readConfigAgentsDir(homeDir: string, xdgConfigHome?: string): string | null {
+  const cfgPath = join(xdgConfigBase(homeDir, xdgConfigHome), "agent-hub", "config.json");
   try {
-    return readUserConfig(homeDir, xdgConfigHome).agentsDir ?? null;
+    if (!existsSync(cfgPath)) return null;
+    const parsed = parseJsonFile(cfgPath);
+    if (!isPlainObject(parsed)) return null;
+    return typeof parsed.agentsDir === "string" && parsed.agentsDir.length > 0
+      ? parsed.agentsDir
+      : null;
   } catch {
     return null;
   }
@@ -185,6 +195,7 @@ function buildSyncPlan(
     adopt: boolean;
     scope: TargetScope;
     configPath: string;
+    configBase: string;
     disownLegacy: Array<{ agent: AgentId; name: string }>;
   },
 ): BuiltSyncPlan {
@@ -211,6 +222,7 @@ function buildSyncPlan(
             adopt: opts.adopt,
             force: opts.force,
             activeTargets: opts.scope.links,
+            configBase: opts.configBase,
             plannedSkillSources: stagedSkills.plannedSkillSources,
           });
 
@@ -221,6 +233,7 @@ function buildSyncPlan(
           force: opts.force,
           activeTargets: opts.scope.mcp,
           configPath: opts.configPath,
+          configBase: opts.configBase,
           disownLegacy: opts.disownLegacy,
         });
 
@@ -283,6 +296,18 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
   } catch (err) {
     stderr.push(`${cmdLabel}: ${err instanceof Error ? err.message : String(err)}`);
     return { exitCode: 1, stdout, stderr };
+  }
+  const configBase = xdgConfigBase(homeDir, xdgConfigHome);
+
+  // A disown request is consumed only by its agent's MCP planner; out of scope it would be
+  // dropped silently, so refuse it as a usage error instead.
+  for (const req of disownLegacy) {
+    if (!scope.mcp.has(req.agent)) {
+      stderr.push(
+        `${cmdLabel}: --disown-legacy ${req.agent}:${req.name} needs ${req.agent}'s MCP config in scope; include "${req.agent}" or "${req.agent}:mcp" in --targets, or remove it from disabledTargets for this run`,
+      );
+      return { exitCode: 2, stdout, stderr };
+    }
   }
 
   const canonicalHubPath = resolveCanonicalHubDir({
@@ -353,6 +378,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
         adopt,
         scope,
         configPath,
+        configBase,
         disownLegacy,
       });
 
@@ -437,6 +463,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       adopt,
       scope,
       configPath,
+      configBase,
       disownLegacy,
     });
 
@@ -612,8 +639,10 @@ export function parseCliArgs(argv: string[]): {
       if (i + 1 >= argv.length) {
         throw new Error("--targets requires a comma-separated list of targets");
       }
+      if (options.targets) throw new Error("--targets may be given only once; list every selector in one comma-separated value");
       options.targets = parseTargetsArg(argv[++i]!);
     } else if (arg.startsWith("--targets=")) {
+      if (options.targets) throw new Error("--targets may be given only once; list every selector in one comma-separated value");
       options.targets = parseTargetsArg(arg.slice("--targets=".length));
     } else if (arg === "--disown-legacy") {
       if (i + 1 >= argv.length) {
