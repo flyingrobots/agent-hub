@@ -117,7 +117,10 @@ stores each record it plans under the spelling of that run (`rekey-link-record`,
 the last time you synced, and removing an old alias afterwards changes nothing. `--check` does
 not count a re-key as drift. A record is re-keyed only to a spelling for the same target, and
 only when no other desired spelling holds it: when `~/.codex/skills` is a symlink to
-`~/.claude/skills`, the shared link is one object with one record, planned once. If
+`~/.claude/skills`, the shared link is one object with one record, planned once. That record is
+kept under the spelling that sorts first; if that spelling is the symlinked one and you later
+replace the symlink with a real directory, the next run reports the other link as unmanaged,
+and `--adopt` records it. If
 you remove an alias *before* syncing under the new spelling, the old records no longer match:
 the run reports conflicts (and may describe MCP records as moved) and changes nothing;
 `--adopt` then records the current spelling.

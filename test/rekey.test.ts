@@ -145,9 +145,12 @@ describe("ownership records follow the spelling of the last run (flyingrobots/ag
     expect(chk.exitCode).toBe(0);
     expect(out(chk)).not.toMatch(/rekey-(link|mcp)-record/);
     rmSync(join(hub, "mcp", "beta"), { recursive: true });
+    // alpha newly disabled for claude: also removed, so not reported as re-keyed either.
+    writeFileSync(join(hub, "mcp", "alpha", "mcp.json"), JSON.stringify({ mcp: { command: "/bin/alpha" }, overrides: { claude: { disabled: true } } }));
     const r = runSync(opts(home));
     expect(r.exitCode).toBe(0);
-    expect(out(r)).not.toMatch(/rekey-mcp-record[^\n]*#beta/);
+    expect(out(r)).not.toMatch(/rekey-mcp-record[^\n]*\.claude\.json#(beta|alpha)/);
     expect(out(r)).toMatch(/mcp-prune[^\n]*beta/);
+    expect(out(r)).toMatch(/mcp-remove[^\n]*alpha/);
   });
 });
