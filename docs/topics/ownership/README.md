@@ -44,7 +44,10 @@ an unshared link's record has no `physical` field, so its ledger bytes do not ch
 - **Older ledgers.** A ledger written before `physical` existed loads unchanged. The next sync
   of a shared layout records the field (`record-shared-link`, ledger only); `--check` reports it
   as drift until then. Splitting a side before that sync still needs `--adopt` for the other
-  link. The ledger stays version 2: the field is optional and older builds ignore it.
+  link. The ledger stays version 2: the field is optional, and it must be an absolute path (any
+  other value is refused and the ledger is left as it is). Older builds read such a ledger, but
+  a sync by an older build that writes the ledger drops the field; the next sync with this
+  version records it again, and until then splitting a side needs `--adopt` as above.
 - **Duplicate records in scoped runs.** Two records for one physical link keep one. A scoped run
   retires the other only when every target its spellings resolve to is active, so a run scoped
   to `codex:links` never retires a record under `~/.claude/skills`, even the symlink-free one.

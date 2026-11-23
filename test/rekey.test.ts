@@ -328,4 +328,49 @@ describe("shared skills directories: ownership edge cases (flyingrobots/agent-hu
       expect(ledger().links[join(home, excluded, "skills", "demo")]).toBeDefined();
     }
   });
+
+  test("after a split, a shared link the user retargeted or replaced is a conflict and never recorded as shared", () => {
+    for (const first of [".claude", ".codex"]) {
+      for (const replace of ["retarget", "directory"] as const) {
+        const { root, home, hub, both, third } = sharedThird();
+        for (let i = 0; i < 2; i++) expect(runSync(both).exitCode).toBe(0);
+        split(join(home, first, "skills"));
+        const elsewhere = join(root, "elsewhere-demo");
+        mkdirSync(elsewhere, { recursive: true });
+        unlinkSync(join(third, "demo"));
+        if (replace === "retarget") symlinkSync(elsewhere, join(third, "demo"));
+        else mkdirSync(join(third, "demo"));
+        const statePath = statePathOf(hub, home, root);
+        const before = readFileSync(statePath, "utf8");
+        const chk = runSync({ ...both, checkOnly: true });
+        expect(out(chk)).not.toContain("record-shared-link");
+        expect(chk.exitCode).toBe(1);
+        const r = runSync(both);
+        expect(r.exitCode).toBe(1);
+        expect(out(r)).toContain("conflict");
+        expect(out(r)).not.toContain("record-shared-link");
+        expect(readFileSync(statePath, "utf8")).toBe(before);
+        if (replace === "retarget") expect(realpathSync(join(third, "demo"))).toBe(realpathSync(elsewhere));
+        else expect(lstatSync(join(third, "demo")).isDirectory()).toBe(true);
+      }
+    }
+  });
+
+  test("a ledger link record whose physical is not a non-empty absolute path is refused, and the ledger is unchanged", () => {
+    for (const bad of [5, "", null, ["x"], "relative/path"]) {
+      const { root, home, hub, both } = sharedThird();
+      expect(runSync(both).exitCode).toBe(0);
+      const statePath = statePathOf(hub, home, root);
+      const raw = JSON.parse(readFileSync(statePath, "utf8"));
+      const rec = Object.values(raw.links)[0] as Record<string, unknown>;
+      rec.physical = bad;
+      const text = JSON.stringify(raw, null, 2) + "\n";
+      writeFileSync(statePath, text);
+      const r = runSync(both);
+      expect(r.exitCode).toBe(1);
+      expect(r.events.filter((e) => e.id === "agent_hub.error").length).toBe(1);
+      expect(readFileSync(statePath, "utf8")).toBe(text);
+    }
+  });
 });
+

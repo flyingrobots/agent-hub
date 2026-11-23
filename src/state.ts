@@ -89,8 +89,8 @@ function validateLinkRecord(raw: unknown, label: string): ManagedLinkRecord {
   if (!isNonEmptyString(raw.updatedAt)) {
     throw new Error(`${label}: missing or invalid updatedAt timestamp`);
   }
-  if (raw.physical !== undefined && !isNonEmptyString(raw.physical)) {
-    throw new Error(`${label}: invalid physical destination`);
+  if (raw.physical !== undefined && (!isNonEmptyString(raw.physical) || !isAbsolute(raw.physical))) {
+    throw new Error(`${label}: invalid physical destination (must be an absolute path)`);
   }
   return {
     kind: raw.kind as "rules" | "skill",
