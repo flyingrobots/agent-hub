@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
+  existsSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -415,10 +416,40 @@ describe("Ownership is compared by physical path, not spelling (Baker Street PR 
 });
 
 test("a relative XDG_STATE_HOME is ignored, as the XDG spec requires (Baker Street PR #18 blind pass B-F-3)", () => {
-  const { home, hub, base } = sandbox();
+  const { home, hub, env } = sandbox();
   skill(hub, "demo");
-  expect(runSync({ ...base, xdgStateHome: "rel/state", cwd: home }).exitCode).toBe(0);
+  // Run as a subprocess from the sandbox, so a regression writes there, never into the repository.
+  const p = Bun.spawnSync([SYNC_BIN, "--dir", hub], {
+    cwd: home,
+    env: { PATH: process.env.PATH ?? "/usr/bin:/bin", ...env, XDG_STATE_HOME: "rel/state" },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  expect(p.exitCode).toBe(0);
   const { statePath } = getStatePaths(hub, home, undefined);
   expect(statePath.startsWith(join(home, ".local", "state"))).toBe(true);
   expect(loadOwnershipState(statePath, hub).existsOnDisk).toBe(true);
+  expect(existsSync(join(home, "rel"))).toBe(false);
+});
+
+test("two ledger records for one physical link (two spellings) keep one; a later skill removal prunes once (Baker Street PR #18 C-F-2)", () => {
+  const { home, hub, base } = sandbox();
+  skill(hub, "keep");
+  skill(hub, "gone");
+  expect(runSync(base).exitCode).toBe(0);
+  const alias = join(realpathSync(tmpdir()), `ah-dup-${Date.now()}`);
+  Bun.spawnSync(["ln", "-s", home, alias]);
+  tempRoots.push(alias);
+  const { statePath } = getStatePaths(hub, home, base.xdgStateHome);
+  const raw = JSON.parse(readFileSync(statePath, "utf8"));
+  for (const [k, v] of Object.entries(raw.links)) raw.links[k.replace(home, alias)] = v;
+  writeFileSync(statePath, JSON.stringify(raw, null, 2) + "\n");
+  rmSync(join(hub, "skills", "gone"), { recursive: true });
+  const r = runSync(base);
+  expect(out(r)).not.toContain("stale snapshot");
+  expect(r.exitCode).toBe(0);
+  expect(isLink(join(home, ".claude", "skills", "gone"))).toBe(false);
+  expect(isLink(join(home, ".claude", "skills", "keep"))).toBe(true);
+  expect(Object.keys(loadOwnershipState(statePath, hub).state.links).some((k) => k.startsWith(alias))).toBe(false);
+  expect(runSync({ ...base, checkOnly: true }).exitCode).toBe(0);
 });

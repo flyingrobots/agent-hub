@@ -111,7 +111,10 @@ different `HOME` or `XDG_CONFIG_HOME`.
 `XDG_CONFIG_HOME` is used only when it is an absolute path, as the XDG spec requires. Ownership
 is decided by physical location, not spelling: a link or MCP entry recorded under one spelling of
 a directory (a symlinked `~/.config`, a `HOME` reached through a symlink) is recognized under any
-other, so switching between such spellings causes no conflict, duplicate or prune.
+other while that spelling still resolves, so switching between such spellings causes no
+conflict, duplicate or prune. If a recorded spelling stops resolving (for example a `HOME` alias
+symlink is removed), its records no longer match: the run reports conflicts (and may describe
+MCP records as moved) and changes nothing; `--adopt` then records the current spelling.
 
 ## Installing skills
 
