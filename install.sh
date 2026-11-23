@@ -13,6 +13,7 @@ FORCE_SKILL=0
 REPLACE_RUNTIME=0
 REPLACE_BIN=0
 CONFIG_AGENTS_DIR=""
+BINARY_SRC=""
 
 # Exact verified SHA-256 checksums of the unmarked baseline (3cbd0a8) runtime layout.
 BASELINE_SYNC_AGENTS_SHA="51809dbb339dd536b44b9a45f934ae053bfc52e978f263a8e1b473496c36cb74"
@@ -36,6 +37,8 @@ Options:
   --replace-runtime     Move aside an unrecognized existing --prefix directory as a backup
                         before installing
   --replace-bin         Replace an unrecognized existing file/symlink at <bin-dir>/sync-agents
+  --binary <file>       Install a prebuilt standalone sync-agents binary (from `bun run build:bin`
+                        or a release asset) as the runtime instead of the Bun sources; no network
   -h, --help            Show this help
 EOF
 }
@@ -85,6 +88,18 @@ while [[ $# -gt 0 ]]; do
       CONFIG_AGENTS_DIR="${1#--agents-dir=}"
       if [[ -z "$CONFIG_AGENTS_DIR" ]]; then
         echo "install.sh: --agents-dir requires a non-empty argument" >&2
+        exit 2
+      fi
+      ;;
+    --binary)
+      require_arg "--binary" "$#"
+      BINARY_SRC="$2"
+      shift
+      ;;
+    --binary=*)
+      BINARY_SRC="${1#--binary=}"
+      if [[ -z "$BINARY_SRC" ]]; then
+        echo "install.sh: --binary requires a non-empty argument" >&2
         exit 2
       fi
       ;;
@@ -232,8 +247,31 @@ try_atomic_dir_exchange() {
   ' "$a" "$b" >/dev/null 2>&1
 }
 
+EXPECTED_USAGE_LINE="Usage: sync-agents [OPTIONS]"
+
+# A compiled binary is native code, not a script, and identifies itself via --help.
+is_compiled_sync_agents_binary() {
+  local f="$1"
+  [[ "$(head -c 2 "$f")" != "#!" ]] || return 1
+  local first_line
+  first_line="$("$f" --help 2>/dev/null | head -n 1)" || true
+  [[ "$first_line" == "$EXPECTED_USAGE_LINE" ]]
+}
+
 INSTALL_DIR="$(canonicalize_path "$INSTALL_DIR")"
 BIN_DIR="$(canonicalize_path "$BIN_DIR")"
+
+if [[ -n "$BINARY_SRC" ]]; then
+  BINARY_SRC="$(canonicalize_path "$BINARY_SRC")"
+  if [[ ! -f "$BINARY_SRC" || ! -x "$BINARY_SRC" ]]; then
+    echo "install.sh: --binary $BINARY_SRC is not an executable regular file" >&2
+    exit 1
+  fi
+  if ! is_compiled_sync_agents_binary "$BINARY_SRC"; then
+    echo "install.sh: --binary $BINARY_SRC is not a compiled sync-agents binary (build one with: bun run build:bin)" >&2
+    exit 1
+  fi
+fi
 CANON_HOME="$(canonicalize_path "$HOME")"
 
 if [[ -n "$CONFIG_AGENTS_DIR" ]]; then
@@ -316,9 +354,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/src" "$STAGE_DIR/skills"
-cp "$REPO_DIR/bin/sync-agents" "$STAGE_DIR/bin/sync-agents"
-cp "$REPO_DIR"/src/*.ts "$STAGE_DIR/src/"
+if [[ -n "$BINARY_SRC" ]]; then
+  # Binary layout: the compiled executable replaces bin/sync-agents + src/. The bundled
+  # skill stays on disk because install.sh (not the binary) hands it to --skill below.
+  RUNTIME_LAYOUT="binary"
+  mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/skills"
+  cp "$BINARY_SRC" "$STAGE_DIR/bin/sync-agents"
+  chmod 755 "$STAGE_DIR/bin/sync-agents"
+  if ! cmp -s "$BINARY_SRC" "$STAGE_DIR/bin/sync-agents" || ! is_compiled_sync_agents_binary "$STAGE_DIR/bin/sync-agents"; then
+    echo "install.sh: staged binary failed verification; runtime left unchanged" >&2
+    exit 1
+  fi
+else
+  RUNTIME_LAYOUT="source"
+  mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/src" "$STAGE_DIR/skills"
+  cp "$REPO_DIR/bin/sync-agents" "$STAGE_DIR/bin/sync-agents"
+  cp "$REPO_DIR"/src/*.ts "$STAGE_DIR/src/"
+fi
 cp -R "$REPO_DIR/skills/agent-hub" "$STAGE_DIR/skills/agent-hub"
 
 INSTALLED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -327,11 +379,16 @@ cat > "$STAGE_DIR/.agent-hub-runtime" <<EOF
   "schemaVersion": 1,
   "product": "agent-hub",
   "kind": "runtime",
+  "layout": "$RUNTIME_LAYOUT",
   "installedAt": "$INSTALLED_AT"
 }
 EOF
 
-chmod 755 "$STAGE_DIR" "$STAGE_DIR/bin/sync-agents" "$STAGE_DIR/src/cli.ts" "$STAGE_DIR/src/mcp-sync.ts"
+if [[ "$RUNTIME_LAYOUT" == "source" ]]; then
+  chmod 755 "$STAGE_DIR" "$STAGE_DIR/bin/sync-agents" "$STAGE_DIR/src/cli.ts" "$STAGE_DIR/src/mcp-sync.ts"
+else
+  chmod 755 "$STAGE_DIR" "$STAGE_DIR/bin/sync-agents"
+fi
 
 if [[ "$PREFIX_STATUS" == "backup-replace" ]]; then
   PRESERVED_BACKUP="${INSTALL_DIR}.backup-$(date -u +"%Y%m%dT%H%M%SZ")"
