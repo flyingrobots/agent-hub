@@ -32,3 +32,5 @@ Contract ledger for [importing existing configuration](README.md).
 | IMP-FIX-6 | Pull --as-override sees a difference only in extra | Exit code; files; output | E2E | Implemented | `import-cli.test.ts › pull --as-override sees a difference only in extra` |
 | IMP-FIX-7 | A skill unsafe to install is refused before anything is written; differing symlink targets differ | Exit code; files; output | E2E | Implemented | `import-cli.test.ts › a skill unsafe to install is refused before anything is written; differing symlink targets differ` |
 | IMP-FIX-8 | --apply with --dry-run or -n is refused in either order | Exit code; files; output | E2E | Implemented | `import-cli.test.ts › --apply with --dry-run or -n is refused in either order` |
+| IMP-FIX-9 | `pull` refuses dot and hidden names, writing nothing | Exit 2; no hub files | E2E | Implemented | `import-cli.test.ts › pull refuses dot and hidden names, writing nothing` |
+| IMP-FIX-10 | A refused import reports its items as planned and names a bad server | Op phases; message | E2E | Implemented | `import-cli.test.ts › a refused import reports its items as planned, and names a bad server` |

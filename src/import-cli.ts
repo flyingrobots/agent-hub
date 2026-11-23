@@ -163,6 +163,13 @@ export function runImport(opts: ImportOptions): Run {
   const configBase = xdgConfigBase(home, opts.xdgConfigHome);
   const hub = canonicalizeHubPath(opts.hubDir, home, process.cwd());
   const phase = opts.apply ? "sync" : "plan";
+  // Item lines wait until the run knows whether it will write: a refused run reports them as
+  // planned, never as synced.
+  const pending: Array<[PlannedOp, string]> = [];
+  const pend = (o: PlannedOp, message: string) => pending.push([o, message]);
+  const flush = (p: "plan" | "sync") => {
+    for (const [o, m] of pending) r.op(p, o, m.replace(/^\[(plan|sync)\]/, `[${p}]`));
+  };
   const writes: Array<() => void> = [];
   let refusals = 0;
   let planned = 0;
@@ -199,7 +206,7 @@ export function runImport(opts: ImportOptions): Run {
       // directory name (path separators, "..") is refused, never used as a path.
       for (const name of [...m.keys()]) {
         if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(name) || name.includes("..")) {
-          r.conflict(`${agent} mcp server name is not a valid hub server name; not importing it`, "rename it in the agent's config");
+          r.conflict(`${agent} mcp server ${JSON.stringify(name.slice(0, 80))} has a name that is not a valid hub server name; not importing it`, "rename it in the agent's config");
           refusals++;
           m.delete(name);
           continue;
@@ -235,7 +242,7 @@ export function runImport(opts: ImportOptions): Run {
         doc = rw.doc;
         for (const x of rw.rewritten) {
           rewrittenVars.add(x.variable);
-          r.op(phase, {
+          pend({
             domain: "mcp",
             action: "import-rewrite-secret",
             status: "change",
@@ -252,7 +259,7 @@ export function runImport(opts: ImportOptions): Run {
       }
       planned++;
       const dest = join(hub, "mcp", name, "mcp.json");
-      r.op(phase, {
+      pend({
         domain: "mcp",
         action: "import-server",
         status: "change",
@@ -286,7 +293,7 @@ export function runImport(opts: ImportOptions): Run {
       } else if (found.size === 1) {
         const [[text, paths]] = [...found.entries()] as [[string, string[]]];
         planned++;
-        r.op(phase, {
+        pend({
           domain: "rules",
           action: "import-rules",
           status: "change",
@@ -325,7 +332,7 @@ export function runImport(opts: ImportOptions): Run {
         continue;
       }
       planned++;
-      r.op(phase, {
+      pend({
         domain: "skill",
         action: "import-skill",
         status: "change",
@@ -349,6 +356,7 @@ export function runImport(opts: ImportOptions): Run {
       refusals++;
     }
   }
+  flush(refusals > 0 || !opts.apply ? "plan" : "sync");
   if (refusals > 0) {
     r.emit("stderr", "agent_hub.summary", `sync-agents: ${refusals} item(s) cannot be imported; nothing was written.`, { status: "conflicts", conflicts: refusals });
     return { exitCode: 1, events: r.events };
@@ -590,7 +598,9 @@ export function parseSubcommand(cmd: "import" | "pull", argv: string[]): ParsedS
   }
   if (cmd === "import") return { kind: "import", opts: o as Omit<ImportOptions, "hubDir"> & { hubDir?: string } };
   if (!o.from) throw new Error("pull needs --from <agent>");
-  const m = /^(mcp|skill)\/([A-Za-z0-9._-]+)$/.exec(item ?? "");
+  // The same rules as hub directory names: never ".", "..", or a hidden name.
+  const m = /^(mcp|skill)\/([A-Za-z0-9][A-Za-z0-9._-]*)$/.exec(item ?? "");
+  if (m && m[2]!.includes("..")) throw new Error(`pull: "${m[2]}" is not a valid name`);
   if (!m) throw new Error(`pull needs one item: mcp/<name> or skill/<name>${item ? ` (got "${item}")` : ""}`);
   return { kind: "pull", opts: { ...(o as object), from: o.from as AgentId, item: { kind: m[1] as "mcp" | "skill", name: m[2]! } } };
 }

@@ -303,3 +303,24 @@ describe("import and pull repairs (Baker Street PR #34 Moriarty)", () => {
     }
   });
 });
+
+describe("import and pull repairs (Baker Street PR #34 decision check)", () => {
+  test("pull refuses dot and hidden names, writing nothing", () => {
+    const { home, hub, env, writeJson } = machine();
+    writeJson(join(home, ".cursor", "mcp.json"), { mcpServers: { "..": { command: "/x" }, ".": { command: "/x" }, ".hidden": { command: "/x" }, "a..b": { command: "/x" } } });
+    for (const n of ["..", ".", ".hidden", "a..b"]) {
+      expect(run(["pull", "--from", "cursor", `mcp/${n}`, "--dir", hub, "--apply"], env).exitCode).toBe(2);
+    }
+    expect(existsSync(join(hub, "mcp.json"))).toBe(false);
+    expect(existsSync(join(hub, "mcp"))).toBe(false);
+  });
+
+  test("a refused import reports its items as planned, and names a bad server", () => {
+    const { home, hub, env, writeJson } = machine();
+    writeJson(join(home, ".cursor", "mcp.json"), { mcpServers: { good: { type: "stdio", command: "/g" }, "a/b": { type: "stdio", command: "/y" } } });
+    const r = run(["import", "--dir", hub, "--only", "mcp", "--from", "cursor", "--apply"], env);
+    expect(r.exitCode).toBe(1);
+    expect(r.events.filter((e) => e.kind === "op").every((e) => e.phase === "plan")).toBe(true);
+    expect(r.stderr).toContain('"a/b"');
+  });
+});
