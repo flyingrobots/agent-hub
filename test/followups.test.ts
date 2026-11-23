@@ -125,7 +125,7 @@ describe("Phase 1 follow-ups (flyingrobots/agent-hub#3)", () => {
     expect(isLink(join(xdg, "opencode", "skills", "demo"))).toBe(true);
     expect(isLink(join(xdg, "opencode", "AGENTS.md"))).toBe(true);
     const cfg = JSON.parse(readFileSync(join(xdg, "opencode", "opencode.json"), "utf8"));
-    expect(cfg.mcp.alpha.command).toEqual(["/bin/alpha"]);
+    expect(cfg.mcp.servers.alpha.command).toEqual(["/bin/alpha"]);
     expect(runSync({ ...base, xdgConfigHome: xdg, targets: sel("opencode"), checkOnly: true }).exitCode).toBe(0);
   });
 
@@ -293,7 +293,7 @@ describe("Ledger records follow their config file across an OpenCode XDG move (B
 
   test("an identical user entry in the new file is not silently adopted by the old record", () => {
     const { oldCfg, newCfg, moved: opts } = moved();
-    const mine = JSON.stringify({ mcp: { alpha: { type: "local", command: ["/bin/alpha"], enabled: true } } }, null, 2) + "\n";
+    const mine = JSON.stringify({ mcp: { servers: { alpha: { type: "local", command: ["/bin/alpha"] } } } }, null, 2) + "\n";
     writeFileSync(newCfg, mine);
     const oldBefore = readFileSync(oldCfg, "utf8");
     const r = runSync(opts);
@@ -306,7 +306,7 @@ describe("Ledger records follow their config file across an OpenCode XDG move (B
 
   test("removing the hub server never deletes a same-named user entry from the new file", () => {
     const { hub, oldCfg, newCfg, moved: opts } = moved();
-    const mine = JSON.stringify({ mcp: { alpha: { type: "local", command: ["/bin/alpha"], enabled: true } } }, null, 2) + "\n";
+    const mine = JSON.stringify({ mcp: { servers: { alpha: { type: "local", command: ["/bin/alpha"] } } } }, null, 2) + "\n";
     writeFileSync(newCfg, mine);
     rmSync(join(hub, "mcp", "alpha"), { recursive: true });
     const oldBefore = readFileSync(oldCfg, "utf8");
@@ -321,7 +321,7 @@ describe("Ledger records follow their config file across an OpenCode XDG move (B
     const oldBefore = readFileSync(oldCfg, "utf8");
     const r = runSync(opts);
     expect(r.exitCode).toBe(0);
-    expect(JSON.parse(readFileSync(newCfg, "utf8")).mcp.alpha.command).toEqual(["/bin/alpha"]);
+    expect(JSON.parse(readFileSync(newCfg, "utf8")).mcp.servers.alpha.command).toEqual(["/bin/alpha"]);
     expect(readFileSync(oldCfg, "utf8")).toBe(oldBefore);
     expect(out(r)).toContain(oldCfg);
     const { statePath } = getStatePaths(hub, home, base.xdgStateHome);

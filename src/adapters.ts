@@ -78,6 +78,14 @@ export type McpAdapterDef = {
   readonly label: string;
   readonly format: "json" | "toml";
   readonly rootKey?: "mcpServers" | "mcp";
+  /** When set, servers live one level down, at `<rootKey>.<nestedKey>` (OpenCode: `mcp.servers`). */
+  readonly nestedKey?: string;
+  /** Keys of `<rootKey>` that are not server names (OpenCode: `servers`, `timeout`). */
+  readonly reservedNames?: readonly string[];
+  /** Comparable form used for ledger digests of entries in the previous (direct) layout. */
+  readonly legacyNormalizeComparable?: (entry: unknown) => Record<string, unknown>;
+  /** Rewrite a previous-layout entry in the current layout's shape (for migration). */
+  readonly legacyToCurrent?: (entry: unknown) => Record<string, unknown>;
   readonly defaultMode: number;
   readonly supportedTransports: readonly McpTransport[];
   readonly rootDir: (homeDir: string, configBase: string) => string;
@@ -125,7 +133,41 @@ export function normalizeCursorComparable(entry: unknown): Record<string, unknow
   return copy;
 }
 
+/**
+ * The comparable form of an entry in OpenCode's current mcp.servers layout. `enabled` is not a
+ * key of that layout, so it is kept: an entry carrying it differs from what agent-hub writes.
+ */
 export function normalizeOpenCodeComparable(entry: unknown): Record<string, unknown> {
+  if (!isPlainObject(entry)) return {};
+  const copy: Record<string, unknown> = { ...entry };
+  if (copy.disabled === false) delete copy.disabled;
+  if (isPlainObject(copy.environment) && Object.keys(copy.environment).length === 0) {
+    delete copy.environment;
+  }
+  if (isPlainObject(copy.headers) && Object.keys(copy.headers).length === 0) {
+    delete copy.headers;
+  }
+  return copy;
+}
+
+/** A previous-layout OpenCode entry in the current shape: `enabled` becomes `disabled`. */
+export function legacyOpenCodeToCurrent(entry: unknown): Record<string, unknown> {
+  if (!isPlainObject(entry)) return {};
+  const copy: Record<string, unknown> = { ...entry };
+  if (copy.enabled === false) copy.disabled = true;
+  delete copy.enabled;
+  if (copy.disabled === false) delete copy.disabled;
+  if (isPlainObject(copy.environment) && Object.keys(copy.environment).length === 0) {
+    delete copy.environment;
+  }
+  if (isPlainObject(copy.headers) && Object.keys(copy.headers).length === 0) {
+    delete copy.headers;
+  }
+  return copy;
+}
+
+/** The comparable form agent-hub used for OpenCode entries before the mcp.servers layout. */
+export function normalizeLegacyOpenCodeComparable(entry: unknown): Record<string, unknown> {
   if (!isPlainObject(entry)) return {};
   const copy: Record<string, unknown> = { ...entry };
   if (copy.enabled === undefined) copy.enabled = true;
@@ -255,16 +297,26 @@ export const MCP_ADAPTERS: readonly McpAdapterDef[] = [
     label: "OpenCode",
     format: "json",
     rootKey: "mcp",
+    // OpenCode's current layout (https://opencode.ai/config.json: mcp.servers, with the direct
+    // mcp.<name> form marked deprecated).
+    nestedKey: "servers",
+    reservedNames: ["servers", "timeout"],
+    legacyNormalizeComparable: normalizeLegacyOpenCodeComparable,
+    legacyToCurrent: legacyOpenCodeToCurrent,
     defaultMode: 0o600,
     supportedTransports: ["stdio", "http", "sse"],
     rootDir: (_homeDir, configBase) => join(configBase, "opencode"),
     configPath: (_homeDir, configBase) => join(configBase, "opencode", "opencode.json"),
-    compile(transport, spec) {
+    compile(transport, spec, serverName, sourceLabel) {
+      if (serverName === "servers" || serverName === "timeout") {
+        throw new Error(
+          `${sourceLabel}: MCP server name "${serverName}" is reserved by OpenCode's config (mcp.${serverName}); rename the server, or set overrides.opencode.disabled = true`,
+        );
+      }
       if (transport === "stdio") {
         const out: Record<string, unknown> = {
           type: "local",
           command: [spec.command!, ...(spec.args ?? [])],
-          enabled: true,
         };
         if (spec.env && Object.keys(spec.env).length > 0) out.environment = spec.env;
         return out;
@@ -272,7 +324,6 @@ export const MCP_ADAPTERS: readonly McpAdapterDef[] = [
       const out: Record<string, unknown> = {
         type: "remote",
         url: spec.url,
-        enabled: true,
       };
       if (spec.headers && Object.keys(spec.headers).length > 0) out.headers = spec.headers;
       return out;

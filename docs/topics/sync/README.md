@@ -56,7 +56,7 @@ point at the same place. `sync-agents --print-dir` prints the resolved hub.
 | `codex` | `~/.codex/AGENTS.md` | `~/.codex/skills/<name>` | `~/.codex/config.toml` (`[mcp_servers.*]`) |
 | `antigravity` | `~/.gemini/GEMINI.md` and `~/.gemini/config/AGENTS.md` | `~/.gemini/skills/<name>` | `~/.gemini/config/mcp_config.json` (`mcpServers`) |
 | `cursor` | `~/.cursor/AGENTS.md` | `~/.cursor/skills/<name>` | `~/.cursor/mcp.json` (`mcpServers`) |
-| `opencode` | `<oc>/AGENTS.md` | `<oc>/skills/<name>` | `<oc>/opencode.json` (`mcp`) |
+| `opencode` | `<oc>/AGENTS.md` | `<oc>/skills/<name>` | `<oc>/opencode.json` (`mcp.servers`) |
 
 A target is synced only when its root directory (`~/.claude`, `~/.codex`, `~/.gemini`,
 `~/.cursor`, `<oc>`) exists. `<oc>` is `${XDG_CONFIG_HOME:-~/.config}/opencode`, where OpenCode itself reads its global config. Antigravity's `~/.gemini/config/AGENTS.md` link and

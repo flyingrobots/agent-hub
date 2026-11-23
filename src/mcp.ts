@@ -1036,6 +1036,11 @@ function planSingleMcpTarget(
   let originalText = "";
   let jsonDoc: Record<string, unknown> = {};
   let existingMap: Record<string, unknown> = {};
+  // For adapters with a nested server map (OpenCode mcp.servers): the root object as read, and the
+  // entries sitting directly under it in the previous layout.
+  let rootObj: Record<string, unknown> = {};
+  const legacyEntries: Record<string, unknown> = {};
+  let nestedIsLegacyServer = false;
 
   if (beforeSnapshot.kind === "file") {
     if (adapter.format === "toml") {
@@ -1079,7 +1084,28 @@ function planSingleMcpTarget(
         );
       }
       jsonDoc = parsed;
-      existingMap = isPlainObject(rawMap) ? { ...rawMap } : {};
+      rootObj = isPlainObject(rawMap) ? { ...rawMap } : {};
+      if (adapter.nestedKey) {
+        const nested = rootObj[adapter.nestedKey];
+        if (nested !== undefined && !isPlainObject(nested)) {
+          throw new Error(
+            `mcp-sync: ${configPath}: "${rootKey}.${adapter.nestedKey}" must be a JSON object; refusing to overwrite; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`,
+          );
+        }
+        existingMap = isPlainObject(nested) ? { ...nested } : {};
+        // A map of servers holds only objects. Anything else at <rootKey>.<nestedKey> is the
+        // previous layout's server *named* like the map (e.g. {"type": "local", ...}); treating it
+        // as the map would write hub entries inside someone's server object.
+        if (isPlainObject(nested) && Object.values(nested).some((v) => !isPlainObject(v))) {
+          nestedIsLegacyServer = true;
+          existingMap = {};
+        }
+        for (const [k, v] of Object.entries(rootObj)) {
+          if (!adapter.reservedNames?.includes(k)) Object.defineProperty(legacyEntries, k, { value: v, enumerable: true, writable: true, configurable: true });
+        }
+      } else {
+        existingMap = { ...rootObj };
+      }
     }
   }
 
@@ -1113,6 +1139,138 @@ function planSingleMcpTarget(
     opts,
   };
 
+  // Keys of the root object the render drops (migrated or removed previous-layout entries).
+  const migrated = new Set<string>();
+  // Previous layout, at a name the current layout reserves (OpenCode's mcp.servers, mcp.timeout):
+  // an entry agent-hub wrote there can never be migrated (the name is refused for this target), so
+  // once its ledger digest still matches it is removed; otherwise the record is retired and what
+  // is there is left alone, since it is no longer what agent-hub wrote. Never reported "absent".
+  const handledReserved = new Set<string>();
+  for (const name of adapter.reservedNames ?? []) {
+    const rec = prevManaged[name];
+    const present = Object.prototype.hasOwnProperty.call(rootObj, name);
+    const isServerSlot = name === adapter.nestedKey ? nestedIsLegacyServer : present;
+    if (!rec) continue;
+    handledReserved.add(name);
+    delete prevManaged[name];
+    const value = rootObj[name];
+    const matches =
+      present &&
+      isServerSlot &&
+      adapter.legacyNormalizeComparable !== undefined &&
+      sha256Hex(stableJson(adapter.legacyNormalizeComparable(value))) === rec.digest;
+    ctx.ledgerMutation = true;
+    if (matches) {
+      migrated.add(name);
+      if (name === adapter.nestedKey) nestedIsLegacyServer = false;
+      ctx.targetMutation = true;
+      ctx.changeSummaries.push(`remove ${name} from ${rootKey}`);
+      ctx.ops.push({
+        domain: "mcp",
+        action: "mcp-remove-reserved-legacy",
+        status: "change",
+        destination: `${configPath}#${rootKey}.${name}`,
+        observed: `server "${name}" written by sync-agents directly under ${rootKey}, in the previous layout`,
+        intended: `remove it; "${name}" is one of ${adapter.label}'s own ${rootKey} keys, so it cannot be a server name`,
+        ownershipBasis: rec.basis,
+        reason: `${adapter.label} reserves ${rootKey}.${name}; the server sync-agents wrote there is unchanged since, so it is removed`,
+        nextStep: `Rename the hub server if you still want it in ${adapter.label}`,
+        targetMutation: true,
+        ledgerMutation: true,
+      });
+    } else {
+      ctx.changeSummaries.push(`retire record for ${rootKey}.${name}`);
+      ctx.ops.push({
+        domain: "mcp",
+        action: "retire-reserved-record",
+        status: "change",
+        destination: `${configPath}#${rootKey}.${name}`,
+        observed: present
+          ? `${rootKey}.${name} is not the server sync-agents wrote there`
+          : `${rootKey}.${name} is not in ${configPath}`,
+        intended: `stop managing ${rootKey}.${name}; leave ${configPath} untouched`,
+        ownershipBasis: rec.basis,
+        reason: `${adapter.label} reserves ${rootKey}.${name}, so it is no longer a server sync-agents manages`,
+        targetMutation: false,
+        ledgerMutation: true,
+      });
+    }
+  }
+  if (nestedIsLegacyServer) {
+    throw new Error(
+      `mcp-sync: ${configPath}: "${rootKey}.${adapter.nestedKey}" holds values that are not server objects, so it is not ${adapter.label}'s server map (the previous layout's server named "${adapter.nestedKey}" looks like this); fix or remove it by hand; refusing to overwrite; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`,
+    );
+  }
+
+  // Previous layout: entries directly under <rootKey>. One agent-hub wrote (its ledger digest
+  // matches) moves into the nested map; any other entry named like a hub or managed server is a
+  // conflict, never overwritten or duplicated. Unrelated entries stay where they are, reported.
+  for (const name of Object.keys(legacyEntries).sort()) {
+    const entry = legacyEntries[name];
+    // Own-property lookup: a key like "__proto__" must not find Object.prototype as a record.
+    const rec = Object.prototype.hasOwnProperty.call(prevManaged, name) ? prevManaged[name] : undefined;
+    const legacyDigest = adapter.legacyNormalizeComparable
+      ? sha256Hex(stableJson(adapter.legacyNormalizeComparable(entry)))
+      : null;
+    const inNested = Object.prototype.hasOwnProperty.call(existingMap, name);
+    if (rec && !inNested && legacyDigest === rec.digest) {
+      // Write it in the current shape: legacyToCurrent turns the old `enabled` into `disabled`.
+      const migratedEntry = adapter.normalizeComparable(
+        adapter.legacyToCurrent ? adapter.legacyToCurrent(entry) : entry,
+      );
+      existingMap[name] = migratedEntry;
+      prevManaged[name] = { ...rec, digest: sha256Hex(stableJson(migratedEntry)) };
+      migrated.add(name);
+      // The record is re-baselined to the current shape's digest, so the ledger changes too.
+      ctx.targetMutation = true;
+      ctx.ledgerMutation = true;
+      ctx.changeSummaries.push(`move ${name} to ${rootKey}.${adapter.nestedKey}`);
+      ctx.ops.push({
+        domain: "mcp",
+        action: "mcp-migrate-layout",
+        status: "change",
+        destination: `${configPath}#${rootKey}.${name}`,
+        observed: `entry "${name}" written by sync-agents directly under ${rootKey}`,
+        intended: `move it to ${rootKey}.${adapter.nestedKey}.${name}`,
+        ownershipBasis: rec.basis,
+        reason: `${adapter.label} reads servers from ${rootKey}.${adapter.nestedKey}; the direct ${rootKey}.<name> layout is deprecated`,
+        targetMutation: true,
+        ledgerMutation: true,
+      });
+    } else if (rec || servers.has(name)) {
+      ctx.ops.push({
+        domain: "mcp",
+        action: "conflict",
+        status: "conflict",
+        destination: `${configPath}#${rootKey}.${name}`,
+        observed: rec
+          ? `entry "${name}" under ${rootKey} differs from what sync-agents recorded`
+          : `unmanaged entry "${name}" directly under ${rootKey}`,
+        intended: `manage "${name}" at ${rootKey}.${adapter.nestedKey}.${name}`,
+        ownershipBasis: rec ? rec.basis : "none",
+        reason: `refusing to manage "${name}" in ${rootKey}.${adapter.nestedKey} while ${rootKey}.${name} also names it`,
+        nextStep: servers.has(name)
+          ? `Remove or rename ${rootKey}.${name} in ${configPath}, or rename the hub server`
+          : `Remove or rename ${rootKey}.${name} in ${configPath}`,
+        targetMutation: false,
+        ledgerMutation: false,
+      });
+    } else {
+      ctx.ops.push({
+        domain: "mcp",
+        action: "leave-legacy-unmanaged",
+        status: "ok",
+        destination: `${configPath}#${rootKey}.${name}`,
+        observed: `entry "${name}" directly under ${rootKey} (the deprecated layout), not written by sync-agents`,
+        intended: "leave it where it is",
+        ownershipBasis: "none",
+        reason: `sync-agents does not manage "${name}"; ${adapter.label} deprecates the direct ${rootKey}.<name> layout, so move it to ${rootKey}.${adapter.nestedKey}.${name} yourself when convenient`,
+        targetMutation: false,
+        ledgerMutation: false,
+      });
+    }
+  }
+
   for (const [recName, rec] of staleRecords.sort(([a], [b]) => a.localeCompare(b))) {
     ctx.ledgerMutation = true;
     ctx.changeSummaries.push(`retire record for moved config ${rec.configPath}#${recName}`);
@@ -1132,6 +1290,7 @@ function planSingleMcpTarget(
   }
 
   for (const [name, compiledPerAgent] of servers) {
+    if (handledReserved.has(name)) continue;
     if (!Object.prototype.hasOwnProperty.call(compiledPerAgent, adapter.id)) {
       throw new Error(`mcp-sync: internal error: ${adapter.id} was planned but not compiled for "${name}"`);
     }
@@ -1181,7 +1340,22 @@ function planSingleMcpTarget(
         throw new Error(`mcp-sync: ${configPath}: ${msg}; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`);
       }
     } else {
-      const nextDoc = { ...jsonDoc, [rootKey]: ctx.existingMap };
+      let rootValue: Record<string, unknown> = ctx.existingMap;
+      if (adapter.nestedKey) {
+        // Keep the root object's key order and everything in it except migrated entries.
+        // defineProperty, not assignment: a user key named "__proto__" must stay an own key.
+        rootValue = {};
+        const put = (k: string, v: unknown) =>
+          Object.defineProperty(rootValue, k, { value: v, enumerable: true, writable: true, configurable: true });
+        for (const [k, v] of Object.entries(rootObj)) {
+          if (k === adapter.nestedKey) put(k, ctx.existingMap);
+          else if (!migrated.has(k)) put(k, v);
+        }
+        if (!Object.prototype.hasOwnProperty.call(rootValue, adapter.nestedKey)) {
+          put(adapter.nestedKey, ctx.existingMap);
+        }
+      }
+      const nextDoc = { ...jsonDoc, [rootKey]: rootValue };
       renderedContent = `${JSON.stringify(nextDoc, null, 2)}\n`;
     }
   }

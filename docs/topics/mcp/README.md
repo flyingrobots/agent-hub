@@ -65,15 +65,49 @@ application expands them is up to that application.
 | `codex` | `~/.codex/config.toml` `[mcp_servers.<name>]` | `command`, `args?`, `env?` | `url`, `http_headers?` | refused | `0600` |
 | `antigravity` | `~/.gemini/config/mcp_config.json` `mcpServers` | `{command, args?, env?, disabled: false}` | `{serverUrl, headers?, disabled: false}` | refused | `0644` |
 | `cursor` | `~/.cursor/mcp.json` `mcpServers` | `{type: "stdio", command, args?, env?}` | `{url, headers?}` | `{url, headers?}` | `0600` |
-| `opencode` | `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json` `mcp` | `{type: "local", command: [cmd, ...args], environment?, enabled: true}` | `{type: "remote", url, headers?, enabled: true}` | same as http | `0600` |
+| `opencode` | `${XDG_CONFIG_HOME:-~/.config}/opencode/opencode.json` `mcp.servers` | `{type: "local", command: [cmd, ...args], environment?}` | `{type: "remote", url, headers?}` | same as http | `0600` |
 
 An existing file keeps its mode. Keys outside the MCP map, and servers agent-hub does not manage,
 are preserved. A target's MCP config is planned only when its MCP root exists: `~/.claude`,
 `~/.codex`, `~/.gemini/config`, `~/.cursor` or `${XDG_CONFIG_HOME:-~/.config}/opencode`.
 
-OpenCode's published schema still accepts servers written directly under `mcp.<name>` with
-`enabled`, but marks that layout deprecated in favor of `mcp.servers`. Moving to the newer layout
-is tracked in flyingrobots/agent-hub#13.
+OpenCode entries use its current layout, `mcp.servers.<name>` (see its schema at
+`https://opencode.ai/config.json`). Everything else under `mcp`, such as `mcp.timeout`, is kept.
+Entries in the previous layout, directly under `mcp.<name>`:
+
+- one that `sync-agents` wrote, and that is unchanged since (its ledger digest matches), is
+  moved to `mcp.servers.<name>` (`mcp-migrate-layout` in `--dry-run`). The move drops the old
+  layout's `enabled: true`, which the current layout does not have. If that server has since
+  been removed from the hub or disabled for OpenCode, it is moved and then removed in the same
+  run, as any managed server would be;
+- one that it did not write, or that was edited, and that has a hub server's name (or a
+  sync-agents record), stops the run as a conflict. `--force` and `--adopt` do not resolve it,
+  because `sync-agents` will not move or replace an entry it cannot prove it wrote. Move the
+  entry to `mcp.servers.<name>` yourself, rename or remove it, rename the hub server, or leave
+  OpenCode's MCP config out with `"opencode:mcp"`. If the edit was deliberate, such as turning
+  the server off with `enabled: false`, say so in the hub (`overrides.opencode.disabled: true`)
+  and then remove `mcp.<name>` by hand; removing it without the override brings the server back.
+  An unmanaged entry that carries `enabled` cannot be adopted, because the current layout has no
+  such key;
+- any other is left where it is, and `--explain` lists it (`leave-legacy-unmanaged`). A file
+  holding both layouts is valid under OpenCode's schema, which still accepts the old one as
+  deprecated; whether OpenCode itself still loads the old entries once `mcp.servers` exists has
+  not been verified, so move your own entries to `mcp.servers` to be sure.
+
+The hub server names `servers` and `timeout` are refused for OpenCode. They are legal names
+inside `mcp.servers`, but in the previous layout they collide with OpenCode's own `mcp.servers`
+and `mcp.timeout` keys, so refusing them keeps an upgrade unambiguous. Until you rename the
+server or disable it for OpenCode (`overrides.opencode.disabled: true`), every run that includes
+OpenCode's MCP config stops. A disabled server still names its entry: a server of your own at
+`mcp.servers.timeout` is then a conflict, and `--force` would remove it, so rename the hub server
+instead when you have one.
+
+A server by one of those names that an earlier `sync-agents` wrote in the previous layout is
+removed once it is disabled or renamed, provided it is unchanged (`mcp-remove-reserved-legacy`).
+If a `timeout` entry was changed, its record is retired and `mcp.timeout` is left alone
+(`retire-reserved-record`). A `mcp.servers` holding any value that is not a server object, which
+is what the previous layout's server named `servers` looks like, is refused unless
+`sync-agents` wrote it and it is unchanged, so nothing is ever written inside it.
 
 ### Codex TOML editing
 
