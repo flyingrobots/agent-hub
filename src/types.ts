@@ -38,6 +38,13 @@ export type ManagedLinkRecord = {
   target: string;
   basis: OwnershipBasis;
   updatedAt: string;
+  /**
+   * The physical destination, recorded only when several desired spellings name this one link
+   * (agents whose skills directories are symlinks to one shared directory). It lets the other
+   * spellings keep ownership after the directory holding this record's spelling is split off.
+   * Absent in ledgers written before flyingrobots/agent-hub#37, and for every unshared link.
+   */
+  physical?: string;
 };
 
 export type ManagedMcpRecord = {

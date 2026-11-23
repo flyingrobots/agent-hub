@@ -346,7 +346,7 @@ describe.skipIf(compileUnavailable !== null)("compiled sync-agents binary", () =
     const state = join(home, ".local", "state");
     mkdirSync(join(state, "agent-hub"), { recursive: true });
     const argv = ["/bin/sh", "-c", 'echo "pid=$$ T=$T"'];
-    writeFileSync(join(state, "agent-hub", "grants.json"), JSON.stringify({ version: 1, grants: [{ key: "k", env: "T", argv }] }));
+    writeFileSync(join(state, "agent-hub", "grants.json"), JSON.stringify({ version: 1, grants: [{ key: "k", env: "T", argv, program: realpathSync("/bin/sh"), keep: [] }] }));
     const sec = join(home, "fake-security");
     writeFileSync(sec, '#!/bin/sh\nfor a; do [ "$a" = "-w" ] && { echo FAKE-bin-value; exit 0; }; done\nexit 0\n');
     chmodSync(sec, 0o755);

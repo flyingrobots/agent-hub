@@ -13,11 +13,12 @@ import {
   keychainSet,
   loadGrants,
   parseExecArgs,
-  resolveProgram,
+  realProgram,
   saveGrants,
   VAULT_KEY,
   VaultError,
   vaultStateDir,
+  withGrantsLock,
   type ExecRequest,
   type Grant,
 } from "./vault.ts";
@@ -50,7 +51,7 @@ const grantEvent = (verb: string, g: Grant): OutputEvent => ({
   stream: "stdout",
   id: "agent_hub.grant",
   message: `[${verb}] ${g.key} -> ${g.env} for ${g.server ? `mcp/${g.server}: ` : ""}${g.argv.join(" ")}`,
-  data: { key: g.key, env: g.env, argv: g.argv, ...(g.server ? { server: g.server } : {}) },
+  data: { key: g.key, env: g.env, argv: g.argv, program: g.program, keep: g.keep, ...(g.server ? { server: g.server } : {}) },
 });
 
 const summary = (message: string, changes: number): OutputEvent => ({
@@ -76,9 +77,11 @@ export function runExecCli(argv: string[], human: boolean): number {
     return 2;
   }
   const dir = stateDir();
+  // The program that will actually run: argv[0] must be absolute, and the grant binds its real path.
+  const program = realProgram(req.argv[0]!);
   const audit = (outcome: string, reason?: string) => {
     try {
-      appendAudit(dir, { pid: process.pid, outcome, argv: req.argv, vault: req.vault, ...(reason ? { reason } : {}) });
+      appendAudit(dir, { pid: process.pid, outcome, argv: req.argv, ...(program ? { program } : {}), vault: req.vault, ...(reason ? { reason } : {}) });
       return true;
     } catch {
       return false;
@@ -93,14 +96,19 @@ export function runExecCli(argv: string[], human: boolean): number {
     emit(errorEvent("config", `sync-agents exec: ${(err as Error).message}`));
     return 1;
   }
-  const missing = req.vault.filter((u) => !findGrant(grants, u, req.argv));
+  if (program === null) {
+    audit("refused", "the command is not an absolute path to an existing program");
+    emit(errorEvent("config", "sync-agents exec: refused: the command must be an absolute path to an existing program"));
+    return 1;
+  }
+  const missing = req.vault.filter((u) => !findGrant(grants, u, req.argv, program, req.keep));
   if (missing.length > 0) {
     const what = missing.map((u) => `${u.env}=${u.key}`).join(", ");
     audit("refused", `no grant for ${what} with this argv`);
     emit(
       errorEvent(
         "config",
-        `sync-agents exec: refused: no grant for ${what} with this exact command line (grant it with: sync-agents secret grant KEY --to SERVER)`,
+        `sync-agents exec: refused: no grant for ${what} with this exact command line, program and --keep set (grant it with: sync-agents secret grant KEY --to SERVER)`,
       ),
     );
     return 1;
@@ -110,10 +118,8 @@ export function runExecCli(argv: string[], human: boolean): number {
     const v = process.env[name];
     if (v !== undefined) env[name] = v;
   }
-  let program: string;
   try {
     for (const u of req.vault) env[u.env] = keychainGet(u.key);
-    program = resolveProgram(req.argv[0]!, env.PATH);
   } catch (err) {
     audit("error", (err as Error).message);
     emit(errorEvent("config", `sync-agents exec: ${(err as Error).message}`));
@@ -132,7 +138,8 @@ export function runExecCli(argv: string[], human: boolean): number {
     emit(errorEvent("internal", `sync-agents exec: ${(err as Error).message}`));
     return 1;
   }
-  emit(errorEvent("internal", `sync-agents exec: execve(${program}) failed (returned ${rc})`));
+  audit("error", `execve returned ${rc}; the program did not start`);
+  emit(errorEvent("internal", `sync-agents exec: could not start ${program} (execve returned ${rc})`));
   return 1;
 }
 
@@ -147,6 +154,7 @@ function parseSecretArgs(argv: string[]): SecretArgs {
   const out: SecretArgs = { verb };
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i]!;
+    if (a === "--human" || a === "--humanize") continue;
     if (a === "--to" || a === "--dir") {
       const v = rest[++i];
       if (!v) throw new VaultError(`${a} requires a value`);
@@ -197,19 +205,31 @@ export function runSecretCli(argv: string[], human: boolean, resolveHub: (dir: s
           emit(errorEvent("config", `sync-agents secret grant: mcp/${a.to} does not use \${vault:${a.key}} in ${hub}`));
           return 1;
         }
-        const { grants, added } = addGrants(
-          loadGrants(dir),
-          mine.map((v) => ({ key: v.key, env: v.env, argv: v.argv, server: v.server })),
-        );
-        if (added.length > 0) saveGrants(dir, grants);
+        const asGrants: Grant[] = [];
+        for (const v of mine) {
+          const program = realProgram(v.argv[0]!);
+          if (program === null) {
+            emit(errorEvent("config", `sync-agents secret grant: mcp/${a.to} runs ${v.argv[0]}, which does not exist; a grant binds the program itself`));
+            return 1;
+          }
+          asGrants.push({ key: v.key, env: v.env, argv: v.argv, program, keep: v.keep, server: v.server });
+        }
+        const added = withGrantsLock(dir, () => {
+          const res = addGrants(loadGrants(dir), asGrants);
+          if (res.added.length > 0) saveGrants(dir, res.grants);
+          return res.added;
+        });
         for (const g of added) emit(grantEvent("grant", g));
         emit(summary(added.length > 0 ? `sync-agents: granted "${a.key}" to mcp/${a.to}.` : `sync-agents: mcp/${a.to} already has its grants for "${a.key}".`, added.length));
         return 0;
       }
       case "revoke": {
-        const grants = loadGrants(dir);
-        const gone = grants.filter((g) => g.key === a.key && (!a.to || g.server === a.to));
-        if (gone.length > 0) saveGrants(dir, grants.filter((g) => !gone.includes(g)));
+        const gone = withGrantsLock(dir, () => {
+          const grants = loadGrants(dir);
+          const g = grants.filter((x) => x.key === a.key && (!a.to || x.server === a.to));
+          if (g.length > 0) saveGrants(dir, grants.filter((x) => !g.includes(x)));
+          return g;
+        });
         for (const g of gone) emit(grantEvent("revoke", g));
         emit(summary(`sync-agents: revoked ${gone.length} grant(s) for "${a.key}".`, gone.length));
         return 0;
