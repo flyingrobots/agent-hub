@@ -13,6 +13,7 @@ import printDirSchema from "../schemas/agent_hub.print_dir.schema.json";
 import recoverySchema from "../schemas/agent_hub.recovery.schema.json";
 import schemaSchema from "../schemas/agent_hub.schema.schema.json";
 import summarySchema from "../schemas/agent_hub.summary.schema.json";
+import grantSchema from "../schemas/agent_hub.grant.schema.json";
 import warningSchema from "../schemas/agent_hub.warning.schema.json";
 import type { PlannedOp } from "./types.ts";
 
@@ -26,6 +27,7 @@ export const SCHEMAS = {
   "agent_hub.print_dir": printDirSchema,
   "agent_hub.schema": schemaSchema,
   "agent_hub.warning": warningSchema,
+  "agent_hub.grant": grantSchema,
 } as const;
 
 export type SchemaId = keyof typeof SCHEMAS;
@@ -54,6 +56,7 @@ const KIND: Record<SchemaId, string> = {
   "agent_hub.print_dir": "print_dir",
   "agent_hub.schema": "schema",
   "agent_hub.warning": "warning",
+  "agent_hub.grant": "grant",
 };
 
 export function renderJsonLine(event: OutputEvent, runId: string = RUN_ID): string {

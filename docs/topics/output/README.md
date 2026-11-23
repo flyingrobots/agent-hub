@@ -39,6 +39,7 @@ the bare path, or read `.hub` from the JSON line.
 | `agent_hub.summary` | stdout, stderr | How the run ended; see below |
 | `agent_hub.error` | stderr | A failure; see below |
 | `agent_hub.warning` | stderr | Something worth attention that changes neither the run nor its exit code. `code` is `plaintext_secret` (a literal in a hub server spec looks like a credential; see [MCP servers](../mcp/README.md#plaintext-secrets)), with `server`, `field`, `reason` and `source`. The value itself is never printed |
+| `agent_hub.grant` | stdout | `sync-agents secret grant`, `revoke` and `list`: one vault grant, with `key`, `env`, `argv` and, when known, `server`. Never a value. See [vault secrets](../vault/README.md) |
 | `agent_hub.help` | stdout | `--help`: `command`, `usage` (the help text) and `schemas` (every schema id), followed by one `agent_hub.schema` line per message type |
 | `agent_hub.print_dir` | stdout | `--print-dir`: `hub` |
 | `agent_hub.schema` | stdout | `--schema`, and after `--help`: one line per message type, with `schema_id`, `schema_version` and the `schema` |
@@ -104,7 +105,9 @@ These are the cases where a line may not be JSON, or may not be valid UTF-8:
 - `bin/sync-agents --print-dir` with a path that is not valid UTF-8: the wrapper copies the bytes
   into the line as they are (the engine replaces them);
 - `bin/sync-agents --help` without Bun prints only the `agent_hub.help` line, since only the
-  engine carries the schemas (they are also installed in `schemas/`).
+  engine carries the schemas (they are also installed in `schemas/`);
+- a successful `sync-agents exec`, which prints nothing and ends no run: it replaces itself with
+  the server, whose output follows (see [vault secrets](../vault/README.md#what-exec-does)).
 
 Everything else the engine or the wrapper reports is a schema'd line, including the output of
 the programs it runs (`git`, `tar`, `unzip`), which arrives inside an `agent_hub.error` line. A

@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/flyingrobots/agent-hub/schemas/files/agent_hub.exec_audit.schema.json",
+  "title": "agent_hub.exec_audit",
+  "description": "One line of $XDG_STATE_HOME/agent-hub/exec-audit.jsonl: one sync-agents exec decision. Never holds a secret value. A file format, not an output message.",
+  "x-schema-version": "1.0.0",
+  "type": "object",
+  "required": [
+    "_schema",
+    "kind",
+    "ts",
+    "pid",
+    "outcome",
+    "argv",
+    "vault"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "_schema": {
+      "type": "object",
+      "required": [
+        "id",
+        "version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "const": "agent_hub.exec_audit"
+        },
+        "version": {
+          "const": "1.0.0"
+        }
+      }
+    },
+    "kind": {
+      "const": "exec_audit"
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "pid": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "outcome": {
+      "enum": [
+        "exec",
+        "refused",
+        "error"
+      ],
+      "description": "exec: about to replace the process; refused: no exact grant (nothing was read); error: a grant matched but the keychain or the program failed."
+    },
+    "argv": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "vault": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "env",
+          "key"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "env": {
+            "type": "string"
+          },
+          "key": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "reason": {
+      "type": "string"
+    },
+    "program": {
+      "type": "string",
+      "description": "The real path of the program exec checked against the grant (absent when argv[0] did not resolve)."
+    }
+  }
+}

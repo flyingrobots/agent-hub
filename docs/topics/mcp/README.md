@@ -132,6 +132,12 @@ Limits worth knowing:
   (`${env:lowercase}`, an unterminated `${env:`) stops the run. There is no escape for a literal
   `${env:` in a value.
 
+### Vault references
+
+`${vault:KEY}` as the whole value of a stdio server's `env` entry gives the server a secret from the
+macOS keychain through `sync-agents exec`; no agent config holds the value. See
+[vault secrets](../vault/README.md).
+
 ### Plaintext secrets
 
 On every run that plans MCP servers (sync, `--dry-run`, `--check`, `--explain`; not `--skill-only`,

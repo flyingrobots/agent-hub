@@ -1,0 +1,81 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/flyingrobots/agent-hub/schemas/agent_hub.grant.schema.json",
+  "title": "agent_hub.grant",
+  "description": "One vault grant (sync-agents secret grant, revoke, list): exec may put KEY in ENV for exactly this argv. Never carries a value.",
+  "x-schema-version": "1.0.0",
+  "type": "object",
+  "required": [
+    "_schema",
+    "kind",
+    "run_id",
+    "message",
+    "key",
+    "env",
+    "argv",
+    "program",
+    "keep"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "_schema": {
+      "type": "object",
+      "required": [
+        "id",
+        "version"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "const": "agent_hub.grant"
+        },
+        "version": {
+          "const": "1.0.0"
+        }
+      }
+    },
+    "kind": {
+      "const": "grant"
+    },
+    "run_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{16}$",
+      "description": "Identifies one invocation; every line it emits carries it."
+    },
+    "message": {
+      "type": "string",
+      "description": "The same content as human prose; --human prints only this."
+    },
+    "key": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "env": {
+      "type": "string",
+      "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+    },
+    "argv": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string"
+      },
+      "description": "The exact command line, program first."
+    },
+    "server": {
+      "type": "string",
+      "description": "The hub server the grant was made for."
+    },
+    "program": {
+      "type": "string",
+      "description": "The real path of argv[0] when the grant was made; exec runs only that program."
+    },
+    "keep": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "The exact set of variables exec passes through from the agent (--keep)."
+    }
+  }
+}

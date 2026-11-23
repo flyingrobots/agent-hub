@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { detectPlaintextSecrets, specFields, validateSpecRefs } from "./env-refs.ts";
+import { homedir } from "node:os";
+import { compileVaultSpec, defaultExecPath, vaultUses } from "./vault.ts";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
@@ -335,10 +337,14 @@ export function compileAgentEntry(
 /** A literal that looks like a credential in a hub server spec (warning only, Phase 2). */
 export type PlaintextSecretWarning = { server: string; field: string; reason: string; source: string };
 
+/** A server's use of a vault key, as `secret grant` records it: the argv exec will be given. */
+export type VaultInvocation = { server: string; agent: AgentId; env: string; key: string; argv: string[]; keep: string[] };
+
 export function loadCanonicalServers(
   canonicalHubPath: string,
   activeTargets?: ReadonlySet<AgentId>,
   warnings?: PlaintextSecretWarning[],
+  vault?: { execPath: string; invocations?: VaultInvocation[] },
 ): CompiledServerMap {
   const result: CompiledServerMap = new Map();
   const mcpRoot = join(canonicalHubPath, "mcp");
@@ -431,6 +437,22 @@ export function loadCanonicalServers(
           if (warnedFields.has(`${w.field}\0${source}`)) continue;
           warnedFields.add(`${w.field}\0${source}`);
           warnings.push({ server: name, field: w.field, reason: w.reason, source });
+        }
+      }
+      if (resolved.disabled !== true) {
+        try {
+          const uses = vaultUses(resolved);
+          if (uses.length > 0) {
+            const argv = [resolved.command ?? "", ...(resolved.args ?? [])];
+            const vaultEnv = new Set(uses.map((u) => u.env));
+            const keep = Object.keys(resolved.env ?? {}).filter((k) => !vaultEnv.has(k)).sort();
+            resolved = compileVaultSpec(resolved, vault?.execPath ?? defaultExecPath(homedir()));
+            for (const u of uses) vault?.invocations?.push({ server: name, agent, env: u.env, key: u.key, argv, keep });
+          } else {
+            compileVaultSpec(resolved, "");
+          }
+        } catch (err) {
+          throw new Error(`${basePath}: MCP "${name}": ${err instanceof Error ? err.message : String(err)}`);
         }
       }
       compiled[agent] = compileAgentEntry(agent, name, resolved, basePath);
@@ -1481,7 +1503,7 @@ export function planMcpSync(
   },
 ): { targets: PlannedMcpTarget[]; globalOps: PlannedOp[]; warnings: PlaintextSecretWarning[] } {
   const warnings: PlaintextSecretWarning[] = [];
-  const servers = loadCanonicalServers(canonicalHubPath, opts.activeTargets, warnings);
+  const servers = loadCanonicalServers(canonicalHubPath, opts.activeTargets, warnings, { execPath: defaultExecPath(homeDir) });
   const now = new Date().toISOString();
   const { disownByAgent, globalOps } = validateDisownRequests(opts.disownLegacy, legacyV1, servers);
 

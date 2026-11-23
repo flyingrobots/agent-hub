@@ -8,6 +8,16 @@ changes are called out under **Changed** with what to do.
 
 ## [Unreleased]
 
+### Added
+
+- Vault secrets for stdio MCP servers (flyingrobots/agent-hub#10). `${vault:KEY}` as a whole `env`
+  value makes every agent run the server through `sync-agents exec`, which checks an exact
+  (key, variable, command line, real program, pass-through variables) grant, reads the value from the macOS keychain, scrubs the
+  environment and replaces itself with the server via `execve(2)` (same PID), appending a
+  value-free line to `exec-audit.jsonl`. `sync-agents secret set|grant|revoke|list` manage values
+  and grants; `secret set` never puts the value in an argv. New output message
+  `agent_hub.grant` 1.0.0. Same-user threat model, documented in `docs/topics/vault/`.
+
 ### Fixed
 
 - Shared skills directories: when `~/.claude/skills` and `~/.codex/skills` are both symlinks to
