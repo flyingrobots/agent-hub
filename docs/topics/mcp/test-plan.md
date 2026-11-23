@@ -70,6 +70,8 @@ under `test/`; the documentation gate fails if a cited test does not exist.
 | MCP-JSON-6 | Non-object JSON roots, invalid TOML and a non-table `mcp_servers` carry the same remedy | Message text; file unchanged | E2E | Implemented | `adapters.test.ts › non-object JSON root, invalid TOML, and a non-table mcp_servers all carry the remedy` |
 | MCP-JSON-8 | A Codex editor refusal (dotted `mcp_servers` key) names the `codex:mcp` remedy and the config path, and leaves the file untouched | Message text; byte equality | E2E | Implemented | `followups.test.ts › a Codex editor refusal (dotted mcp_servers key) names the codex:mcp remedy and the config path` |
 | MCP-JSON-7 | Malformed JSON errors name the file | Message text | E2E | Implemented | `hardening.test.ts › F14: malformed JSON errors include the offending file path` |
+| MCP-JSON-9 | A JSON target config of 0 bytes, or of JSON whitespace only, is synced like an absent one, for all four JSON targets; `import` plans over one without error | Exit 0; the server is present in the parsed config; `--check` exits 0 | E2E | Implemented | `empty-config.test.ts › a JSON target config with no content is synced like an absent one, for every JSON target`; `empty-config.test.ts › import plans without error when an agent's config has no content` |
+| MCP-JSON-10 | A truncated JSON target config is still refused and left as it was | Exit 1; `invalid JSON` in the message; byte equality | E2E | Implemented | `empty-config.test.ts › a truncated JSON target config is still refused and left as it was, for every JSON target` |
 
 ## Conflicts
 
