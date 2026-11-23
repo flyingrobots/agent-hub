@@ -270,7 +270,7 @@ describe("hostile lockfile entries are rejected, nothing written (flyingrobots/a
 
   test("pruning requires an exact digest match: an edited file is kept and reported as a conflict", () => {
     const sb = sandbox();
-    seedHub(sb.repo, { fs: { mcp: { command: "npx" } }, gone: { mcp: { command: "npx", overrides: {} } } });
+    seedHub(sb.repo, { fs: { mcp: { command: "npx" } }, gone: { mcp: { command: "uvx" } } });
     expect(project(sb, sb.repo).exitCode).toBe(0);
     // Drop every server: all four MCP files stop being intended.
     rmSync(join(sb.repo, ".agents", "mcp"), { recursive: true, force: true });

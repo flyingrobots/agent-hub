@@ -4,7 +4,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { xdgConfigBase } from "./adapters.ts";
 import { IMPORT_USAGE, parseSubcommand, PULL_USAGE, runImport, runPull, type ParsedSubcommand, type PullOptions } from "./import-cli.ts";
-import { opData, resetOutput, SCHEMAS, schemaEvents, writeEvents, writeFailed, type OutputEvent, type SchemaId } from "./output.ts";
+import { formatExplainBlock, formatOpSummary, opData, resetOutput, SCHEMAS, schemaEvents, writeEvents, writeFailed, type OutputEvent, type SchemaId } from "./output.ts";
 import { applyLinkOp, planLinkSync, type PlannedLinkOp } from "./links.ts";
 import {
   acquireApplyLock,
@@ -14,6 +14,7 @@ import {
   type ApplyLockHandle,
 } from "./lock.ts";
 import { applyFileOp, planPrimitives, type PlannedFileOp } from "./primitives.ts";
+import { runProjectSync } from "./project.ts";
 import { EXEC_USAGE, runExecCli, runSecretCli, SECRET_USAGE } from "./vault-cli.ts";
 import { applyMcpTarget, planMcpSync, type PlaintextSecretWarning, type PlannedMcpTarget } from "./mcp.ts";
 import { canonicalizeHubPath, isPlainObject, parseJsonFile } from "./paths.ts";
@@ -84,6 +85,13 @@ Options:
                                    domain of one, e.g. opencode:mcp or cursor:links
                                    (excluded targets are never pruned). Replaces the
                                    config.json "disabledTargets" list for this run
+      --project                    Sync the repository's own hub (<repo>/.agents/) into
+                                   project files (.mcp.json, .cursor/mcp.json, opencode.json,
+                                   .codex/config.toml, CLAUDE.md, AGENTS.md, .claude/skills/),
+                                   owned through the committed .agents/sync.lock.json; with it,
+                                   --dir names the repository (default: the git toplevel)
+      --relock                     With --project: rebuild .agents/sync.lock.json from outputs
+                                   that already equal the intended bytes
       --print-dir                  Print the canonical resolved hub directory and exit
       --human, --humanize          Print prose instead of JSON Lines (the default output: one
                                    JSON object per line on stdout and stderr, each naming its
@@ -160,28 +168,8 @@ export function resolveCanonicalHubDir(opts: {
   return canonicalizeHubPath(raw, opts.homeDir, opts.cwd);
 }
 
-function formatExplainBlock(op: PlannedOp): string[] {
-  const lines = [
-    `[explain] ${op.domain} ${op.destination}`,
-    `  status:   ${op.status} (${op.action})`,
-    `  observed: ${op.observed}`,
-    `  intended: ${op.intended}`,
-    `  basis:    ${op.ownershipBasis}`,
-    `  reason:   ${op.reason}`,
-  ];
-  if (op.nextStep) {
-    lines.push(`  next:     ${op.nextStep}`);
-  }
-  return lines;
-}
-
 /** Ledger-only actions that move a record to the current spelling of its path. */
 const REKEY_ACTIONS = new Set(["rekey-link-record", "rekey-mcp-record"]);
-
-function formatOpSummary(prefix: string, op: PlannedOp): string {
-  const ledgerTag = !op.targetMutation && op.ledgerMutation ? " [state]" : "";
-  return `[${prefix}]${ledgerTag} ${op.action} ${op.destination} — ${op.reason}`;
-}
 
 type BuiltSyncPlan = {
   stagedSkills: StagedSkillPlan;
@@ -336,6 +324,12 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       op: opData(op),
     });
   };
+
+  if (options.relock && !options.project) {
+    emit("stderr", "agent_hub.error", "sync-agents: --relock needs --project", { code: "usage" });
+    return done(2);
+  }
+  if (options.project) return runProjectSync(options);
 
   const homeDir = options.homeDir ?? homedir();
   const cwd = options.cwd ?? process.cwd();
@@ -794,6 +788,10 @@ export function parseCliArgs(argv: string[]): {
       options.checkOnly = true;
     } else if (arg === "--adopt") {
       options.adopt = true;
+    } else if (arg === "--project") {
+      options.project = true;
+    } else if (arg === "--relock") {
+      options.relock = true;
     } else if (arg === "--explain") {
       options.explain = true;
     } else if (arg === "--targets") {

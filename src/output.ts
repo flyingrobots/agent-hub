@@ -158,3 +158,23 @@ export function schemaEvents(): OutputEvent[] {
     data: { schema_id: id, schema_version: schemaVersion(id), schema: SCHEMAS[id] },
   }));
 }
+
+export function formatExplainBlock(op: PlannedOp): string[] {
+  const lines = [
+    `[explain] ${op.domain} ${op.destination}`,
+    `  status:   ${op.status} (${op.action})`,
+    `  observed: ${op.observed}`,
+    `  intended: ${op.intended}`,
+    `  basis:    ${op.ownershipBasis}`,
+    `  reason:   ${op.reason}`,
+  ];
+  if (op.nextStep) {
+    lines.push(`  next:     ${op.nextStep}`);
+  }
+  return lines;
+}
+
+export function formatOpSummary(prefix: string, op: PlannedOp): string {
+  const ledgerTag = !op.targetMutation && op.ledgerMutation ? " [state]" : "";
+  return `[${prefix}]${ledgerTag} ${op.action} ${op.destination} — ${op.reason}`;
+}
