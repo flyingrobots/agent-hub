@@ -20,6 +20,8 @@ import { getStatePaths, loadOwnershipState, saveOwnershipState } from "../src/st
 const REPO_ROOT = resolve(import.meta.dir, "..");
 const SYNC_BIN = join(REPO_ROOT, "bin", "sync-agents");
 const INSTALL_SH = join(REPO_ROOT, "install.sh");
+// install.sh copies a runtime and syncs; ~3 s alone, so the 5 s default flakes under a full parallel suite.
+const INSTALLER_TIMEOUT_MS = 30_000;
 
 const tempRoots: string[] = [];
 
@@ -209,7 +211,7 @@ describe("agent-hub sync-agents", () => {
 
     const checkRes = runCmd([join(binDir, "sync-agents"), "--check"], env);
     expect(checkRes.exitCode).toBe(0);
-  });
+  }, INSTALLER_TIMEOUT_MS);
 
   test("Contract 1 (MUST #1): disabled MCP collision survives --check, 1st sync, 2nd sync, and re-enable without acquiring ownership", () => {
     const { home, hub, env } = makeSandbox();
@@ -450,7 +452,7 @@ describe("agent-hub sync-agents", () => {
     const backupMatch = r7.stdout.match(/moved previous prefix -> (.+)/);
     expect(backupMatch).not.toBeNull();
     expect(existsSync(join(backupMatch![1]!.trim(), "sentinel.txt"))).toBe(true);
-  });
+  }, INSTALLER_TIMEOUT_MS);
 
   test("Contract 4 (MUST #3 + Amendment 3): honest symlink ownership & strict adoption equivalence (.git, mode, xattr values, escaping symlinks)", () => {
     const { home, hub, env } = makeSandbox();
