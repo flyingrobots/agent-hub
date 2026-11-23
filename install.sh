@@ -250,9 +250,19 @@ try_atomic_dir_exchange() {
 EXPECTED_USAGE_LINE="Usage: sync-agents [OPTIONS]"
 
 # A compiled binary is native code, not a script, and identifies itself via --help.
+# True when the file starts with an ELF or Mach-O (thin or fat) magic number. This guards against
+# mistakes (a script or a wrong file); it is not authentication of where the binary came from.
+is_native_executable() {
+  local magic
+  magic="$(od -An -tx1 -N4 "$1" 2>/dev/null | tr -d ' \n')"
+  case "$magic" in
+    7f454c46 | cffaedfe | cefaedfe | feedfacf | feedface | cafebabe) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 is_compiled_sync_agents_binary() {
   local f="$1"
-  [[ "$(head -c 2 "$f")" != "#!" ]] || return 1
   local first_line
   first_line="$("$f" --help 2>/dev/null | head -n 1)" || true
   [[ "$first_line" == "$EXPECTED_USAGE_LINE" ]]
@@ -267,8 +277,18 @@ if [[ -n "$BINARY_SRC" ]]; then
     echo "install.sh: --binary $BINARY_SRC is not an executable regular file" >&2
     exit 1
   fi
+  if ! is_native_executable "$BINARY_SRC"; then
+    echo "install.sh: --binary $BINARY_SRC is not a native executable (expected an ELF or Mach-O sync-agents binary from a release or from: bun run build:bin)" >&2
+    exit 1
+  fi
+  # macOS Gatekeeper blocks a quarantined download on first exec, which would hang the identity
+  # check below; refuse it before running anything.
+  if [[ "$(uname -s)" == "Darwin" ]] && xattr -p com.apple.quarantine "$BINARY_SRC" >/dev/null 2>&1; then
+    echo "install.sh: --binary $BINARY_SRC carries macOS quarantine (it was downloaded); after verifying its checksum, run: xattr -d com.apple.quarantine \"$BINARY_SRC\"" >&2
+    exit 1
+  fi
   if ! is_compiled_sync_agents_binary "$BINARY_SRC"; then
-    echo "install.sh: --binary $BINARY_SRC is not a compiled sync-agents binary (build one with: bun run build:bin)" >&2
+    echo "install.sh: --binary $BINARY_SRC is not a compiled sync-agents binary (its --help does not print the sync-agents usage line)" >&2
     exit 1
   fi
 fi

@@ -51,3 +51,7 @@ jobs:
           XDG_CONFIG_HOME: /nonexistent/xdg-config
           XDG_STATE_HOME: /nonexistent/xdg-state
         run: bun test
+
+      # The end-to-end suites that spawn sync-agents, rerun against the compiled binary.
+      - name: Run end-to-end suites against the compiled binary
+        run: AGENT_HUB_BINARY="$PWD/dist/sync-agents" bun test test/adapters.test.ts test/agent-hub.test.ts test/hardening.test.ts

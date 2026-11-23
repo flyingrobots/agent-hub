@@ -31,7 +31,8 @@ import { createEmptyState, getStatePaths, loadOwnershipState, loadPendingJournal
 import { decodeTomlBasicString, rewriteCodexToml, scanTomlDocument } from "../src/toml-edit.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
-const SYNC_BIN = join(REPO_ROOT, "bin", "sync-agents");
+// AGENT_HUB_BINARY runs this suite against a compiled binary instead of the source wrapper.
+const SYNC_BIN = process.env.AGENT_HUB_BINARY || join(REPO_ROOT, "bin", "sync-agents");
 const MCP_SYNC = join(REPO_ROOT, "src", "mcp-sync.ts");
 const INSTALL_SH = join(REPO_ROOT, "install.sh");
 // install.sh copies a runtime and syncs; ~3 s alone, so the 5 s default flakes under a full parallel suite.

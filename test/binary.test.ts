@@ -10,9 +10,10 @@
  * executable on this machine. Under CI (`$CI` set) that is a failure instead, so the
  * binary job can never pass vacuously.
  */
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   readdirSync,
   lstatSync,
@@ -27,6 +28,10 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { CLI_USAGE } from "../src/cli.ts";
+
+// Each install.sh --binary run copies and executes an ~88 MB binary (macOS validates its signature
+// on first exec); these took 3.5-5 s locally, so the 5 s default flaked.
+setDefaultTimeout(30_000);
 import { getStatePaths, loadOwnershipState, loadPendingJournal } from "../src/state.ts";
 
 const REPO_ROOT = resolve(import.meta.dir, "..");
@@ -380,7 +385,7 @@ describe.skipIf(compileUnavailable !== null)("compiled sync-agents binary", () =
       // The real binary must see the harness's kernel lock and refuse cleanly.
       const concurrent = sb(env)([]);
       expect(concurrent.exitCode).toBe(1);
-      expect(concurrent.stderr).toContain("apply.lock");
+      expect(concurrent.stderr).toContain("another sync-agents apply process holds");
     } finally {
       child.kill("SIGKILL");
       await child.exited;
@@ -472,12 +477,33 @@ describe.skipIf(compileUnavailable !== null)("install.sh --binary", () => {
     // The source wrapper is a script, not a compiled binary.
     const script = run([...base, "--binary", join(REPO_ROOT, "bin", "sync-agents")], env);
     expect(script.exitCode).toBe(1);
-    expect(script.stderr).toContain("not a compiled sync-agents binary");
+    expect(script.stderr).toContain("not a native executable");
 
     // The compile probe is a real native executable, but not agent-hub.
     const impostor = run([...base, "--binary", join(suiteRoot, "probe", "probe-bin")], env);
     expect(impostor.exitCode).toBe(1);
     expect(impostor.stderr).toContain("not a compiled sync-agents binary");
+
+    // A shebang-less script that prints the usage line is still not a native executable.
+    const fake = join(home, "fake-sync-agents");
+    writeFileSync(fake, 'echo "Usage: sync-agents [OPTIONS]"\n');
+    chmodSync(fake, 0o755);
+    const shebangless = run([...base, "--binary", fake], env);
+    expect(shebangless.exitCode).toBe(1);
+    expect(shebangless.stderr).toContain("not a native executable");
+
+    if (process.platform === "darwin") {
+      // A quarantined download must be refused before it is executed (Gatekeeper would block).
+      const q = join(home, "quarantined-sync-agents");
+      copyFileSync(BIN, q);
+      chmodSync(q, 0o755);
+      expect(
+        Bun.spawnSync(["xattr", "-w", "com.apple.quarantine", "0081;00000000;Safari;", q]).exitCode,
+      ).toBe(0);
+      const quarantined = run([...base, "--binary", q], env);
+      expect(quarantined.exitCode).toBe(1);
+      expect(quarantined.stderr).toContain("xattr -d com.apple.quarantine");
+    }
 
     expect(existsSync(prefix)).toBe(false);
     expect(existsSync(join(binDir, "sync-agents"))).toBe(false);
