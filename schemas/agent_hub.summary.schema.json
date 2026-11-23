@@ -3,7 +3,7 @@
   "$id": "https://github.com/flyingrobots/agent-hub/schemas/agent_hub.summary.schema.json",
   "title": "agent_hub.summary",
   "description": "The outcome of a run. Every run that gets past argument parsing ends with exactly one agent_hub.summary or agent_hub.error line.",
-  "x-schema-version": "1.0.0",
+  "x-schema-version": "1.1.0",
   "type": "object",
   "required": [
     "_schema",
@@ -26,7 +26,7 @@
           "const": "agent_hub.summary"
         },
         "version": {
-          "const": "1.0.0"
+          "const": "1.1.0"
         }
       }
     },
@@ -60,6 +60,11 @@
     "conflicts": {
       "type": "integer",
       "minimum": 0
+    },
+    "machine_overrides": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "How many hub servers this machine's overrides changed or omitted for an active target. Absent when none did."
     }
   }
 }

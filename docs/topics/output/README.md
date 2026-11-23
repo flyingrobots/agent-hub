@@ -38,7 +38,7 @@ the bare path, or read `.hub` from the JSON line.
 | `agent_hub.recovery` | stdout, stderr | Phase 0 write-ahead recovery, the only place recovery is reported. `event` is `pending` (stdout: a journal is waiting, read-only modes), `recovered` (stdout: an action taken, with `action`) or `ambiguous` (stderr: refused, with `reason` and `next_step`). `classification` names the journal's state |
 | `agent_hub.summary` | stdout, stderr | How the run ended; see below |
 | `agent_hub.error` | stderr | A failure; see below |
-| `agent_hub.warning` | stderr | Something worth attention, with its machine-readable details. `code` is `plaintext_secret` (a literal in a hub server spec looks like a credential; see [MCP servers](../mcp/README.md#plaintext-secrets)), with `server`, `field`, `reason` and `source`. The value itself is never printed. Each one also comes with an `agent_hub.conflict`, so the run refuses |
+| `agent_hub.warning` | stderr | Something worth attention, with its machine-readable details. `code` is `plaintext_secret` (a literal in a hub server spec looks like a credential; see [MCP servers](../mcp/README.md#plaintext-secrets)), with `server`, `field`, `reason` and `source`. The value itself is never printed. Each one also comes with an `agent_hub.conflict`, so the run refuses. Or `machine_override_unused` (the [machine override](../mcp/README.md#machine-overrides) file names a server the hub does not define), with `server`, `field` (`mcp.<server>`), `reason` and `source` (the file); the run continues |
 | `agent_hub.grant` | stdout | `sync-agents secret grant`, `revoke` and `list`: one vault grant, with `key`, `env`, `argv` and, when known, `server`. Never a value. See [vault secrets](../vault/README.md) |
 | `agent_hub.help` | stdout | `--help`: `command`, `usage` (the help text) and `schemas` (every schema id), followed by one `agent_hub.schema` line per message type |
 | `agent_hub.print_dir` | stdout | `--print-dir`: `hub` |
@@ -52,6 +52,11 @@ one `agent_hub.summary` or `agent_hub.error` line, and it is the last line of th
 that closes the pipe early (`| head -1`) gets no more lines; the run carries on and exits as it
 would have. Any other failure to write (a full disk, a bad descriptor) ends that stream: an
 `internal` error line goes to the other stream if it is still open, and the run exits 1.
+
+A `summary` printed after a plan was built also carries `machine_overrides` when this machine's
+[overrides](../mcp/README.md#machine-overrides) changed or omitted at least one hub server for an
+active target: the number of such servers. Its message then ends with
+`N machine override(s) in effect.` The field is absent otherwise.
 
 | `summary.status` | Stream | Exit | Meaning |
 | --- | --- | --- | --- |

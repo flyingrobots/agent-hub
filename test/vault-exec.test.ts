@@ -90,6 +90,30 @@ function grantedMachine() {
 }
 
 describe("vault-backed exec (flyingrobots/agent-hub#10)", () => {
+  test("secret grant without --dir binds the command this machine's override sets; with --dir it reads the hub as written", () => {
+    const m = machine();
+    m.server("s", { mcp: { command: SH_ARGV[0], args: SH_ARGV.slice(1), env: { T: "${vault:k}" } } });
+    mkdirSync(join(m.home, ".config", "agent-hub"), { recursive: true });
+    writeFileSync(
+      join(m.home, ".config", "agent-hub", "machine.json"),
+      JSON.stringify({ mcp: { s: { mcp: { command: "/bin/bash" } } } }),
+    );
+    expect(run(["secret", "set", "k"], m.env, `${SECRET}\n`).exitCode).toBe(0);
+    const grantArgv0 = (args: string[]) => {
+      const res = run(["secret", "grant", "k", "--to", "s", ...args], m.env);
+      expect(res.exitCode).toBe(0);
+      const grants = res.decode().events.filter((e) => e._schema.id === "agent_hub.grant");
+      expect(grants.length).toBeGreaterThan(0);
+      return grants.map((g) => (g.argv as string[])[0]);
+    };
+
+    const onThisMachine = grantArgv0([]);
+    const asWritten = grantArgv0(["--dir", m.hub]);
+
+    expect(new Set(onThisMachine)).toEqual(new Set(["/bin/bash"]));
+    expect(new Set(asWritten)).toEqual(new Set([SH_ARGV[0]]));
+  });
+
   test("an ungranted exec is refused before any secret is read", () => {
     const m = machine();
     expect(run(["secret", "set", "k"], m.env, `${SECRET}\n`).exitCode).toBe(0);

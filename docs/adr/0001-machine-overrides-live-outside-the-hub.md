@@ -6,7 +6,7 @@ status: accepted
 
 One hub is cloned on several machines, and three things differ between them that the hub could not express: a home directory inside a server's `command`, a program installed on one machine only, and an unowned entry in one agent that has a hub server's name. We decided that each machine states its own differences in a **machine override** file under `${XDG_CONFIG_HOME:-~/.config}/agent-hub/`, applied on top of the hub when syncing, because the hub must stay free of anything machine-specific and a shared repository should not name the machines that use it.
 
-Decided with the maintainer on 2026-11-23 (flyingrobots/agent-hub#55). Not yet implemented.
+Decided with the maintainer on 2026-11-23 (flyingrobots/agent-hub#55). Implemented in flyingrobots/agent-hub#58; the reference is [MCP servers](../topics/mcp/README.md#machine-overrides).
 
 ## Considered options
 
