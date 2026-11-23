@@ -8,6 +8,15 @@ changes are called out under **Changed** with what to do.
 
 ## [Unreleased]
 
+### Changed
+
+- **A literal credential in a hub MCP spec now stops the sync** (flyingrobots/agent-hub#50). A
+  field the plaintext detector flags still prints its `agent_hub.warning` (schema 1.1.0, same
+  fields, clarified description), and now also an `agent_hub.conflict`, so the run writes nothing
+  and exits 1; `--force` does not override it. **What to do:** run `sync-agents --check`; for each
+  flagged field, write it as `${env:NAME}` or `${vault:KEY}`, or list it in
+  `allowPlaintextFields` if it is not a secret, and rotate any credential that was synced before.
+
 ### Added
 
 - Vault secrets for stdio MCP servers (flyingrobots/agent-hub#10). `${vault:KEY}` as a whole `env`
