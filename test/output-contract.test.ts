@@ -262,4 +262,11 @@ describe("JSON Lines output contract (flyingrobots/agent-hub#5)", () => {
     const dry = decodeStream(raw(["bun", ENGINE, "--dir", hub, "--targets", "claude", "--dry-run"], env).stdout, "stdout").events;
     expect(dry[dry.length - 1]!.status).toBe("planned");
   });
+
+  test("no test calls src/cli.ts runSync directly; in-process runs go through the checked runSync", () => {
+    const offenders = readdirSync(join(REPO_ROOT, "test"))
+      .filter((f) => f.endsWith(".ts") && f !== "jsonl.ts")
+      .filter((f) => /^import\s*\{[^}]*\brunSync\b[^}]*\}\s*from\s*"\.\.\/src\/cli\.ts"/m.test(readFileSync(join(REPO_ROOT, "test", f), "utf8")));
+    expect(offenders).toEqual([]);
+  });
 });
