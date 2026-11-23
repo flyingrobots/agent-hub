@@ -6,7 +6,8 @@
   "license": "Apache-2.0",
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "build:bin": "mkdir -p dist && cd dist && bun build ../src/cli.ts --compile --outfile sync-agents && rm -f ./.*.bun-build"
   },
   "devDependencies": {
     "@types/bun": "^1.2.15",

@@ -10,6 +10,10 @@ changes are called out under **Changed** with what to do.
 
 ### Added
 
+- Standalone binaries: `bun run build:bin` compiles `dist/sync-agents`, and
+  `./install.sh --binary <file>` installs one as the runtime (no Bun needed to run it).
+  Tagged releases publish unsigned binaries for macOS and Linux with `SHA256SUMS` and
+  GitHub build-provenance attestations; see docs/topics/install.
 - Cursor (`~/.cursor/mcp.json`, `~/.cursor/skills/`) and OpenCode
   (`${XDG_CONFIG_HOME:-~/.config}/opencode/` `opencode.json`, `skills/`, `AGENTS.md`)
   MCP adapters, compiling `stdio`, `http` and
@@ -55,6 +59,11 @@ changes are called out under **Changed** with what to do.
 
 - `src/cli.ts --print-dir` ignored a valid `agentsDir` when `disabledTargets` was
   invalid. Codex editor refusals now carry the `codex:mcp` remedy.
+- `install.sh`'s hub-overlap guard missed a hub path written with `..` under a
+  nonexistent directory, so a later install could delete skills in a hub that was
+  also the runtime prefix. Both Bash path canonicalizers now normalize `..` the way
+  the engine does, and the guard now checks every hub the runtime could resolve, including an
+  exported `AGENTS_DIR` alongside `--agents-dir`.
 - The Codex TOML editor no longer deletes a comment that sits between a managed
   `[mcp_servers.<name>]` table and the next table, and an updated table stays where
   it was instead of moving to the end of the file (flyingrobots/agent-hub#15).

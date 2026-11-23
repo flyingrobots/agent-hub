@@ -44,7 +44,8 @@ function declaredTests(): Map<string, Set<string>> {
     if (!f.endsWith(".test.ts")) continue;
     const src = readFileSync(join(REPO_ROOT, "test", f), "utf8");
     const names = new Set<string>();
-    for (const m of src.matchAll(/\btest\(\s*("(?:[^"\\]|\\.)*")/g)) {
+    // test("…") and conditional forms such as test.skipIf(cond)("…").
+    for (const m of src.matchAll(/\btest(?:\.(?:skipIf|if|todoIf)\([^()]*\))?\(\s*("(?:[^"\\]|\\.)*")/g)) {
       names.add(JSON.parse(m[1]!) as string);
     }
     // Table-driven tests declare their names as fixture fields and run test(c.name, ...).

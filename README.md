@@ -24,7 +24,9 @@ writing any, and recovers from interruption. The full model is in the
 
 Prerequisites:
 
-- **Bun** to run `sync-agents` (CI uses Bun `1.4.5`). `--help` and `--print-dir` work without it.
+- **Bun** to run `sync-agents` from source (CI uses Bun `1.4.5`); `--help` and `--print-dir` work
+  without it. A standalone release binary needs no Bun: see
+  [Installing and releasing](docs/topics/install/README.md).
 - **Git**, **`unzip`** and **`tar`** to install skills from Git URLs, bundles or archives.
 - **macOS** or **Linux**.
 
@@ -86,7 +88,8 @@ Where to go next:
 bash -n bin/sync-agents install.sh && bun run typecheck && bun test
 ```
 
-Run `./install.sh` from a checkout to promote it to `~/.agent-hub/`. Changes are recorded in
+Run `./install.sh` from a checkout to promote it to `~/.agent-hub/`, or `bun run build:bin` then
+`./install.sh --binary dist/sync-agents` to install a standalone binary. Changes are recorded in
 [CHANGELOG.md](CHANGELOG.md).
 
 ## License

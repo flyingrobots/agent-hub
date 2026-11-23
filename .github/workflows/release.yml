@@ -1,0 +1,215 @@
+name: Release
+
+# Builds unsigned standalone sync-agents binaries for a pushed v* tag and publishes them,
+# with SHA256SUMS and GitHub build-provenance attestations, to a new GitHub release for that tag.
+# The tag must equal "v" + package.json "version" and point at a commit on main. A tag that
+# already has a release (or, checked at publish, a draft) is refused: published assets are never replaced.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository (full history)
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0
+
+      - name: Tag matches package.json version and is on main
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(python3 -c 'import json; print(json.load(open("package.json"))["version"])')"
+          if [ "$TAG" != "v$version" ]; then
+            echo "::error::tag $TAG does not match package.json version v$version"
+            exit 1
+          fi
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag $TAG ($GITHUB_SHA) is not on main"
+            exit 1
+          fi
+
+      # A read-only token cannot see drafts; the publish job re-checks with write access.
+      - name: No published release exists for this tag yet
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::a release for $TAG already exists; published assets are never replaced. Delete it deliberately, or cut a new version."
+            exit 1
+          fi
+
+  build:
+    needs: verify
+    name: build ${{ matrix.asset }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: bun-linux-x64
+            asset: sync-agents-linux-x64
+            runner: ubuntu-latest
+            native: true
+          - target: bun-linux-arm64
+            asset: sync-agents-linux-arm64
+            runner: ubuntu-24.04-arm
+            native: true
+          - target: bun-darwin-arm64
+            asset: sync-agents-darwin-arm64
+            runner: macos-latest
+            native: true
+          # Cross-compiled on Apple silicon: no Intel runner is assumed, so this
+          # binary is only executed if the runner can run x86_64 code (Rosetta).
+          - target: bun-darwin-x64
+            asset: sync-agents-darwin-x64
+            runner: macos-latest
+            native: false
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup pinned Bun runtime
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.5"
+
+      - name: Install devDependencies
+        run: bun install --frozen-lockfile
+
+      - name: Compile ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+          ASSET: ${{ matrix.asset }}
+        # Compile from a scratch directory: Bun 1.4.5 leaves a ~88 MB .bun-build file in the cwd.
+        run: |
+          mkdir -p release
+          (cd "$RUNNER_TEMP" && bun build "$GITHUB_WORKSPACE/src/cli.ts" --compile --target="$TARGET" --outfile "$GITHUB_WORKSPACE/release/$ASSET")
+
+      # A cross-compiled darwin binary keeps the downloaded Bun runtime's Developer ID
+      # signature, which the appended bundle invalidates, and macOS may SIGKILL it.
+      # Replace it with an ad-hoc signature (no identity, no notarization) and verify.
+      - name: Ad-hoc re-sign macOS binary
+        if: runner.os == 'macOS'
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          codesign --remove-signature "release/$ASSET"
+          codesign --force --sign - "release/$ASSET"
+          codesign --verify --verbose "release/$ASSET"
+
+      - name: Run compiled-binary and end-to-end suites against the release artifact
+        if: matrix.native
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          export AGENT_HUB_BINARY="$PWD/release/$ASSET"
+          bun test test/binary.test.ts test/adapters.test.ts test/agent-hub.test.ts test/hardening.test.ts test/followups.test.ts
+
+      - name: Smoke-run cross-compiled binary when x86_64 execution is available
+        if: ${{ !matrix.native }}
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            "release/$ASSET" --help
+          else
+            echo "::warning::$ASSET was cross-compiled and not executed (no x86_64 support on this runner)"
+          fi
+
+      - name: Upload binary
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.asset }}
+          path: release/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Download binaries
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: release
+          pattern: sync-agents-*
+          merge-multiple: true
+
+      - name: Package bundled skill and write SHA256SUMS
+        run: |
+          tar -czf release/agent-hub-skill.tar.gz -C skills agent-hub
+          chmod 755 release/sync-agents-*
+          cd release
+          sha256sum agent-hub-skill.tar.gz sync-agents-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            release/sync-agents-*
+            release/agent-hub-skill.tar.gz
+
+      - name: Publish to the GitHub release for this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cat > notes.md <<'NOTES'
+          Standalone `sync-agents` binaries built with `bun build --compile` (Bun 1.4.5).
+
+          **These binaries are unsigned.** They are not code-signed with a developer identity
+          or notarized (the macOS builds carry only an ad-hoc signature). On macOS,
+          a downloaded binary carries the `com.apple.quarantine` attribute; after verifying
+          its checksum, clear it with `xattr -d com.apple.quarantine <file>`.
+
+          Check a download against SHA256SUMS (this proves the bytes match what this workflow
+          uploaded; it does not by itself prove who built them):
+
+              grep ' sync-agents-darwin-arm64$' SHA256SUMS | shasum -a 256 -c -     # macOS
+              grep ' sync-agents-linux-x64$' SHA256SUMS | sha256sum -c -            # Linux
+
+          Verify where it was built (GitHub build provenance):
+
+              gh attestation verify sync-agents-darwin-arm64 --repo flyingrobots/agent-hub
+
+          Then `chmod +x` it (downloads lose the executable bit) and, from a checkout of this
+          tag, install it as your runtime: `./install.sh --binary <path-to-binary>`.
+          See docs/topics/install/README.md for prerequisites and what each asset was tested on:
+          linux-x64, linux-arm64 and darwin-arm64 ran the full suite on native runners;
+          darwin-x64 is cross-compiled and was at most smoke-tested; linux-x64 may need a CPU
+          with AVX2.
+
+          `agent-hub-skill.tar.gz` is the bundled agent-hub skill; install it with
+          `sync-agents --skill agent-hub-skill.tar.gz`.
+          NOTES
+          files=(release/sync-agents-* release/agent-hub-skill.tar.gz release/SHA256SUMS)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "::error::a release or draft for $TAG exists (a draft may be left by an earlier failed publish, and the read-only verify job cannot see drafts); refusing to replace its assets. Publish or delete it deliberately."
+            exit 1
+          fi
+          # Upload everything to a draft, then publish, so a partial upload is never public.
+          gh release create "$TAG" "${files[@]}" --draft --verify-tag --title "$TAG" --notes-file notes.md
+          gh release edit "$TAG" --draft=false

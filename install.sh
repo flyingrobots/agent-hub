@@ -13,6 +13,7 @@ FORCE_SKILL=0
 REPLACE_RUNTIME=0
 REPLACE_BIN=0
 CONFIG_AGENTS_DIR=""
+BINARY_SRC=""
 
 # Exact verified SHA-256 checksums of the unmarked baseline (3cbd0a8) runtime layout.
 BASELINE_SYNC_AGENTS_SHA="51809dbb339dd536b44b9a45f934ae053bfc52e978f263a8e1b473496c36cb74"
@@ -36,6 +37,8 @@ Options:
   --replace-runtime     Move aside an unrecognized existing --prefix directory as a backup
                         before installing
   --replace-bin         Replace an unrecognized existing file/symlink at <bin-dir>/sync-agents
+  --binary <file>       Install a prebuilt standalone sync-agents binary (from `bun run build:bin`
+                        or a release asset) as the runtime instead of the Bun sources; no network
   -h, --help            Show this help
 EOF
 }
@@ -88,6 +91,18 @@ while [[ $# -gt 0 ]]; do
         exit 2
       fi
       ;;
+    --binary)
+      require_arg "--binary" "$#"
+      BINARY_SRC="$2"
+      shift
+      ;;
+    --binary=*)
+      BINARY_SRC="${1#--binary=}"
+      if [[ -z "$BINARY_SRC" ]]; then
+        echo "install.sh: --binary requires a non-empty argument" >&2
+        exit 2
+      fi
+      ;;
     --no-skill)        INSTALL_SKILL=0 ;;
     --no-sync)         NO_SYNC=1 ;;
     --force-skill)     FORCE_SKILL=1 ;;
@@ -108,14 +123,40 @@ expand_tilde() {
   esac
 }
 
+# Lexically resolve "." and ".." in an absolute path, as Node's path.normalize does, so this
+# canonicalizer agrees with the engine's canonicalizeHubPath (which normalizes before resolving
+# the deepest existing ancestor). Without it, a ".." under a nonexistent directory survived here
+# but not in the engine, and install.sh's hub-overlap guard compared the wrong paths.
+lexical_normalize() {
+  local IFS=/
+  local -a parts out=()
+  read -r -a parts <<< "$1"
+  local part
+  for part in "${parts[@]}"; do
+    case "$part" in
+      "" | .) ;;
+      ..) if [[ ${#out[@]} -gt 0 ]]; then unset 'out[${#out[@]}-1]'; fi ;;
+      *) out+=("$part") ;;
+    esac
+  done
+  if [[ ${#out[@]} -eq 0 ]]; then printf '/\n'; else printf '/%s\n' "${out[*]}"; fi
+}
+
 canonicalize_path() {
   local raw="$1"
   local p
   p="$(expand_tilde "$raw")"
+  if [[ "$p" == *$'\n'* ]]; then
+    echo "${0##*/}: refusing a path that contains a newline: $raw" >&2
+    return 1
+  fi
+  # Resolve a relative path against the physical cwd, as the engine's process.cwd() does;
+  # the logical $PWD keeps symlink names, so a ".." would climb a different directory.
   case "$p" in
     /*) ;;
-    *)  p="$PWD/$p" ;;
+    *)  p="$(pwd -P)/$p" ;;
   esac
+  p="$(lexical_normalize "$p")"
 
   local tail=()
   local cursor="$p"
@@ -204,8 +245,17 @@ paths_overlap() {
 try_atomic_dir_exchange() {
   local a="$1"
   local b="$2"
-  command -v bun >/dev/null 2>&1 || return 1
-  bun -e '
+  # Bun runs the FFI exchange; without Bun, a verified compiled binary can (BUN_BE_BUN=1 makes a
+  # bun --compile executable behave as the bun CLI), so --binary installs stay atomic.
+  local -a runner
+  if command -v bun >/dev/null 2>&1; then
+    runner=(bun)
+  elif [[ -n "$BINARY_SRC" && -x "$a/bin/sync-agents" ]] && is_native_executable "$a/bin/sync-agents"; then
+    runner=(env BUN_BE_BUN=1 "$a/bin/sync-agents")
+  else
+    return 1
+  fi
+  "${runner[@]}" -e '
     import { dlopen, FFIType, ptr } from "bun:ffi";
     const [a, b] = process.argv.slice(1);
     const ab = Buffer.from(`${a}\0`);
@@ -232,14 +282,80 @@ try_atomic_dir_exchange() {
   ' "$a" "$b" >/dev/null 2>&1
 }
 
+EXPECTED_USAGE_LINE="Usage: sync-agents [OPTIONS]"
+
+# A compiled binary is native code, not a script, and identifies itself via --help.
+# True when the file starts with an ELF or Mach-O (thin or fat) magic number. This guards against
+# mistakes (a script or a wrong file); it is not authentication of where the binary came from.
+is_native_executable() {
+  local magic
+  magic="$(od -An -tx1 -N4 "$1" 2>/dev/null | tr -d ' \n')"
+  case "$magic" in
+    7f454c46 | cffaedfe | cefaedfe | feedfacf | feedface | cafebabe) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+is_compiled_sync_agents_binary() {
+  local f="$1"
+  local first_line
+  first_line="$("$f" --help 2>/dev/null | head -n 1)" || true
+  [[ "$first_line" == "$EXPECTED_USAGE_LINE" ]]
+}
+
 INSTALL_DIR="$(canonicalize_path "$INSTALL_DIR")"
 BIN_DIR="$(canonicalize_path "$BIN_DIR")"
+
+if [[ -n "$BINARY_SRC" ]]; then
+  BINARY_SRC="$(canonicalize_path "$BINARY_SRC")"
+  if [[ ! -f "$BINARY_SRC" || ! -x "$BINARY_SRC" ]]; then
+    echo "install.sh: --binary $BINARY_SRC is not an executable regular file" >&2
+    exit 1
+  fi
+  if ! is_native_executable "$BINARY_SRC"; then
+    echo "install.sh: --binary $BINARY_SRC is not a native executable (expected an ELF or Mach-O sync-agents binary from a release or from: bun run build:bin)" >&2
+    exit 1
+  fi
+  # macOS Gatekeeper blocks a quarantined download on first exec, which would hang the identity
+  # check below; refuse it before running anything.
+  if [[ "$(uname -s)" == "Darwin" ]] && xattr -p com.apple.quarantine "$BINARY_SRC" >/dev/null 2>&1; then
+    echo "install.sh: --binary $BINARY_SRC carries macOS quarantine (it was downloaded); after verifying its checksum, run: xattr -d com.apple.quarantine \"$BINARY_SRC\"" >&2
+    exit 1
+  fi
+  if ! is_compiled_sync_agents_binary "$BINARY_SRC"; then
+    echo "install.sh: --binary $BINARY_SRC is not a compiled sync-agents binary (its --help does not print the sync-agents usage line)" >&2
+    exit 1
+  fi
+fi
 CANON_HOME="$(canonicalize_path "$HOME")"
 
+# Every hub the installed runtime could resolve: an --agents-dir value (written to config.json),
+# an exported AGENTS_DIR (which the engine prefers over config.json at run time), the wrapper's
+# view, and with --binary the binary's own view (it reads config.json without Bun or python3).
+# The prefix must overlap none of them.
+HUB_PATHS=()
+HUB_SOURCES=()
+# Each path is captured by a plain assignment first, so a failing resolver (refusing to guess, or a
+# newline in a path) aborts install.sh under set -e instead of adding an empty candidate.
+add_hub_candidate() {
+  HUB_PATHS+=("$1")
+  HUB_SOURCES+=("$2")
+}
 if [[ -n "$CONFIG_AGENTS_DIR" ]]; then
-  HUB_DIR="$(canonicalize_path "$CONFIG_AGENTS_DIR")"
-else
-  HUB_DIR="$("$REPO_DIR/bin/sync-agents" --print-dir)"
+  hub_path="$(canonicalize_path "$CONFIG_AGENTS_DIR")"
+  add_hub_candidate "$hub_path" "--agents-dir"
+fi
+if [[ -n "${AGENTS_DIR:-}" ]]; then
+  hub_path="$(canonicalize_path "$AGENTS_DIR")"
+  add_hub_candidate "$hub_path" "AGENTS_DIR"
+fi
+if [[ -z "$CONFIG_AGENTS_DIR" ]]; then
+  hub_path="$("$REPO_DIR/bin/sync-agents" --print-dir)"
+  add_hub_candidate "$hub_path" "bin/sync-agents --print-dir"
+  if [[ -n "$BINARY_SRC" ]]; then
+    hub_path="$("$BINARY_SRC" --print-dir)"
+    add_hub_candidate "$hub_path" "the binary's --print-dir"
+  fi
 fi
 
 if [[ "$INSTALL_DIR" == "/" || "$INSTALL_DIR" == "$CANON_HOME" ]]; then
@@ -247,10 +363,12 @@ if [[ "$INSTALL_DIR" == "/" || "$INSTALL_DIR" == "$CANON_HOME" ]]; then
   exit 1
 fi
 
-if paths_overlap "$INSTALL_DIR" "$HUB_DIR"; then
-  echo "install.sh: refusing --prefix ($INSTALL_DIR) that overlaps hub directory ($HUB_DIR)" >&2
-  exit 1
-fi
+for i in "${!HUB_PATHS[@]}"; do
+  if paths_overlap "$INSTALL_DIR" "${HUB_PATHS[$i]}"; then
+    echo "install.sh: refusing --prefix ($INSTALL_DIR) that overlaps hub directory (${HUB_PATHS[$i]}, from ${HUB_SOURCES[$i]})" >&2
+    exit 1
+  fi
+done
 
 PREFIX_STATUS="absent"
 if [[ -L "$INSTALL_DIR" || -f "$INSTALL_DIR" ]]; then
@@ -316,9 +434,23 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/src" "$STAGE_DIR/skills"
-cp "$REPO_DIR/bin/sync-agents" "$STAGE_DIR/bin/sync-agents"
-cp "$REPO_DIR"/src/*.ts "$STAGE_DIR/src/"
+if [[ -n "$BINARY_SRC" ]]; then
+  # Binary layout: the compiled executable replaces bin/sync-agents + src/. The bundled
+  # skill stays on disk because install.sh (not the binary) hands it to --skill below.
+  RUNTIME_LAYOUT="binary"
+  mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/skills"
+  cp "$BINARY_SRC" "$STAGE_DIR/bin/sync-agents"
+  chmod 755 "$STAGE_DIR/bin/sync-agents"
+  if ! cmp -s "$BINARY_SRC" "$STAGE_DIR/bin/sync-agents" || ! is_compiled_sync_agents_binary "$STAGE_DIR/bin/sync-agents"; then
+    echo "install.sh: staged binary failed verification; runtime left unchanged" >&2
+    exit 1
+  fi
+else
+  RUNTIME_LAYOUT="source"
+  mkdir -p "$STAGE_DIR/bin" "$STAGE_DIR/src" "$STAGE_DIR/skills"
+  cp "$REPO_DIR/bin/sync-agents" "$STAGE_DIR/bin/sync-agents"
+  cp "$REPO_DIR"/src/*.ts "$STAGE_DIR/src/"
+fi
 cp -R "$REPO_DIR/skills/agent-hub" "$STAGE_DIR/skills/agent-hub"
 
 INSTALLED_AT="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
@@ -327,11 +459,16 @@ cat > "$STAGE_DIR/.agent-hub-runtime" <<EOF
   "schemaVersion": 1,
   "product": "agent-hub",
   "kind": "runtime",
+  "layout": "$RUNTIME_LAYOUT",
   "installedAt": "$INSTALLED_AT"
 }
 EOF
 
-chmod 755 "$STAGE_DIR" "$STAGE_DIR/bin/sync-agents" "$STAGE_DIR/src/cli.ts" "$STAGE_DIR/src/mcp-sync.ts"
+if [[ "$RUNTIME_LAYOUT" == "source" ]]; then
+  chmod 755 "$STAGE_DIR" "$STAGE_DIR/bin/sync-agents" "$STAGE_DIR/src/cli.ts" "$STAGE_DIR/src/mcp-sync.ts"
+else
+  chmod 755 "$STAGE_DIR" "$STAGE_DIR/bin/sync-agents"
+fi
 
 if [[ "$PREFIX_STATUS" == "backup-replace" ]]; then
   PRESERVED_BACKUP="${INSTALL_DIR}.backup-$(date -u +"%Y%m%dT%H%M%SZ")"
