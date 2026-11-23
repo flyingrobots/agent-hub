@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getStatePaths, loadOwnershipState } from "../src/state.ts";
@@ -185,5 +185,103 @@ describe("commands and agents from the hub (flyingrobots/agent-hub#12)", () => {
     expect(next.exitCode).toBe(0);
     expect(ledger().files[join(home, ".claude", "commands", "review.md")]).toBeDefined();
     expect(runSync({ ...base, checkOnly: true }).exitCode).toBe(0);
+  });
+
+  test("a user's edit to a generated file survives a hub change: conflict, kept, until --force", () => {
+    const { home, hub, base } = sandbox([".claude"]);
+    put(join(hub, "commands", "review.md"), COMMAND);
+    expect(runSync(base).exitCode).toBe(0);
+    const dst = join(home, ".claude", "commands", "review.md");
+    writeFileSync(dst, "my own version\n");
+    put(join(hub, "commands", "review.md"), COMMAND.replace("Review the changes", "Review everything"));
+    const r = runSync(base);
+    expect(r.exitCode).toBe(1);
+    expect(read(dst)).toBe("my own version\n");
+    expect(runSync({ ...base, force: true }).exitCode).toBe(0);
+    expect(read(dst)).toContain("Review everything");
+  });
+
+  test("a destination that is a symlink or a directory is refused, even with --force", () => {
+    for (const make of ["symlink", "dir"] as const) {
+      const { home, hub, base } = sandbox([".claude"]);
+      put(join(hub, "commands", "review.md"), COMMAND);
+      mkdirSync(join(home, ".claude", "commands"), { recursive: true });
+      const dst = join(home, ".claude", "commands", "review.md");
+      if (make === "symlink") symlinkSync(join(home, "elsewhere.md"), dst);
+      else mkdirSync(dst);
+      const r = runSync({ ...base, force: true });
+      expect(r.exitCode).toBe(1);
+      expect(out(r)).toContain("not a regular file");
+    }
+  });
+
+  test("an agent directory symlinked into the hub, or two agents sharing one directory, is refused", () => {
+    const a = sandbox([".claude"]);
+    put(join(a.hub, "agents", "rev.md"), AGENT);
+    symlinkSync(join(a.hub, "agents"), join(a.home, ".claude", "agents"));
+    const ra = runSync({ ...a.base, force: true });
+    expect(ra.exitCode).toBe(1);
+    expect(out(ra)).toContain("resolves into the hub");
+    expect(read(join(a.hub, "agents", "rev.md"))).toBe(AGENT);
+    const b = sandbox([".claude", ".cursor"]);
+    put(join(b.hub, "agents", "rev.md"), AGENT);
+    mkdirSync(join(b.home, ".claude", "agents"), { recursive: true });
+    symlinkSync(join(b.home, ".claude", "agents"), join(b.home, ".cursor", "agents"));
+    const rb = runSync({ ...b.base, force: true });
+    expect(rb.exitCode).toBe(1);
+    expect(out(rb)).toContain("are the same file");
+  });
+
+  test("CRLF, a BOM or a blank first line never lets frontmatter through unvalidated", () => {
+    for (const text of [
+      "---\r\ndescription: D\r\nallowed-tools: Bash(rm:*)\r\n---\r\nx\r\n",
+      "\uFEFF---\ndescription: D\nallowed-tools: Bash(rm:*)\n---\nx\n",
+      "\n---\ndescription: D\nallowed-tools: Bash(rm:*)\n---\nx\n",
+    ]) {
+      const { home, hub, base } = sandbox([".claude", ".cursor"]);
+      put(join(hub, "commands", "c.md"), text);
+      expect(runSync(base).exitCode).toBe(1);
+      expect(existsSync(join(home, ".cursor", "commands", "c.md"))).toBe(false);
+    }
+    // A CRLF command that is valid syncs, with LF line endings.
+    const { home, hub, base } = sandbox([".cursor"]);
+    put(join(hub, "commands", "c.md"), "---\r\ndescription: D\r\n---\r\nBody\r\n");
+    expect(runSync(base).exitCode).toBe(0);
+    expect(read(join(home, ".cursor", "commands", "c.md"))).toBe("Body\n");
+  });
+
+  test("valid frontmatter edge forms are accepted: empty, and closing at end of file", () => {
+    const { home, hub, base } = sandbox([".cursor"]);
+    put(join(hub, "commands", "a.md"), "---\n---\nBody a\n");
+    put(join(hub, "commands", "b.md"), "---\ndescription: B\n---");
+    put(join(hub, "commands", "README.md"), "# About these commands\n");
+    expect(runSync(base).exitCode).toBe(0);
+    expect(read(join(home, ".cursor", "commands", "a.md"))).toBe("Body a\n");
+    expect(existsSync(join(home, ".cursor", "commands", "README.md"))).toBe(false);
+  });
+
+  test("Codex TOML is always valid: DEL escaped, managed keys refused, odd keys quoted, numbers checked", () => {
+    const ok = sandbox([".codex"]);
+    put(join(ok.hub, "agents", "a.md"), "---\ndescription: D\ntargets:\n  codex:\n    \"a b\": 1\n    ratio: 0.5\n---\nDEL\u007f here\n");
+    expect(runSync(ok.base).exitCode).toBe(0);
+    expect(Bun.TOML.parse(read(join(ok.home, ".codex", "agents", "a.toml")))).toEqual({
+      name: "a",
+      description: "D",
+      developer_instructions: "DEL\u007f here\n",
+      "a b": 1,
+      ratio: 0.5,
+    });
+    // An integer past 64 bits is written as a TOML float, which parses.
+    const huge = sandbox([".codex"]);
+    put(join(huge.hub, "agents", "a.md"), "---\ndescription: D\ntargets:\n  codex:\n    huge: 99999999999999999999999\n---\nx\n");
+    expect(runSync(huge.base).exitCode).toBe(0);
+    expect(() => Bun.TOML.parse(read(join(huge.home, ".codex", "agents", "a.toml")))).not.toThrow();
+    for (const extra of ["name: x", "developer_instructions: x", "big: 1e400"]) {
+      const bad = sandbox([".codex"]);
+      put(join(bad.hub, "agents", "a.md"), `---\ndescription: D\ntargets:\n  codex:\n    ${extra}\n---\nx\n`);
+      const r = runSync(bad.base);
+      expect(r.exitCode).toBe(1);
+      expect(existsSync(join(bad.home, ".codex", "agents", "a.toml"))).toBe(false);
+    }
   });
 });

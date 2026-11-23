@@ -6,7 +6,7 @@
  * files are owned by digest, like MCP entries: created, updated, adopted, pruned, or refused.
  */
 import { randomBytes } from "node:crypto";
-import { existsSync, readdirSync, readFileSync, unlinkSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync, unlinkSync } from "node:fs";
 import { dirname, join, sep } from "node:path";
 import {
   atomicWriteDurable,
@@ -77,16 +77,24 @@ export class PrimitiveError extends Error {}
 type Source = { kind: Kind; name: string; path: string; front: Record<string, unknown>; body: string };
 
 function parseSource(kind: Kind, path: string, name: string): Source {
-  const text = readFileSync(path, "utf8");
+  // One line ending and no BOM, so frontmatter is always recognised and never passed through
+  // unvalidated as part of the body.
+  const text = readFileSync(path, "utf8").replace(/^\uFEFF/, "").replace(/\r\n?/g, "\n");
   let front: Record<string, unknown> = {};
   let body = text;
-  if (text.startsWith("---\n")) {
-    const end = text.indexOf("\n---\n", 4);
-    if (end === -1) throw new PrimitiveError(`${path}: frontmatter is not closed by a "---" line`);
-    const parsed = Bun.YAML.parse(text.slice(4, end));
-    if (parsed !== null && !isPlainObject(parsed)) throw new PrimitiveError(`${path}: frontmatter must be a mapping`);
+  const m = /^---[ \t]*\n([\s\S]*?)^---[ \t]*(?:\n|$)/m.exec(text);
+  if (m && m.index === 0) {
+    let parsed: unknown;
+    try {
+      parsed = Bun.YAML.parse(m[1] ?? "");
+    } catch (err) {
+      throw new PrimitiveError(`${path}: frontmatter is not valid YAML (${err instanceof Error ? err.message : String(err)})`);
+    }
+    if (parsed !== null && parsed !== undefined && !isPlainObject(parsed)) throw new PrimitiveError(`${path}: frontmatter must be a mapping`);
     front = (parsed as Record<string, unknown>) ?? {};
-    body = text.slice(end + 5);
+    body = text.slice(m[0].length);
+  } else if (/^\s*---/.test(text)) {
+    throw new PrimitiveError(`${path}: frontmatter must open with "---" on the first line and close with a "---" line`);
   }
   return { kind, name, path, front, body };
 }
@@ -144,9 +152,11 @@ function yamlFront(obj: Record<string, unknown>): string {
   return Object.keys(obj).length === 0 ? "" : `---\n${Bun.YAML.stringify(obj, null, 2).trimEnd()}\n---\n`;
 }
 
+/** A TOML basic string: JSON's escapes, plus DEL, which TOML forbids raw. */
 function tomlString(v: string): string {
-  return JSON.stringify(v);
+  return JSON.stringify(v).replace(/\u007f/g, "\\u007F");
 }
+const TOML_BARE_KEY = /^[A-Za-z0-9_-]+$/;
 
 /** The file one agent receives for one source. */
 function render(src: Source, t: PrimitiveTarget, format: Format): string {
@@ -156,11 +166,23 @@ function render(src: Source, t: PrimitiveTarget, format: Format): string {
   if (format === "toml") {
     const lines = [`name = ${tomlString(src.name)}`, `description = ${tomlString(desc ?? "")}`, `developer_instructions = ${tomlString(src.body)}`];
     for (const [k, v] of Object.entries(extra).sort(([a], [b]) => a.localeCompare(b))) {
-      if (typeof v === "string") lines.push(`${k} = ${tomlString(v)}`);
-      else if (typeof v === "number" || typeof v === "boolean") lines.push(`${k} = ${String(v)}`);
-      else throw new PrimitiveError(`agents/${src.name}.md: targets.codex.${k} must be a string, number or boolean`);
+      const where = `agents/${src.name}.md: targets.codex.${k}`;
+      if (["name", "description", "developer_instructions"].includes(k)) throw new PrimitiveError(`${where} is written by sync-agents itself`);
+      const key = TOML_BARE_KEY.test(k) ? k : tomlString(k);
+      if (k.length === 0) throw new PrimitiveError(`agents/${src.name}.md: targets.codex has an empty key`);
+      if (typeof v === "string") lines.push(`${key} = ${tomlString(v)}`);
+      else if (typeof v === "boolean") lines.push(`${key} = ${String(v)}`);
+      else if (typeof v === "number" && Number.isSafeInteger(v)) lines.push(`${key} = ${String(v)}`);
+      else if (typeof v === "number" && Number.isFinite(v)) lines.push(`${key} = ${String(v).includes(".") || String(v).includes("e") ? String(v) : `${v}.0`}`);
+      else throw new PrimitiveError(`${where} must be a string, a boolean, or a finite number within 64-bit range`);
     }
-    return `${lines.join("\n")}\n`;
+    const toml = `${lines.join("\n")}\n`;
+    try {
+      Bun.TOML.parse(toml);
+    } catch (err) {
+      throw new PrimitiveError(`agents/${src.name}.md: the Codex TOML would not parse (${err instanceof Error ? err.message : String(err)})`);
+    }
+    return toml;
   }
   const front: Record<string, unknown> = {};
   if (src.kind === "command") {
@@ -193,21 +215,44 @@ export function desiredPrimitiveFiles(
     const dir = join(hub, kind === "command" ? "commands" : "agents");
     if (!existsSync(dir)) continue;
     for (const f of readdirSync(dir).sort()) {
-      if (!f.endsWith(".md") || f.startsWith(".")) continue;
+      if (!f.endsWith(".md") || f.startsWith(".") || f === "README.md") continue;
+      if (!statSync(join(dir, f)).isFile()) continue;
       const src = parseSource(kind, join(dir, f), f.slice(0, -3));
       validate(src);
       sources.push(src);
     }
   }
   const out: DesiredFile[] = [];
+  const hubReal = realpathSync(hub);
+  const seen = new Map<string, string>();
+  // Where a destination really is: its parent resolved (the file itself may not exist yet).
+  const physical = (dst: string): string => {
+    let dir = dirname(dst);
+    const rest: string[] = [dst.slice(dir.length + 1)];
+    while (!existsSync(dir) && dir !== dirname(dir)) {
+      rest.unshift(dir.slice(dirname(dir).length + 1));
+      dir = dirname(dir);
+    }
+    return join(realpathSync(dir), ...rest);
+  };
   for (const t of PRIMITIVE_TARGETS) {
     if (!active.has(t.agent) || !existsSync(t.root(home, configBase))) continue;
     for (const src of sources) {
       const where = src.kind === "command" ? t.commands : t.agents;
       if (!where) continue;
       const ext = where.format === "toml" ? "toml" : "md";
+      const dst = join(t.root(home, configBase), where.dir, `${src.name}.${ext}`);
+      const phys = physical(dst);
+      if (phys === hubReal || phys.startsWith(`${hubReal}${sep}`)) {
+        throw new PrimitiveError(`${dst} resolves into the hub (${phys}); a symlinked ${t.agent} ${where.dir} directory would overwrite the hub's own files. Make ${dirname(dst)} a real directory`);
+      }
+      const other = seen.get(phys);
+      if (other !== undefined) {
+        throw new PrimitiveError(`${dst} and ${other} are the same file (${phys}): two agents' ${where.dir} directories are linked, and each needs its own format. Make one of them a real directory`);
+      }
+      seen.set(phys, dst);
       out.push({
-        dst: join(t.root(home, configBase), where.dir, `${src.name}.${ext}`),
+        dst,
         content: render(src, t, where.format),
         kind: src.kind,
         agent: t.agent,

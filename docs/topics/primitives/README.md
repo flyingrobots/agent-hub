@@ -9,6 +9,9 @@ agent that has a user directory for it, in that agent's own format:
 ```
 
 `<name>` must match `^[a-z0-9][a-z0-9-]*$`; it becomes each agent's file name and command name.
+A `README.md` and anything that is not a regular `.md` file are ignored. Frontmatter must start
+on the first line (`---`) and close with a `---` line; line endings and a leading BOM are
+normalised first, and written files use LF.
 
 ## What each agent receives
 
@@ -88,3 +91,16 @@ Generated files are owned like MCP entries, by the digest of what was written:
   `--force` replaces (or deletes) it.
 
 Each write is journaled, so an interrupted run is finished by the next one.
+
+A run is refused, before anything is written, when an agent's `commands` or `agents` directory is
+a symlink into the hub (writing there would overwrite the hub's own files), or when two agents'
+directories are the same directory (each agent needs its own format). Make each a real
+directory. A destination that is itself a symlink or a directory is refused, even with
+`--force`.
+
+For Codex, `targets.codex` may not set `name`, `description` or `developer_instructions`; other
+keys are quoted when they are not bare TOML keys, numbers must be finite (integers beyond 64
+bits are written as floats), and every generated file is parsed before it is written.
+
+An older `sync-agents` ignores the ledger's `files` section and drops it on its next write. After
+upgrading again, the files it generated are reported as unmanaged until `--adopt` records them.
