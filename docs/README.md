@@ -11,6 +11,7 @@ Start with the [README](../README.md) for installation and a first sync.
 | --- | --- | --- | --- |
 | Sync and targets | [sync/README.md](topics/sync/README.md) | [sync/test-plan.md](topics/sync/test-plan.md) | You want to know what `sync-agents` writes where, how to scope a run, or how to upgrade |
 | MCP servers | [mcp/README.md](topics/mcp/README.md) | [mcp/test-plan.md](topics/mcp/test-plan.md) | You are writing a canonical `mcp.json`, or a target config was refused |
+| Installing and releasing | [install/README.md](topics/install/README.md) | [install/test-plan.md](topics/install/test-plan.md) | You are installing from source or a release binary, switching layouts, or cutting a release |
 | Ownership and recovery | [ownership/README.md](topics/ownership/README.md) | [ownership/test-plan.md](topics/ownership/test-plan.md) | You need to know what `sync-agents` considers its own, how it recovers from interruption, or how to migrate legacy v1 state |
 
 ## Other records

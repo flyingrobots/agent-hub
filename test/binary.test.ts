@@ -191,7 +191,7 @@ afterAll(() => {
 });
 
 describe.skipIf(compileUnavailable !== null)("compiled sync-agents binary", () => {
-  test("`bun run build:bin` produces a native dist/sync-agents executable", () => {
+  test("bun run build:bin produces a native dist/sync-agents executable", () => {
     const pkg = JSON.parse(readFileSync(join(REPO_ROOT, "package.json"), "utf8"));
     expect(pkg.scripts?.["build:bin"]).toContain("--compile");
     expect(pkg.scripts?.["build:bin"]).toContain("--outfile sync-agents");
@@ -204,7 +204,7 @@ describe.skipIf(compileUnavailable !== null)("compiled sync-agents binary", () =
     expect(readFileSync(join(REPO_ROOT, ".gitignore"), "utf8").split("\n")).toContain("dist/");
   });
 
-  test("`bun run build:bin` leaves no .bun-build temp files in the repo or dist/", () => {
+  test("bun run build:bin leaves no .bun-build temp files in the repo or dist/", () => {
     if (externalBinary) return; // nothing was built here
     expect(leakedByBuild).toEqual([]);
   });
