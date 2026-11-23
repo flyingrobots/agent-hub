@@ -14,6 +14,7 @@ import {
   isPlainObject,
   parseJsonFile,
   parseStrictJsonTargetFile,
+  physicalPath,
   predictNewEntryOwner,
   sha256Hex,
   snapshotsEqual,
@@ -1089,7 +1090,9 @@ function planSingleMcpTarget(
   const prevManaged: Record<string, ManagedMcpRecord> = {};
   const staleRecords: Array<[string, ManagedMcpRecord]> = [];
   for (const [recName, rec] of Object.entries(state.mcp[adapter.id])) {
-    if (rec.configPath === configPath) prevManaged[recName] = rec;
+    if (rec.configPath === configPath || physicalPath(rec.configPath) === physicalPath(configPath)) {
+      prevManaged[recName] = rec;
+    }
     else staleRecords.push([recName, rec]);
   }
   const legacySet = legacyV1?.managed[adapter.id] ?? new Set<string>();

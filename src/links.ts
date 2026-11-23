@@ -14,6 +14,7 @@ import {
 import { dirname, join } from "node:path";
 import { LINK_TARGETS, linkTargetRoot, resolveLinkTargetId } from "./adapters.ts";
 import {
+  physicalPath,
   captureSymlinkOrAbsentSnapshot,
   captureTreeSnapshot,
   checkAdoptionEquivalence,
@@ -541,12 +542,22 @@ export function planLinkSync(
     }
   }
 
+  // Ownership is decided by physical path: when a desired destination is already recorded under
+  // another spelling of the same location (a symlinked ~/.config, an aliased HOME), plan against
+  // the recorded spelling, so it is neither duplicated, nor reported as an unmanaged conflict,
+  // nor pruned as stale.
+  const recordedByPhysical = new Map<string, string>();
+  for (const key of Object.keys(state.links)) recordedByPhysical.set(physicalPath(key), key);
+  const desiredPhysical = new Set<string>();
   for (const dst of [...desired.keys()].sort()) {
     const entry = desired.get(dst)!;
+    const phys = physicalPath(dst);
+    desiredPhysical.add(phys);
+    const recordedKey = state.links[dst] ? dst : (recordedByPhysical.get(phys) ?? dst);
     const stagedSrcDir =
       entry.skillName !== undefined ? opts.plannedSkillSources?.get(entry.skillName) : undefined;
     plans.push(
-      planDesiredLinkOp(dst, entry.src, entry.kind, stagedSrcDir, state.links[dst], opts),
+      planDesiredLinkOp(recordedKey, entry.src, entry.kind, stagedSrcDir, state.links[recordedKey], opts),
     );
   }
 
@@ -554,7 +565,7 @@ export function planLinkSync(
   // Untargeted adapters are never pruned. A record whose owner cannot be resolved under the
   // current HOME is kept too: a restricted run cannot prove it belongs to an active target.
   for (const dst of Object.keys(state.links).sort()) {
-    if (desired.has(dst)) continue;
+    if (desired.has(dst) || desiredPhysical.has(physicalPath(dst))) continue;
     if (opts.activeTargets && opts.activeTargets.size < ALL_AGENTS.length) {
       const ownerTarget = resolveLinkTargetId(dst, homeDir, configBase);
       if (ownerTarget === null || !opts.activeTargets.has(ownerTarget)) continue;

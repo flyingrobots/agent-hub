@@ -4,7 +4,7 @@
  * compilation rules, and comparable normalizers.
  */
 import { isAbsolute, join, sep } from "node:path";
-import { canonicalizeHubPath, isPlainObject } from "./paths.ts";
+import { isPlainObject } from "./paths.ts";
 import { normalizeCodexComparable } from "./toml-edit.ts";
 import type { AgentId, McpServerSpec, McpTransport } from "./types.ts";
 
@@ -30,14 +30,12 @@ export const LINK_TARGETS: readonly LinkTargetDef[] = [
 
 /**
  * The XDG config base: `$XDG_CONFIG_HOME` when it is an absolute path, else `~/.config`. A relative
- * value is ignored, as the XDG Base Directory spec requires. An absolute value is resolved through
- * symlinks, so an alias for `~/.config` names the same destinations (and ledger keys) as
- * `~/.config` itself; the default is used as given.
+ * value is ignored, as the XDG Base Directory spec requires. The value is used as spelled; two
+ * spellings of one directory (a symlinked `~/.config`, an aliased HOME) are reconciled where
+ * ownership is decided, by comparing physical paths (see physicalPath).
  */
 export function xdgConfigBase(homeDir: string, xdgConfigHome?: string): string {
-  if (xdgConfigHome && isAbsolute(xdgConfigHome)) {
-    return canonicalizeHubPath(xdgConfigHome, homeDir, "/");
-  }
+  if (xdgConfigHome && isAbsolute(xdgConfigHome)) return xdgConfigHome;
   return join(homeDir, ".config");
 }
 

@@ -34,6 +34,8 @@ changes are called out under **Changed** with what to do.
   into the new `opencode.json`, and retires the records for the old
   `~/.config/opencode/opencode.json` without editing it: remove its entries by hand if unwanted.
   Run `sync-agents --dry-run` first. A relative `XDG_CONFIG_HOME` is now ignored, per the XDG spec.
+- Link and MCP ownership is compared by physical location, so a symlinked `~/.config` or an
+  aliased `HOME` no longer turns into conflicts, duplicates or prunes.
 - MCP ownership records apply only to the config file they were written for; a record for a
   moved file can no longer claim, overwrite or prune a same-named entry in the new file.
 - `--disown-legacy` for a target whose MCP domain is out of scope, and a repeated

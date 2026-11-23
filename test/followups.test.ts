@@ -360,3 +360,55 @@ test("--skill-only with --disown-legacy is a usage error, not a silent success (
   expect(r.exitCode).toBe(2);
   expect(out(r)).toContain("--skill-only cannot be combined with --disown-legacy");
 });
+
+describe("Ownership is compared by physical path, not spelling (Baker Street PR #18 blind pass B-F-1)", () => {
+  function dotfilesSandbox() {
+    // ~/.config is a symlink into a dotfiles directory, as dotfile managers commonly arrange.
+    const sb = sandbox();
+    const dots = join(sb.home, "dots", "config");
+    mkdirSync(join(dots, "opencode", "skills"), { recursive: true });
+    Bun.spawnSync(["ln", "-s", dots, join(sb.home, ".config")]);
+    skill(sb.hub, "demo");
+    server(sb.hub, "alpha", { command: "/bin/alpha" });
+    return sb;
+  }
+
+  function bothSpellings(home: string, base: SyncOptions, a: string | undefined, b: string | undefined) {
+    const opt = (x: string | undefined) => ({ ...base, xdgConfigHome: x, targets: sel("opencode") });
+    expect(runSync(opt(a)).exitCode).toBe(0);
+    const chk = runSync({ ...opt(b), checkOnly: true });
+    expect(out(chk)).not.toContain("conflict");
+    expect(chk.exitCode).toBe(0);
+    expect(runSync(opt(b)).exitCode).toBe(0);
+    expect(isLink(join(home, "dots", "config", "opencode", "skills", "demo"))).toBe(true);
+    expect(isLink(join(home, "dots", "config", "opencode", "AGENTS.md"))).toBe(true);
+    expect(runSync({ ...opt(a), checkOnly: true }).exitCode).toBe(0);
+  }
+
+  test("symlinked ~/.config: XDG unset then $HOME/.config is zero-conflict and keeps every link", () => {
+    const { home, base } = dotfilesSandbox();
+    bothSpellings(home, base, undefined, join(home, ".config"));
+  });
+
+  test("symlinked ~/.config: XDG $HOME/.config then unset is zero-conflict and keeps every link", () => {
+    const { home, base } = dotfilesSandbox();
+    bothSpellings(home, base, join(home, ".config"), undefined);
+  });
+
+  test("a HOME given through a symlinked alias syncs with zero conflicts after a canonical-HOME sync", () => {
+    const { home, hub, base } = sandbox({ cursor: true, opencode: true });
+    skill(hub, "demo");
+    server(hub, "alpha", { command: "/bin/alpha" });
+    expect(runSync(base).exitCode).toBe(0);
+    const alias = join(realpathSync(tmpdir()), `ah-alias-${Date.now()}`);
+    Bun.spawnSync(["ln", "-s", home, alias]);
+    tempRoots.push(alias);
+    const viaAlias = { ...base, homeDir: alias, xdgConfigHome: join(alias, ".config") };
+    const chk = runSync({ ...viaAlias, checkOnly: true });
+    expect(out(chk)).not.toContain("conflict");
+    expect(chk.exitCode).toBe(0);
+    expect(runSync(viaAlias).exitCode).toBe(0);
+    expect(isLink(join(home, ".cursor", "skills", "demo"))).toBe(true);
+    expect(JSON.parse(readFileSync(join(home, ".claude.json"), "utf8")).mcpServers.alpha).toBeDefined();
+  });
+});

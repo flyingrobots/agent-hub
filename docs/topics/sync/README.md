@@ -108,8 +108,10 @@ direct child of its skills directory under the current `HOME` (for OpenCode, und
 XDG config base). A scoped run keeps any record it cannot attribute, such as one written under a
 different `HOME` or `XDG_CONFIG_HOME`.
 
-`XDG_CONFIG_HOME` is used only when it is an absolute path, as the XDG spec requires, and is
-resolved through symlinks, so an alias for `~/.config` behaves exactly like `~/.config`.
+`XDG_CONFIG_HOME` is used only when it is an absolute path, as the XDG spec requires. Ownership
+is decided by physical location, not spelling: a link or MCP entry recorded under one spelling of
+a directory (a symlinked `~/.config`, a `HOME` reached through a symlink) is recognized under any
+other, so switching between such spellings causes no conflict, duplicate or prune.
 
 ## Installing skills
 
