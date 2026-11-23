@@ -26,8 +26,14 @@ export function hostileSandbox() {
   mkdirSync(join(home, ".claude"), { recursive: true });
   const decoy = join(home, "decoy");
   const marker = join(home, "PRELOAD-RAN");
-  const cwd = join(home, "checkout");
+  // Run from a subdirectory: Bun also finds tsconfig.json in parent directories.
+  const repo = join(home, "checkout");
+  const cwd = join(repo, "sub");
   mkdirSync(cwd, { recursive: true });
+  // A tsconfig "paths" mapping that would replace any module, the entry point included.
+  writeFileSync(join(repo, "hijack.ts"), `require("node:fs").writeFileSync(${JSON.stringify(marker)}, "hijacked");\n`);
+  writeFileSync(join(repo, "tsconfig.json"), JSON.stringify({ compilerOptions: { paths: { "*": ["./hijack.ts"] } } }));
+  writeFileSync(join(repo, "jsconfig.json"), JSON.stringify({ compilerOptions: { paths: { "*": ["./hijack.ts"] } } }));
   writeFileSync(join(cwd, ".env"), `AGENTS_DIR=${decoy}/hub\nXDG_STATE_HOME=${decoy}/state\nXDG_CONFIG_HOME=${decoy}/config\n`);
   // Bun also loads .env.local and .env.<NODE_ENV>.
   writeFileSync(join(cwd, ".env.local"), `AGENTS_DIR=${decoy}/hub-local\n`);
@@ -79,8 +85,15 @@ describe("the working directory's .env and bunfig.toml are ignored (flyingrobots
 
   test("every bun invocation in bin/sync-agents and install.sh passes --config=/dev/null --no-env-file", () => {
     for (const file of [WRAPPER, INSTALL_SH]) {
-      const lines = readFileSync(file, "utf8").split("\n");
-      const calls = lines.filter((l) => /(^|[\s(=])bun\s+(-e|"\$|--)/.test(l) && !l.trim().startsWith("#"));
+      const src = readFileSync(file, "utf8");
+      expect(src).toContain("BUN_ISOLATED=(--config=/dev/null --no-env-file --tsconfig-override=/dev/null)");
+      // Any line that runs bun as a command: the word "bun" as a command token, outside comments,
+      // `command -v` probes and messages. Each must pass the isolation flags.
+      const calls = src
+        .split("\n")
+        .filter((l) => !l.trim().startsWith("#"))
+        .filter((l) => !/command -v bun|echo |emit_error |printf /.test(l))
+        .filter((l) => /(^|[\s(;&|])(exec\s+)?bun(\s|$|")/.test(l) || /\$\(command -v bun\)|"\$BUN"/.test(l));
       expect(calls.length).toBeGreaterThan(0);
       for (const l of calls) expect(l).toContain("${BUN_ISOLATED[@]}");
     }

@@ -101,13 +101,16 @@ bun run build:bin          # writes dist/sync-agents for this machine
 
 ## The working directory cannot change what runs
 
-Bun normally loads `.env` and `bunfig.toml` from the directory it is started in. For
-`sync-agents` that would let any checkout you run it from set `AGENTS_DIR`, `XDG_CONFIG_HOME`
-or `XDG_STATE_HOME`, or preload its own code. So every `bun` call in `bin/sync-agents` and
-`install.sh` passes `--config=/dev/null --no-env-file`, and binaries are compiled with
+Bun normally loads `.env` and `bunfig.toml` from the directory it is started in, and
+`tsconfig.json` or `jsconfig.json` from it or any parent. For `sync-agents` that would let any
+checkout you run it from set `AGENTS_DIR`, `XDG_CONFIG_HOME` or `XDG_STATE_HOME`, preload its
+own code, or remap modules so that its own file runs in place of the engine. So every `bun` call
+in `bin/sync-agents` and `install.sh` passes
+`--config=/dev/null --no-env-file --tsconfig-override=/dev/null`, and binaries are compiled with
 `--no-compile-autoload-dotenv --no-compile-autoload-bunfig` (by `build:bin` and by the release
-workflow). Set those variables in your shell or in `agent-hub/config.json` instead. A binary
-built some other way, or an earlier release, still reads both files.
+workflow; a compiled binary does not read `tsconfig.json` or `package.json` by default). Set
+those variables in your shell or in `agent-hub/config.json` instead. A binary built some other
+way, or an earlier release, still reads these files.
 
 ## How releases are cut
 

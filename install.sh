@@ -14,9 +14,10 @@ REPLACE_RUNTIME=0
 REPLACE_BIN=0
 CONFIG_AGENTS_DIR=""
 
-# Bun reads .env and bunfig.toml from the working directory by default: a checkout could then
-# redirect AGENTS_DIR / XDG_* or preload code. Every bun call here ignores both.
-BUN_ISOLATED=(--config=/dev/null --no-env-file)
+# Bun reads .env, bunfig.toml and tsconfig.json/jsconfig.json (also from parent directories) from
+# the working directory by default: a checkout could then redirect AGENTS_DIR / XDG_*, preload
+# code, or remap modules so its own file runs instead. Every bun call here ignores all three.
+BUN_ISOLATED=(--config=/dev/null --no-env-file --tsconfig-override=/dev/null)
 BINARY_SRC=""
 
 # Exact verified SHA-256 checksums of the unmarked baseline (3cbd0a8) runtime layout.
