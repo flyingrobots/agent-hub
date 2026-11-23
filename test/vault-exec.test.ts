@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import Ajv2020 from "ajv/dist/2020";
 import { decodeOutput } from "./jsonl.ts";
 
 // Phase 5 (flyingrobots/agent-hub#10): vault-backed, grant-bound `sync-agents exec`.
@@ -92,13 +93,15 @@ describe("vault-backed exec (flyingrobots/agent-hub#10)", () => {
   test("an ungranted exec is refused before any secret is read", () => {
     const m = machine();
     expect(run(["secret", "set", "k"], m.env, `${SECRET}\n`).exitCode).toBe(0);
+    const before = readFileSync(join(m.kc, "argv.log"), "utf8");
     const r = run(["exec", "--vault", "T=k", "--", "/usr/bin/printenv", "T"], m.env);
     expect(r.exitCode).toBe(1);
     expect(r.stdout).toBe("");
     expect(r.raw).not.toContain(SECRET);
     const errors = r.decode().events.filter((e) => e.kind === "error");
     expect(errors.length).toBe(1);
-    expect(readFileSync(join(m.kc, "argv.log"), "utf8")).not.toContain("find-generic-password");
+    // exec itself never ran the keychain.
+    expect(readFileSync(join(m.kc, "argv.log"), "utf8")).toBe(before);
     const audit = readFileSync(m.statePath("exec-audit.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
     expect(audit.at(-1).outcome).toBe("refused");
     expect(JSON.stringify(audit)).not.toContain(SECRET);
@@ -226,5 +229,16 @@ describe("vault-backed exec (flyingrobots/agent-hub#10)", () => {
     expect(r.raw).not.toContain(SECRET);
     const grants = r.decode().events.filter((e) => e.kind === "grant");
     expect(grants.map((g) => [g.key, g.env, g.argv])).toEqual([["k", "T", SH_ARGV]]);
+  });
+
+  test("every exec-audit.jsonl line validates against schemas/files/agent_hub.exec_audit.schema.json", () => {
+    const m = grantedMachine();
+    run(["exec", "--vault", "T=nope", "--", ...SH_ARGV], m.env);
+    run(["exec", "--keep", "A", "--vault", "T=k", "--", ...SH_ARGV], m.env);
+    const schema = JSON.parse(readFileSync(join(REPO_ROOT, "schemas", "files", "agent_hub.exec_audit.schema.json"), "utf8"));
+    const validate = new Ajv2020({ strict: false }).compile(schema);
+    const lines = readFileSync(m.statePath("exec-audit.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    expect(lines.map((l) => l.outcome)).toEqual(["refused", "exec"]);
+    for (const l of lines) expect(validate(l)).toBe(true);
   });
 });

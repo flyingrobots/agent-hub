@@ -341,6 +341,24 @@ describe.skipIf(compileUnavailable !== null)("compiled sync-agents binary", () =
     );
   });
 
+  test("execve FFI inside the binary: a granted exec becomes the server with the same PID (flyingrobots/agent-hub#10)", () => {
+    const { home, env } = makeSandbox();
+    const state = join(home, ".local", "state");
+    mkdirSync(join(state, "agent-hub"), { recursive: true });
+    const argv = ["/bin/sh", "-c", 'echo "pid=$$ T=$T"'];
+    writeFileSync(join(state, "agent-hub", "grants.json"), JSON.stringify({ version: 1, grants: [{ key: "k", env: "T", argv }] }));
+    const sec = join(home, "fake-security");
+    writeFileSync(sec, '#!/bin/sh\nfor a; do [ "$a" = "-w" ] && { echo FAKE-bin-value; exit 0; }; done\nexit 0\n');
+    chmodSync(sec, 0o755);
+    const p = Bun.spawnSync([BIN, "exec", "--vault", "T=k", "--", ...argv], {
+      env: { ...env, XDG_STATE_HOME: state, AGENT_HUB_SECURITY_BIN: sec },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(p.exitCode).toBe(0);
+    expect(p.stdout.toString()).toBe(`pid=${p.pid} T=FAKE-bin-value\n`);
+  });
+
   test("native xattr FFI inside the binary: differing extended attributes block --adopt, identical ones adopt", () => {
     const { home, hub, env } = makeSandbox();
     const canon = writeSkill(hub, "xattr-skill");

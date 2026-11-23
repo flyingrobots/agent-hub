@@ -14,6 +14,7 @@ import {
   type ApplyLockHandle,
 } from "./lock.ts";
 import { applyFileOp, planPrimitives, type PlannedFileOp } from "./primitives.ts";
+import { EXEC_USAGE, runExecCli, runSecretCli, SECRET_USAGE } from "./vault-cli.ts";
 import { applyMcpTarget, planMcpSync, type PlaintextSecretWarning, type PlannedMcpTarget } from "./mcp.ts";
 import { canonicalizeHubPath, isPlainObject, parseJsonFile } from "./paths.ts";
 import {
@@ -49,6 +50,8 @@ import {
 export const CLI_USAGE = `Usage: sync-agents [OPTIONS]
        sync-agents import [OPTIONS]     (see sync-agents import --help)
        sync-agents pull --from <agent> <mcp/<name>|skill/<name>> [OPTIONS]
+       sync-agents secret set|grant|revoke|list ...   (see sync-agents secret --help)
+       sync-agents exec --vault ENV=KEY... -- COMMAND  (see sync-agents exec --help)
 
 Install skills into your canonical hub directory (default ~/.agents/) and sync
 AGENTS.md, skills/, and mcp/ configs across local AI coding agents.
@@ -940,6 +943,17 @@ export function cliMain(
   // A failed write (not a closed pipe) makes the run fail whatever the sync returned.
   const finish = (code: number) => (writeFailed() ? Math.max(code, 1) : code);
   try {
+    if (!mcpOnly && (argv[0] === "exec" || argv[0] === "secret")) {
+      const cmd = argv[0];
+      const usage = cmd === "exec" ? EXEC_USAGE : SECRET_USAGE;
+      if (argv[1] === "--help" || argv[1] === "-h") {
+        writeEvents(human ? helpEvents(`sync-agents ${cmd}`, usage).slice(0, 1) : helpEvents(`sync-agents ${cmd}`, usage), human);
+        return finish(0);
+      }
+      return finish(cmd === "exec" ? runExecCli(argv.slice(1), human) : runSecretCli(argv.slice(1), human, (dir) =>
+        resolveCanonicalHubDir({ hubDir: dir, envAgentsDir: dir ? undefined : process.env.AGENTS_DIR, homeDir: homedir(), cwd: process.cwd(), xdgConfigHome: process.env.XDG_CONFIG_HOME }),
+      ));
+    }
     if (!mcpOnly && (argv[0] === "import" || argv[0] === "pull")) {
       return finish(runSubcommandCli(argv[0], argv.slice(1), human));
     }

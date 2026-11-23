@@ -149,6 +149,8 @@ export function detectPlaintextSecrets(spec: McpServerSpec, allow: readonly stri
   if (spec.extra) extraFields(spec.extra, "extra", fields);
   for (const [field, value] of fields) {
     if (allowed.has(field)) continue;
+    // A whole-value vault reference holds no literal (vault.ts validates its shape).
+    if (/^\$\{vault:[A-Za-z0-9][A-Za-z0-9._-]*\}$/.test(value)) continue;
     // Each literal part on its own: text on two sides of a reference was never contiguous.
     let parts: string[];
     try {
