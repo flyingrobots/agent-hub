@@ -123,6 +123,25 @@ expand_tilde() {
   esac
 }
 
+# Lexically resolve "." and ".." in an absolute path, as Node's path.normalize does, so this
+# canonicalizer agrees with the engine's canonicalizeHubPath (which normalizes before resolving
+# the deepest existing ancestor). Without it, a ".." under a nonexistent directory survived here
+# but not in the engine, and install.sh's hub-overlap guard compared the wrong paths.
+lexical_normalize() {
+  local IFS=/
+  local -a parts out=()
+  read -r -a parts <<< "$1"
+  local part
+  for part in "${parts[@]}"; do
+    case "$part" in
+      "" | .) ;;
+      ..) if [[ ${#out[@]} -gt 0 ]]; then unset 'out[${#out[@]}-1]'; fi ;;
+      *) out+=("$part") ;;
+    esac
+  done
+  if [[ ${#out[@]} -eq 0 ]]; then printf '/\n'; else printf '/%s\n' "${out[*]}"; fi
+}
+
 canonicalize_path() {
   local raw="$1"
   local p
@@ -131,6 +150,7 @@ canonicalize_path() {
     /*) ;;
     *)  p="$PWD/$p" ;;
   esac
+  p="$(lexical_normalize "$p")"
 
   local tail=()
   local cursor="$p"

@@ -384,3 +384,30 @@ describe("hardening regressions (v4 code-review findings)", () => {
     expect(scan.sections[1]?.headerPath).toEqual(["mcp_servers", "bar\u001b"]);
   });
 });
+
+describe("install.sh hub-overlap guard agrees with the engine on '..' paths (Baker Street PR #17 M-F-1)", () => {
+  test("AGENTS_DIR=<h>/nope/../rt with --prefix <h>/rt is refused as overlapping, and both print-dir paths agree", () => {
+    const home = realpathSync(mkdtempSync(join(tmpdir(), "agent-hub-overlap-")));
+    tempRoots.push(home);
+    const env = {
+      PATH: process.env.PATH ?? "/usr/bin:/bin",
+      HOME: home,
+      XDG_CONFIG_HOME: join(home, ".config"),
+      XDG_STATE_HOME: join(home, ".local", "state"),
+      // A raw string: join() would normalize the ".." away and hide the bug.
+      AGENTS_DIR: `${home}/nope/../rt`,
+    };
+    const viaWrapper = Bun.spawnSync([join(REPO_ROOT, "bin", "sync-agents"), "--print-dir"], { env, stdout: "pipe" }).stdout.toString().trim();
+    const viaEngine = Bun.spawnSync(["bun", join(REPO_ROOT, "src", "cli.ts"), "--print-dir"], { env, stdout: "pipe" }).stdout.toString().trim();
+    expect(viaWrapper).toBe(join(home, "rt"));
+    expect(viaEngine).toBe(viaWrapper);
+
+    const r = Bun.spawnSync(
+      ["bash", INSTALL_SH, "--prefix", join(home, "rt"), "--bin-dir", join(home, ".local", "bin"), "--no-skill"],
+      { env, stdout: "pipe", stderr: "pipe" },
+    );
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr.toString()).toContain("overlaps hub directory");
+    expect(existsSync(join(home, "rt"))).toBe(false);
+  }, INSTALLER_TIMEOUT_MS);
+});
