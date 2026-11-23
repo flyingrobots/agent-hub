@@ -8,6 +8,11 @@ changes are called out under **Changed** with what to do.
 
 ## [Unreleased]
 
+## [0.1.0] - 2026-11-22
+
+The first release: five agent targets, MCP compilation with environment references, import and
+pull, commands and agents, JSON Lines output, and standalone binaries.
+
 ### Added
 
 - `sync-agents import` and `sync-agents pull`: bring agents' existing MCP servers, rules and
@@ -138,3 +143,6 @@ changes are called out under **Changed** with what to do.
   the user's earlier block of MCP servers.
 - Two prune assertions in the test suite that could never fail (they used
   `existsSync` on a dangling link) now use `lstat`.
+
+[Unreleased]: https://github.com/flyingrobots/agent-hub/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/flyingrobots/agent-hub/releases/tag/v0.1.0
