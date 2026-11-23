@@ -131,7 +131,7 @@ canonicalize_path() {
   local p
   p="$(expand_tilde "$raw")"
   if [[ "$p" == *$'\n'* ]]; then
-    emit_error usage "${0##*/}: refusing a path that contains a newline: $raw"
+    emit_error config "${0##*/}: refusing a path that contains a newline: $raw"
     return 1
   fi
   # Resolve a relative path against the physical cwd, as the engine's process.cwd() does;
@@ -284,6 +284,10 @@ i=0
 while [[ "$i" -lt "${#ARGS[@]}" ]]; do
   arg="${ARGS[$i]}"
   case "$arg" in
+    --skill|--targets|--disown-legacy)
+      # Their value is not a flag (the engine reads it the same way).
+      i=$((i + 1))
+      ;;
     -h|--help)
       SHOW_HELP=1
       ;;

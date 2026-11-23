@@ -45,7 +45,10 @@ the bare path, or read `.hub` from the JSON line.
 ### How a run ends
 
 Lines are printed as they happen. Every run that gets past argument parsing ends with exactly
-one `agent_hub.summary` or `agent_hub.error` line, and it is the last line of the run.
+one `agent_hub.summary` or `agent_hub.error` line, and it is the last line of the run. For
+`applied`, `changes` is the number of `op` lines with `phase: "sync"` the run printed. A reader
+that closes the pipe early (`| head -1`) gets no more lines; the run carries on and exits as it
+would have.
 
 | `summary.status` | Stream | Exit | Meaning |
 | --- | --- | --- | --- |
@@ -60,7 +63,7 @@ one `agent_hub.summary` or `agent_hub.error` line, and it is the last line of th
 | `error.code` | Exit | When |
 | --- | --- | --- |
 | `usage` | 2 | Bad arguments or flag combinations. Before parsing succeeds this is the only line, and it carries `usage` |
-| `config` | 1 | `agent-hub/config.json` is invalid (for example an unknown `disabledTargets` selector) |
+| `config` | 1 | `agent-hub/config.json` or the hub path is invalid (an unknown `disabledTargets` selector, a path containing a newline) |
 | `hub_not_found` | 1 | The resolved hub directory does not exist |
 | `lock` | 1 | Another run holds the apply lock |
 | `plan` | 1 | Planning failed: a target config was refused (strict JSON, TOML the editor cannot change, a moved layout), a skill source could not be read, or the ledger is unreadable. `detail` holds the cause |

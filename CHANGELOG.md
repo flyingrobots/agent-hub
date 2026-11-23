@@ -44,8 +44,10 @@ changes are called out under **Changed** with what to do.
   exits 0 only on a version with JSON Lines. Exit codes are unchanged. The prose is the same
   except that every run now ends with one summary or error line: a sync that changed something
   ends with `applied N change(s).`, `--dry-run` and `--explain` with `N change(s) planned`, and
-  an ambiguous recovery with an error line after the recovery line. Lines are printed as they
-  happen rather than at the end of the run.
+  an ambiguous recovery with an error line after the recovery line, and a doubled
+  `sync-agents: mcp-sync:` prefix on refusals is now one prefix. Lines are printed as they
+  happen rather than at the end of the run. `src/mcp-sync.ts --print-dir` now prints the hub
+  instead of running an MCP sync.
 - OpenCode servers are written in its current `mcp.servers` layout instead of the deprecated
   direct `mcp.<name>` form. Run `sync-agents --dry-run` first: entries `sync-agents` wrote in the
   old layout, unchanged since, move on the next sync (`mcp-migrate-layout`), without the old

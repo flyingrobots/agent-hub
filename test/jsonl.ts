@@ -69,15 +69,34 @@ export function printedHub(stdout: string): string {
  */
 export function runSync(...args: Parameters<typeof realRunSync>): ReturnType<typeof realRunSync> {
   const res = realRunSync(...args);
-  assertEventContract(res);
+  assertEventContract(res, Boolean(args[0].checkOnly));
   return res;
 }
 
-export function assertEventContract(res: ReturnType<typeof realRunSync>): void {
+export function assertEventContract(res: ReturnType<typeof realRunSync>, checkOnly = false): void {
   decodeStream(res.events.map((e) => renderJsonLine(e)).join("\n"), "runSync events");
   const msgs = (stream: "stdout" | "stderr") => res.events.filter((e) => e.stream === stream).map((e) => e.message);
   if (JSON.stringify(msgs("stdout")) !== JSON.stringify(res.stdout)) throw new Error("runSync stdout differs from its stdout events");
   if (JSON.stringify(msgs("stderr")) !== JSON.stringify(res.stderr)) throw new Error("runSync stderr differs from its stderr events");
+  // Which stream each summary uses (docs/topics/output "How a run ends").
+  const SUMMARY_STREAM: Record<string, "stdout" | "stderr"> = {
+    in_sync: "stdout",
+    planned: "stdout",
+    applied: "stdout",
+    recovered_in_sync: "stdout",
+    pending_recovery: checkOnly ? "stderr" : "stdout",
+    out_of_sync: "stderr",
+    conflicts: "stderr",
+  };
+  for (const e of res.events) {
+    if (e.id !== "agent_hub.summary") continue;
+    const want = SUMMARY_STREAM[String(e.data.status)];
+    if (e.stream !== want) throw new Error(`summary ${e.data.status} on ${e.stream}, documented on ${want}`);
+    if (e.data.status === "applied") {
+      const applied = res.events.filter((x) => x.id === "agent_hub.op" && x.data.phase === "sync").length;
+      if (e.data.changes !== applied) throw new Error(`applied summary says ${e.data.changes} change(s); ${applied} were applied`);
+    }
+  }
   const terminal = res.events.filter((e) => e.id === "agent_hub.summary" || e.id === "agent_hub.error");
   if (terminal.length !== 1 || res.events[res.events.length - 1] !== terminal[0]) {
     throw new Error(

@@ -269,12 +269,14 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
   const events: OutputEvent[] = [];
   // Every printed line is an event: its message goes to stdout/stderr (what --human prints) and
   // the event to `events` (what the default JSON Lines output prints).
+  let appliedChanges = 0;
   const emit = (
     stream: "stdout" | "stderr",
     id: SchemaId,
     message: string,
     data: Record<string, unknown> = {},
   ): void => {
+    if (id === "agent_hub.op" && data.phase === "sync") appliedChanges += 1;
     const event: OutputEvent = { stream, id, message, data };
     events.push(event);
     (stream === "stdout" ? stdout : stderr).push(message);
@@ -520,6 +522,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
     // ---- PHASE 0: WRITE-AHEAD RECOVERY ----
     const pendingJournal = loadPendingJournal(paths.journalPath);
     if (pendingJournal) {
+      const inspection = inspectPendingRecovery(pendingJournal, state);
       const recovered = executePendingRecovery(
         pendingJournal,
         paths.journalPath,
@@ -535,7 +538,10 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       if (!recoveryReport.resolved) {
         emit("stderr", "agent_hub.recovery", `[conflict] pending recovery ambiguous: ${recoveryReport.error}`, {
           event: "ambiguous",
+          classification: recoveryReport.classification ?? inspection.classification,
+          destination: pendingJournal.destination,
           reason: String(recoveryReport.error),
+          next_step: inspection.nextStep,
         });
         fail("recovery", `${cmdLabel}: pending recovery is ambiguous; nothing new was applied (see the recovery line above).`, {
           detail: String(recoveryReport.error),
@@ -670,9 +676,9 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       }
     }
 
-    emit("stdout", "agent_hub.summary", `${cmdLabel}: applied ${committed.length} change(s).`, {
+    emit("stdout", "agent_hub.summary", `${cmdLabel}: applied ${appliedChanges} change(s).`, {
       status: "applied",
-      changes: committed.length,
+      changes: appliedChanges,
     });
     return done(0, { recovery: recoveryReport });
   } catch (err) {

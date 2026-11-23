@@ -269,4 +269,61 @@ describe("JSON Lines output contract (flyingrobots/agent-hub#5)", () => {
       .filter((f) => /^import\s*\{[^}]*\brunSync\b[^}]*\}\s*from\s*"\.\.\/src\/cli\.ts"/m.test(readFileSync(join(REPO_ROOT, "test", f), "utf8")));
     expect(offenders).toEqual([]);
   });
+
+  test("a reader that closes the pipe early (head -1) gets a clean exit 0 and no crash text", () => {
+    const { home, hub, env } = sandbox();
+    for (let i = 0; i < 600; i++) {
+      mkdirSync(join(hub, "skills", `s-${i}`), { recursive: true });
+      writeFileSync(join(hub, "skills", `s-${i}`, "SKILL.md"), `---\nname: s-${i}\ndescription: d\n---\n`);
+    }
+    for (const cmd of [`bun "${ENGINE}"`, `"${WRAPPER}"`]) {
+      const p = Bun.spawnSync(
+        ["bash", "-c", `${cmd} --dir "${hub}" --targets claude --dry-run 2>"${home}/err" | head -1 >/dev/null; echo \${PIPESTATUS[0]}`],
+        { env, cwd: home, stdout: "pipe", stderr: "pipe" },
+      );
+      expect(p.stdout.toString().trim()).toBe("0");
+      const err = readFileSync(join(home, "err"), "utf8");
+      expect(err).toBe("");
+    }
+  });
+
+  test("an applied summary counts the changes applied, not the targets written", () => {
+    const { hub, env } = sandbox();
+    for (const n of ["b1", "b2", "b3", "b4"]) {
+      mkdirSync(join(hub, "mcp", n), { recursive: true });
+      writeFileSync(join(hub, "mcp", n, "mcp.json"), JSON.stringify({ mcp: { command: `/bin/${n}` } }));
+    }
+    const r = raw(["bun", ENGINE, "--dir", hub, "--targets", "claude"], env);
+    expect(r.exitCode).toBe(0);
+    const { events } = decodeOutput(r.stdout, r.stderr);
+    const ops = events.filter((e) => e.kind === "op" && e.phase === "sync").length;
+    expect(ops).toBeGreaterThan(5);
+    expect(events[events.length - 1]!.status).toBe("applied");
+    expect(events[events.length - 1]!.changes).toBe(ops);
+  });
+
+  test("explain with changes ends planned; a missing hub is hub_not_found; a newline path is a config error", () => {
+    const { home, hub, env } = sandbox();
+    const ex = decodeStream(raw(["bun", ENGINE, "--dir", hub, "--targets", "claude", "--explain"], env).stdout, "stdout").events;
+    expect(ex[ex.length - 1]!.status).toBe("planned");
+    const missing = raw(["bun", ENGINE, "--dir", join(home, "nope")], env);
+    expect(missing.exitCode).toBe(1);
+    expect(decodeStream(missing.stderr, "stderr").events.map((e) => e.code)).toEqual(["hub_not_found"]);
+    const nl = raw([WRAPPER, "--print-dir", "--dir", `${home}/a\nb`], env);
+    expect(nl.exitCode).toBe(1);
+    expect(decodeStream(nl.stderr, "stderr").events.map((e) => e.code)).toEqual(["config"]);
+  });
+
+  test("the wrapper treats every option's value as a value, as the engine does", () => {
+    const { hub, env } = sandbox();
+    for (const opt of ["--skill", "--targets", "--disown-legacy"]) {
+      for (const value of ["--print-dir", "--help", "--human"]) {
+        const viaWrapper = raw([WRAPPER, "--dir", hub, opt, value], env);
+        const viaEngine = raw(["bun", ENGINE, "--dir", hub, opt, value], env);
+        expect(viaWrapper.exitCode).toBe(viaEngine.exitCode!);
+        const w = decodeOutput(viaWrapper.stdout, viaWrapper.stderr).events;
+        expect(w.some((e) => e.kind === "print_dir" || e.kind === "help")).toBe(false);
+      }
+    }
+  });
 });

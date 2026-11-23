@@ -63,12 +63,33 @@ export function renderJsonLine(event: OutputEvent, runId: string = RUN_ID): stri
   });
 }
 
+// A reader that stops reading (`| head -1`) closes the pipe. That is not an error of the run: the
+// rest of its output is dropped silently, as a prose CLI's would be, and the exit code stands.
+const closed = { stdout: false, stderr: false };
+let guarded = false;
+function guardStreams(): void {
+  if (guarded) return;
+  guarded = true;
+  for (const name of ["stdout", "stderr"] as const) {
+    process[name].on("error", (err: NodeJS.ErrnoException) => {
+      if (err.code === "EPIPE") closed[name] = true;
+      else throw err;
+    });
+  }
+}
+
 /** Write events: JSON Lines by default, each event's message with `human`. */
 export function writeEvents(events: readonly OutputEvent[], human: boolean): void {
+  guardStreams();
   for (const e of events) {
+    if (closed[e.stream]) continue;
     const line = human ? e.message : renderJsonLine(e);
-    if (e.stream === "stdout") process.stdout.write(`${line}\n`);
-    else process.stderr.write(`${line}\n`);
+    try {
+      process[e.stream].write(`${line}\n`);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === "EPIPE") closed[e.stream] = true;
+      else throw err;
+    }
   }
 }
 
