@@ -227,3 +227,105 @@ describe("ownership records follow the spelling of the last run (flyingrobots/ag
     expect(ledger().links[join(home, ".codex", "skills", "demo")]).toBeUndefined();
   });
 });
+
+describe("shared skills directories: ownership edge cases (flyingrobots/agent-hub#37)", () => {
+  // ~/.claude/skills and ~/.codex/skills are both symlinks to a third directory.
+  function sharedThird() {
+    const sb = sandbox();
+    const third = join(sb.root, "shared-skills");
+    mkdirSync(third, { recursive: true });
+    mkdirSync(join(sb.home, ".codex"), { recursive: true });
+    symlinkSync(third, join(sb.home, ".claude", "skills"));
+    symlinkSync(third, join(sb.home, ".codex", "skills"));
+    const both = sb.opts(sb.home, ["claude:links", "codex:links"]);
+    return { ...sb, third, both };
+  }
+  const split = (dir: string) => {
+    unlinkSync(dir);
+    mkdirSync(dir);
+  };
+  const statePathOf = (hub: string, home: string, root: string) => getStatePaths(hub, home, join(root, "state")).statePath;
+
+  test("two skills symlinks to a third directory: splitting either side in turn leaves every link owned", () => {
+    for (const first of [".claude", ".codex"]) {
+      const { home, both } = sharedThird();
+      for (let i = 0; i < 2; i++) expect(runSync(both).exitCode).toBe(0);
+      const second = first === ".claude" ? ".codex" : ".claude";
+      for (const side of [first, second]) {
+        split(join(home, side, "skills"));
+        const r = runSync(both);
+        expect(out(r)).not.toContain("conflict");
+        expect(r.exitCode).toBe(0);
+        expect(lstatSync(join(home, ".claude", "skills", "demo")).isSymbolicLink()).toBe(true);
+        expect(lstatSync(join(home, ".codex", "skills", "demo")).isSymbolicLink()).toBe(true);
+        const chk = runSync({ ...both, checkOnly: true });
+        expect(out(chk)).not.toContain("conflict");
+        expect(chk.exitCode).toBe(0);
+      }
+    }
+  });
+
+  test("a ledger written before shared links recorded their physical destination still loads and is upgraded by the next sync", () => {
+    const { root, home, hub, both, ledger } = sharedThird();
+    expect(runSync(both).exitCode).toBe(0);
+    const statePath = statePathOf(hub, home, root);
+    const raw = JSON.parse(readFileSync(statePath, "utf8"));
+    for (const rec of Object.values(raw.links) as Record<string, unknown>[]) delete rec.physical;
+    writeFileSync(statePath, JSON.stringify(raw, null, 2) + "\n");
+    expect(Object.keys(ledger().links).length).toBeGreaterThan(0);
+    const chk = runSync({ ...both, checkOnly: true });
+    expect(out(chk)).toContain("record-shared-link");
+    expect(runSync(both).exitCode).toBe(0);
+    const again = runSync({ ...both, checkOnly: true });
+    expect(again.exitCode).toBe(0);
+    split(join(home, ".claude", "skills"));
+    const r = runSync(both);
+    expect(out(r)).not.toContain("conflict");
+    expect(r.exitCode).toBe(0);
+  });
+
+  test("a scoped codex links run never retires claude's duplicate record, even under the symlink-free spelling", () => {
+    // ~/.codex/skills is a symlink to the real ~/.claude/skills.
+    const sb = sandbox();
+    mkdirSync(join(sb.home, ".claude", "skills"), { recursive: true });
+    mkdirSync(join(sb.home, ".codex"), { recursive: true });
+    symlinkSync(join(sb.home, ".claude", "skills"), join(sb.home, ".codex", "skills"));
+    const both = sb.opts(sb.home, ["claude:links", "codex:links"]);
+    expect(runSync(both).exitCode).toBe(0);
+    const claudeKey = join(sb.home, ".claude", "skills", "demo");
+    const codexKey = join(sb.home, ".codex", "skills", "demo");
+    const statePath = statePathOf(sb.hub, sb.home, sb.root);
+    const raw = JSON.parse(readFileSync(statePath, "utf8"));
+    expect(raw.links[claudeKey]).toBeDefined();
+    raw.links[codexKey] = { ...raw.links[claudeKey] };
+    writeFileSync(statePath, JSON.stringify(raw, null, 2) + "\n");
+    const scoped = sb.opts(sb.home, ["codex:links"]);
+    const chk = runSync({ ...scoped, checkOnly: true });
+    expect(out(chk)).not.toContain("drop-duplicate-record");
+    expect(runSync(scoped).exitCode).toBe(0);
+    expect(sb.ledger().links[claudeKey]).toBeDefined();
+    split(join(sb.home, ".codex", "skills"));
+    const r = runSync(both);
+    expect(out(r)).not.toContain("conflict");
+    expect(r.exitCode).toBe(0);
+  });
+
+  test("scoped runs with hand-made duplicate records never retire an excluded target's record", () => {
+    for (const [active, excluded] of [["codex", ".claude"], ["claude", ".codex"]] as const) {
+      const { root, home, hub, both, opts, ledger } = sharedThird();
+      expect(runSync(both).exitCode).toBe(0);
+      const claudeKey = join(home, ".claude", "skills", "demo");
+      const codexKey = join(home, ".codex", "skills", "demo");
+      const statePath = statePathOf(hub, home, root);
+      const raw = JSON.parse(readFileSync(statePath, "utf8"));
+      const rec = raw.links[claudeKey] ?? raw.links[codexKey];
+      raw.links[claudeKey] = { ...rec };
+      raw.links[codexKey] = { ...rec };
+      writeFileSync(statePath, JSON.stringify(raw, null, 2) + "\n");
+      const scoped = opts(home, [`${active}:links`]);
+      expect(out(runSync({ ...scoped, checkOnly: true }))).not.toContain("drop-duplicate-record");
+      expect(runSync(scoped).exitCode).toBe(0);
+      expect(ledger().links[join(home, excluded, "skills", "demo")]).toBeDefined();
+    }
+  });
+});

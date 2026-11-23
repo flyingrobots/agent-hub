@@ -8,6 +8,16 @@ changes are called out under **Changed** with what to do.
 
 ## [Unreleased]
 
+### Fixed
+
+- Shared skills directories: when `~/.claude/skills` and `~/.codex/skills` are both symlinks to
+  a third directory, replacing either one with a real directory no longer reports the other
+  agent's link as unmanaged. The link's record now stores its physical destination (`physical`,
+  an optional field; the ledger stays version 2 and older ledgers load unchanged, gaining the
+  field on the next sync of a shared layout). A scoped run such as `--targets codex:links` no
+  longer retires an excluded target's duplicate record for a shared link.
+  (flyingrobots/agent-hub#37)
+
 ## [0.1.0] - 2026-11-22
 
 The first release: five agent targets, MCP compilation with environment references, import and

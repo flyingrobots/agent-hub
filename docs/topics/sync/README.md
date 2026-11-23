@@ -122,8 +122,9 @@ kept under the spelling whose path goes through the fewest symlinked directories
 (`~/.claude/skills/<name>` in that example, even when `HOME` itself is reached through an
 alias), so replacing the symlinked directory with a real one later leaves both links
 agent-hub's: the next sync creates the link on the newly real side. When both agents' skills
-directories are symlinks to a third directory, replacing the one that holds the record still
-reports the other link as unmanaged; `--adopt` records it. If
+directories are symlinks to a third directory, the record also stores the link's physical
+destination, so replacing either symlink with a real directory leaves both links agent-hub's
+(see [Ownership and recovery](../ownership/README.md#shared-skills-directories)). If
 you remove an alias *before* syncing under the new spelling, the old records no longer match:
 the run reports conflicts (and may describe MCP records as moved) and changes nothing;
 `--adopt` then records the current spelling.
