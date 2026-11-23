@@ -555,13 +555,32 @@ export function planLinkSync(
   // are retired ledger-only, so the same symlink is never pruned twice.
   const desiredSpellings = new Set(desired.keys());
   // One order decides which spelling of a physical link holds its record, here and in the
-  // planner below: a spelling desired now, then one whose path crosses no symlink (splitting a
-  // shared directory replaces the symlinked side, so the real side keeps the link), then one
-  // already recorded, then by name.
-  const isPhysicalSpelling = (p: string) => physicalPath(p) === p;
+  // planner below: a spelling desired now, then the one whose path goes through the fewest
+  // symlinked directories (splitting a shared directory replaces the symlinked side, so the real
+  // side keeps the link), then one already recorded, then by name.
+  // Symlinked directories along a spelling's parent path. Counted, not tested for zero, so a
+  // HOME that is itself reached through an alias still tells the shared directory's sides apart.
+  const symlinkCache = new Map<string, number>();
+  const symlinksIn = (p: string): number => {
+    const parent = dirname(p);
+    const hit = symlinkCache.get(parent);
+    if (hit !== undefined) return hit;
+    let n = 0;
+    let cur = parent;
+    while (cur !== dirname(cur)) {
+      try {
+        if (lstatSync(cur).isSymbolicLink()) n += 1;
+      } catch {
+        // a missing component is not a symlink
+      }
+      cur = dirname(cur);
+    }
+    symlinkCache.set(parent, n);
+    return n;
+  };
   const preferSpelling = (a: string, b: string) =>
     Number(!desiredSpellings.has(a)) - Number(!desiredSpellings.has(b)) ||
-    Number(!isPhysicalSpelling(a)) - Number(!isPhysicalSpelling(b)) ||
+    symlinksIn(a) - symlinksIn(b) ||
     Number(!state.links[a]) - Number(!state.links[b]) ||
     (a < b ? -1 : a > b ? 1 : 0);
   const byPhysical = new Map<string, string[]>();
@@ -629,7 +648,7 @@ export function planLinkSync(
       const dstOwner = resolveLinkTargetId(dst, homeDir, configBase);
       // Another desired spelling of the same link: move the record here only when this one is the
       // physical spelling and that one is not (both targets are in this run).
-      const intoPhysical = desired.has(recordedKey) && isPhysicalSpelling(dst) && !isPhysicalSpelling(recordedKey);
+      const intoPhysical = desired.has(recordedKey) && symlinksIn(dst) < symlinksIn(recordedKey);
       if (!intoPhysical && (desired.has(recordedKey) || (recordedOwner !== null && recordedOwner !== dstOwner))) {
         plans.push(planDesiredLinkOp(recordedKey, entry.src, entry.kind, stagedSrcDir, state.links[recordedKey], opts));
         continue;

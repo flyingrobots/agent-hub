@@ -39,6 +39,8 @@ module directly.
 | SYNC-LINK-5 | A local source path starting with `-` is a path, not a flag | Install succeeds | E2E | Implemented | `hardening.test.ts › F11: local skill source filename starting with '-' is not parsed as a CLI flag` |
 | SYNC-LINK-21 | A shared link's record lives under the spelling with no symlink in its path | Ledger key | E2E | Implemented | `rekey.test.ts › the shared link's record lives under the spelling with no symlink in its path, whichever side sorts first` |
 | SYNC-LINK-22 | A record left under the symlinked spelling moves to the physical one | Ledger keys; no conflict after the split | E2E | Implemented | `rekey.test.ts › a record an earlier run left under the symlinked spelling moves to the physical one` |
+| SYNC-LINK-23 | With HOME reached through an alias, the record lives under the spelling with fewer symlinks; a later split is clean | Ledger key; no conflict | E2E | Implemented | `rekey.test.ts › with HOME reached through an alias, the record still lives under the spelling with fewer symlinks` |
+| SYNC-LINK-24 | A scoped run never moves another target's record into its own physical spelling | Record key kept; no re-key | E2E | Implemented | `rekey.test.ts › a scoped run never moves another target's record into its own physical spelling` |
 
 ## Installer
 

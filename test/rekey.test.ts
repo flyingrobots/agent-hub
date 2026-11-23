@@ -200,4 +200,30 @@ describe("ownership records follow the spelling of the last run (flyingrobots/ag
     expect(out(after)).not.toContain("conflict");
     expect(after.exitCode).toBe(0);
   });
+
+  test("with HOME reached through an alias, the record still lives under the spelling with fewer symlinks", () => {
+    const { alias, opts, ledger } = sharedSkillsReversed();
+    const both = opts(alias, ["claude:links", "codex:links"]);
+    expect(runSync(both).exitCode).toBe(0);
+    expect(ledger().links[join(alias, ".codex", "skills", "demo")]).toBeDefined();
+    expect(ledger().links[join(alias, ".claude", "skills", "demo")]).toBeUndefined();
+    unlinkSync(join(alias, ".claude", "skills"));
+    mkdirSync(join(alias, ".claude", "skills"));
+    const r = runSync(both);
+    expect(out(r)).not.toContain("conflict");
+    expect(r.exitCode).toBe(0);
+  });
+
+  test("a scoped run never moves another target's record into its own physical spelling", () => {
+    const { home, opts, ledger } = sharedSkillsReversed();
+    // claude's spelling is the symlinked one; a claude-only run records the link there.
+    expect(runSync(opts(home, ["claude:links"])).exitCode).toBe(0);
+    const claudeKey = join(home, ".claude", "skills", "demo");
+    expect(ledger().links[claudeKey]).toBeDefined();
+    const r = runSync(opts(home, ["codex:links"]));
+    expect(r.exitCode).toBe(0);
+    expect(out(r)).not.toMatch(/rekey-(link|mcp)-record/);
+    expect(ledger().links[claudeKey]).toBeDefined();
+    expect(ledger().links[join(home, ".codex", "skills", "demo")]).toBeUndefined();
+  });
 });

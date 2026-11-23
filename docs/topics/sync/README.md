@@ -118,9 +118,12 @@ the last time you synced, and removing an old alias afterwards changes nothing. 
 not count a re-key as drift. A record is re-keyed only to a spelling for the same target, and
 only when no other desired spelling holds it: when `~/.codex/skills` is a symlink to
 `~/.claude/skills`, the shared link is one object with one record, planned once. The record is
-kept under the spelling whose path crosses no symlink (`~/.claude/skills/<name>` in that
-example), so replacing the symlinked directory with a real one later leaves both links
-agent-hub's: the next sync creates the link on the newly real side. If
+kept under the spelling whose path goes through the fewest symlinked directories
+(`~/.claude/skills/<name>` in that example, even when `HOME` itself is reached through an
+alias), so replacing the symlinked directory with a real one later leaves both links
+agent-hub's: the next sync creates the link on the newly real side. When both agents' skills
+directories are symlinks to a third directory, replacing the one that holds the record still
+reports the other link as unmanaged; `--adopt` records it. If
 you remove an alias *before* syncing under the new spelling, the old records no longer match:
 the run reports conflicts (and may describe MCP records as moved) and changes nothing;
 `--adopt` then records the current spelling.
