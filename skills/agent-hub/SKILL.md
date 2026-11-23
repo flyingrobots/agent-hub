@@ -145,6 +145,20 @@ Edit `<hub>/AGENTS.md` directly. Run `sync-agents --check` to confirm all manage
 
 ---
 
+### 7. Project Mode (a repository's own `.agents/`)
+
+`sync-agents --project` (from inside the repo, or `--dir <repo>`) syncs `<repo>/.agents/` into
+`.mcp.json`, `.cursor/mcp.json`, `opencode.json`, `.codex/config.toml`, and `CLAUDE.md` /
+`AGENTS.md` / `.claude/skills/<name>` symlinks, recording ownership in `.agents/sync.lock.json`.
+Commit the lockfile with the outputs; `--project --check` then passes in any clone.
+
+- It never touches the user's home configs; Antigravity is not written in project mode.
+- A conflict (unmanaged or edited output) writes nothing: `--adopt` takes identical bytes,
+  `--force` rewrites a file it wrote that was edited since.
+- An invalid lockfile entry fails closed; after a lockfile merge conflict, run `--project --relock`.
+- Plaintext secrets block. For `${vault:KEY}`, run the `sync-agents secret grant KEY --to SERVER
+  --dir <repo>/.agents` command the summary prints. Reference: `docs/topics/project/README.md`.
+
 ## Flags & Conflict Handling
 
 | Command | Behavior |

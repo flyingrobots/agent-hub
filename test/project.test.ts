@@ -200,20 +200,71 @@ describe("project mode golden path (flyingrobots/agent-hub#11)", () => {
 });
 
 describe("hostile lockfile entries are rejected, nothing written (flyingrobots/agent-hub#11)", () => {
-  const hostile: Array<[string, "files" | "links", string]> = [
-    ["parent escape", "files", "../outside/x"],
-    ["absolute path", "files", "/etc/passwd"],
-    ["dot-dot segment", "files", "a/../b"],
-    ["git hook", "files", ".git/hooks/pre-commit"],
-    ["package.json", "files", "package.json"],
-    ["hub file", "files", ".agents/AGENTS.md"],
-    ["NUL byte", "files", ".mcp.json\u0000x"],
-    ["backslash", "files", ".cursor\\mcp.json"],
-    ["file listed as a link", "links", ".mcp.json"],
-    ["link with a foreign target", "links", "CLAUDE.md"],
+  const hostile: Array<{ name: string; label: string; kind: "files" | "links"; rel: string }> = [
+    {
+      name: "hostile lock entry rejected: parent escape",
+      label: "parent escape",
+      kind: "files",
+      rel: "../outside/x",
+    },
+    {
+      name: "hostile lock entry rejected: absolute path",
+      label: "absolute path",
+      kind: "files",
+      rel: "/etc/passwd",
+    },
+    {
+      name: "hostile lock entry rejected: dot-dot segment",
+      label: "dot-dot segment",
+      kind: "files",
+      rel: "a/../b",
+    },
+    {
+      name: "hostile lock entry rejected: git hook",
+      label: "git hook",
+      kind: "files",
+      rel: ".git/hooks/pre-commit",
+    },
+    {
+      name: "hostile lock entry rejected: package.json",
+      label: "package.json",
+      kind: "files",
+      rel: "package.json",
+    },
+    {
+      name: "hostile lock entry rejected: hub file",
+      label: "hub file",
+      kind: "files",
+      rel: ".agents/AGENTS.md",
+    },
+    {
+      name: "hostile lock entry rejected: NUL byte",
+      label: "NUL byte",
+      kind: "files",
+      rel: ".mcp.json\u0000x",
+    },
+    {
+      name: "hostile lock entry rejected: backslash",
+      label: "backslash",
+      kind: "files",
+      rel: ".cursor\\mcp.json",
+    },
+    {
+      name: "hostile lock entry rejected: file listed as a link",
+      label: "file listed as a link",
+      kind: "links",
+      rel: ".mcp.json",
+    },
+    {
+      name: "hostile lock entry rejected: link with a foreign target",
+      label: "link with a foreign target",
+      kind: "links",
+      rel: "CLAUDE.md",
+    },
   ];
-  for (const [label, kind, rel] of hostile) {
-    test(`hostile lock entry rejected: ${label}`, () => {
+  for (const c of hostile) {
+    const { label, kind, rel } = c;
+    test(c.name, () => {
       const sb = sandbox();
       seedHub(sb.repo);
       writeFileSync(join(sb.outside, "x"), "victim\n");

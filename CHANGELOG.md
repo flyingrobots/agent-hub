@@ -10,6 +10,14 @@ changes are called out under **Changed** with what to do.
 
 ### Added
 
+- Project mode (flyingrobots/agent-hub#11). `sync-agents --project [--dir <repo>]` syncs
+  `<repo>/.agents/` into `.mcp.json`, `.cursor/mcp.json`, `opencode.json`, `.codex/config.toml`
+  and `CLAUDE.md`, `AGENTS.md` and `.claude/skills/<name>` symlinks, owned through a committed,
+  sorted, machine-independent `.agents/sync.lock.json`. Every lockfile entry is validated as
+  hostile input (repo-relative, symlink-free containment, known output set, exact-match pruning)
+  and any invalid entry fails the run closed. Plaintext secrets block; vault servers use the bare
+  `sync-agents` launcher and grants are never created. `--relock` rebuilds the lockfile.
+  Antigravity is not supported in project mode.
 - Vault secrets for stdio MCP servers (flyingrobots/agent-hub#10). `${vault:KEY}` as a whole `env`
   value makes every agent run the server through `sync-agents exec`, which checks an exact
   (key, variable, command line, real program, pass-through variables) grant, reads the value from the macOS keychain, scrubs the

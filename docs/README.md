@@ -14,6 +14,7 @@ Start with the [README](../README.md) for installation and a first sync.
 | Installing and releasing | [install/README.md](topics/install/README.md) | [install/test-plan.md](topics/install/test-plan.md) | You are installing from source or a release binary, switching layouts, or cutting a release |
 | Importing | [import/README.md](topics/import/README.md) | [import/test-plan.md](topics/import/test-plan.md) | You already have servers, rules or skills in your agents and want them in the hub |
 | Vault secrets | [vault/README.md](topics/vault/README.md) | [vault/test-plan.md](topics/vault/test-plan.md) | A stdio server needs a secret and you want it out of every config file |
+| Project mode | [project/README.md](topics/project/README.md) | [project/test-plan.md](topics/project/test-plan.md) | You want a repository's own `.agents/` synced into its `.mcp.json`, `AGENTS.md` and friends, or you are reviewing a `sync.lock.json` change |
 | Commands and agents | [primitives/README.md](topics/primitives/README.md) | [primitives/test-plan.md](topics/primitives/test-plan.md) | You want one slash command or subagent in every agent |
 | Output | [output/README.md](topics/output/README.md) | [output/test-plan.md](topics/output/test-plan.md) | You are parsing `sync-agents` output, or want prose with `--human` |
 | Ownership and recovery | [ownership/README.md](topics/ownership/README.md) | [ownership/test-plan.md](topics/ownership/test-plan.md) | You need to know what `sync-agents` considers its own, how it recovers from interruption, or how to migrate legacy v1 state |
