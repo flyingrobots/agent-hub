@@ -10,6 +10,10 @@ changes are called out under **Changed** with what to do.
 
 ### Added
 
+- Commands and agents: `<hub>/commands/<name>.md` and `<hub>/agents/<name>.md` are generated
+  into Claude Code, OpenCode, Cursor and (agents only) Codex, each in its own format, from a
+  portable frontmatter subset; anything else goes under `targets.<agent>`. See
+  docs/topics/primitives.
 - Environment references: write `${env:NAME}` in a hub server spec instead of a secret. Claude
   Code, Cursor and OpenCode get their native syntax in every field; Codex gets `env_vars`,
   `bearer_token_env_var` and `env_http_headers` for the forms it can express; anything a target
