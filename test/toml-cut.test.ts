@@ -146,4 +146,22 @@ describe("Codex TOML cut from the scanner's string state (flyingrobots/agent-hub
     expect(doc.slice(cut)).toBe("# user\n[u]\nk = 1\n");
     expect(cut).toBe(referenceSafeContentEnd(doc, sec.startOffset, sec.endOffset));
   });
+
+  test("with a BOM prefix, every corpus rewrite is the BOM plus the rewrite without it (flyingrobots/agent-hub#28)", () => {
+    const gen = generator(7);
+    let checked = 0;
+    for (let it = 0; it < 1500; it++) {
+      const text = gen();
+      let plain: string;
+      const updates = new Map<string, Record<string, unknown> | null>([["a", { command: "/new/a" }], ["c", null]]);
+      try {
+        plain = rewriteCodexToml(text, updates);
+      } catch {
+        continue; // invalid generated TOML is refused with or without a BOM
+      }
+      expect(rewriteCodexToml(`\uFEFF${text}`, updates)).toBe(`\uFEFF${plain}`);
+      checked += 1;
+    }
+    expect(checked).toBeGreaterThan(500);
+  });
 });

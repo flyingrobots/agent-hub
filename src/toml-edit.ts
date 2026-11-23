@@ -209,8 +209,10 @@ export function scanTomlDocument(src: string): TomlScanResult {
   let bareMcpServersHasAssignments = false;
   let currentSection: TomlSection | null = null;
 
-  let i = 0;
-  let lineStartOffset = 0;
+  // A leading UTF-8 BOM is not content: the first line starts after it (it stays in the output
+  // as part of the text before the first section).
+  let i = src.charCodeAt(0) === 0xfeff ? 1 : 0;
+  let lineStartOffset = i;
   let atLineStart = true;
   let depth = 0;
   // Every branch below that consumes a token (not whitespace, a newline or a comment) marks
