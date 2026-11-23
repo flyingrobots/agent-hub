@@ -10,6 +10,11 @@ changes are called out under **Changed** with what to do.
 
 ### Added
 
+- Machine-readable output: every line `sync-agents` prints, on stdout and stderr, is a JSON
+  object naming its schema (`_schema`), with `kind`, `run_id` and `message`. The schemas, one
+  per message type and each versioned on its own, are in `schemas/`; `sync-agents --schema`
+  prints them. See docs/topics/output.
+
 - Standalone binaries: `bun run build:bin` compiles `dist/sync-agents`, and
   `./install.sh --binary <file>` installs one as the runtime (no Bun needed to run it).
   Tagged releases publish unsigned binaries for macOS and Linux with `SHA256SUMS` and
@@ -32,6 +37,11 @@ changes are called out under **Changed** with what to do.
 
 ### Changed
 
+- **Breaking: output is JSON Lines by default.** Scripts that read `sync-agents` output as text
+  must add `--human` (alias `--humanize`) to get the previous prose, for example
+  `"$(sync-agents --print-dir --human)"`; `--help` prints a JSON line too. The messages are the
+  same; exit codes are unchanged. A successful apply now ends with a summary line
+  (`applied N change(s)`).
 - OpenCode servers are written in its current `mcp.servers` layout instead of the deprecated
   direct `mcp.<name>` form. Run `sync-agents --dry-run` first: entries `sync-agents` wrote in the
   old layout, unchanged since, move on the next sync (`mcp-migrate-layout`), without the old

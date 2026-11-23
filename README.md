@@ -70,8 +70,12 @@ sync-agents --explain               # show observed state, intended state and wh
 sync-agents --targets claude,codex  # act on some targets only (others are never pruned)
 sync-agents --skill <dir|git-url|archive>   # install a skill, then sync
 sync-agents --adopt                 # record identical unmanaged entries as owned
-sync-agents --print-dir             # print the resolved hub directory
+sync-agents --print-dir --human     # print the resolved hub directory as a bare path
+sync-agents --schema                # print the schema of every output line
 ```
+
+`sync-agents` prints JSON Lines, one object per line naming its schema; add `--human` for prose.
+See [Output](docs/topics/output/README.md).
 
 Where to go next:
 

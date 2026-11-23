@@ -9,7 +9,9 @@ Shared configuration for local AI coding agents lives in a canonical hub directo
 
 > **Note:** **Gemini CLI** (`~/.gemini/settings.json`) is not currently supported by the MCP compiler. The `antigravity` adapter targets Antigravity's `~/.gemini/config/mcp_config.json`.
 
-Run `sync-agents --print-dir` to confirm the canonical resolved hub path.
+Run `sync-agents --print-dir --human` to confirm the canonical resolved hub path.
+
+**Output is JSON Lines.** Every line `sync-agents` prints, on stdout and stderr, is one JSON object with `_schema` (`id`, `version`), `kind`, `run_id` and `message`. Parse the lines and branch on `kind`: `op` (a planned, applied or explained change, in `op`), `conflict` (a refusal, with `reason` and `next_step`), `recovery`, `summary` (`status`), `error` (`code`), `help`, `print_dir` (`hub`). `message` is the prose a person would read; quote it to the user. Pass `--human` only when you want prose instead, for example `"$(sync-agents --print-dir --human)"` in a shell command. `sync-agents --schema` prints every schema.
 
 ## Golden Rule
 
@@ -67,7 +69,7 @@ sync-agents --skill-only --skill https://github.com/owner/repo.git
 ### 3. Remove a Skill
 
 ```bash
-rm -rf "$(sync-agents --print-dir)/skills/<name>"
+rm -rf "$(sync-agents --print-dir --human)/skills/<name>"
 sync-agents
 sync-agents --check
 ```
@@ -143,7 +145,9 @@ Edit `<hub>/AGENTS.md` directly. Run `sync-agents --check` to confirm all manage
 | `sync-agents --dir <path>` | Target a different canonical hub directory (normalized to real absolute path) |
 | `sync-agents --targets <csv>` | Restrict sync/check/dry-run/explain to specific selector(s): a target (`antigravity`, `claude`, `codex`, `cursor`, `opencode`) or `<target>:mcp` / `<target>:links`; excluded targets are never pruned. An explicit `--targets` list replaces `disabledTargets` for that run |
 | `sync-agents --explain` | Show observed state, intended state, ownership basis, reason, and next step (read-only) |
-| `sync-agents --dry-run` (`-n`) | Show `[plan]` actions without modifying final destinations, state, journals, or locks |
+| `sync-agents --human` | Print prose instead of JSON Lines (any command) |
+| `sync-agents --schema` | Print the JSON Schema of every output message type |
+| `sync-agents --dry-run` (`-n`) | Show planned actions (`op` lines with `phase: "plan"`) without modifying final destinations, state, journals, or locks |
 | `sync-agents --check` | Exit `0` iff the active targets, ownership ledger, and recovery state all require zero work (excluded targets and domains are not checked; a pending recovery journal always is) |
 | `sync-agents --adopt` | Adopt unmanaged identical symlinks/MCP entries or strictly equivalent files/dirs (checks `.git`, bytes, mode bits, owner/group, raw xattr values, ACLs) |
 | `sync-agents --force-skill` | Allow `--skill` to replace differing canonical skill(s) ONLY |

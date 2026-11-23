@@ -39,7 +39,7 @@ The hub directory is resolved, in order, from:
 4. `~/.agents`
 
 The path is canonicalized to a real absolute path, so links written from any working directory
-point at the same place. `sync-agents --print-dir` prints the resolved hub.
+point at the same place. `sync-agents --print-dir --human` prints the resolved hub (without `--human`, as a JSON line).
 
 ```text
 <hub>/
