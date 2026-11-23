@@ -21,6 +21,7 @@ Start with the [README](../README.md) for installation and a first sync.
 
 ## Other records
 
+- [GLOSSARY.md](../GLOSSARY.md): the project's terms, and the words to avoid for each.
 - [CHANGELOG.md](../CHANGELOG.md): what changed in each release.
 - GitHub issues carry planned work, in the `issue-dag/2` format read by the
   issue templates in [`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/config.yml).
