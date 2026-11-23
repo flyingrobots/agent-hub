@@ -89,16 +89,23 @@ Entries in the previous layout, directly under `mcp.<name>`:
   (`overrides.opencode.disabled: true`), or removing the entry will bring the server back;
 - any other is left where it is, and `--explain` lists it (`leave-legacy-unmanaged`). A file
   holding both layouts is valid under OpenCode's schema, which still accepts the old one as
-  deprecated.
+  deprecated; whether OpenCode itself still loads the old entries once `mcp.servers` exists has
+  not been verified, so move your own entries to `mcp.servers` to be sure.
 
-The hub server names `servers` and `timeout` are refused for OpenCode, because those keys are
-OpenCode's own; until you disable the server for OpenCode (`overrides.opencode.disabled: true`)
-or rename it, every run that includes OpenCode's MCP config stops. A server by one of those
-names that an earlier `sync-agents` wrote in the previous layout is removed once it is disabled
-or renamed, provided it is unchanged (`mcp-remove-reserved-legacy`); if it was changed, its
-record is retired and the key is left alone (`retire-reserved-record`). A `mcp.servers` that
-holds a server object rather than a map of servers, which is the previous layout's server named
-`servers`, is refused unless `sync-agents` wrote it, so nothing is ever written inside it.
+The hub server names `servers` and `timeout` are refused for OpenCode. They are legal names
+inside `mcp.servers`, but in the previous layout they collide with OpenCode's own `mcp.servers`
+and `mcp.timeout` keys, so refusing them keeps an upgrade unambiguous. Until you rename the
+server or disable it for OpenCode (`overrides.opencode.disabled: true`), every run that includes
+OpenCode's MCP config stops. A disabled server still names its entry: a server of your own at
+`mcp.servers.timeout` is then a conflict, and `--force` would remove it, so rename the hub server
+instead when you have one.
+
+A server by one of those names that an earlier `sync-agents` wrote in the previous layout is
+removed once it is disabled or renamed, provided it is unchanged (`mcp-remove-reserved-legacy`).
+If a `timeout` entry was changed, its record is retired and `mcp.timeout` is left alone
+(`retire-reserved-record`). A `mcp.servers` holding any value that is not a server object, which
+is what the previous layout's server named `servers` looks like, is refused unless
+`sync-agents` wrote it and it is unchanged, so nothing is ever written inside it.
 
 ### Codex TOML editing
 

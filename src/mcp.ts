@@ -1198,7 +1198,7 @@ function planSingleMcpTarget(
   }
   if (nestedIsLegacyServer) {
     throw new Error(
-      `mcp-sync: ${configPath}: "${rootKey}.${adapter.nestedKey}" holds a server object (the previous layout's server named "${adapter.nestedKey}"), not ${adapter.label}'s server map; rename or remove it by hand; refusing to overwrite; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`,
+      `mcp-sync: ${configPath}: "${rootKey}.${adapter.nestedKey}" holds values that are not server objects, so it is not ${adapter.label}'s server map (the previous layout's server named "${adapter.nestedKey}" looks like this); fix or remove it by hand; refusing to overwrite; ${NOT_APPLIED}; ${targetOptOutHint(adapter.id, opts.configPath)}`,
     );
   }
 
@@ -1215,7 +1215,9 @@ function planSingleMcpTarget(
     const inNested = Object.prototype.hasOwnProperty.call(existingMap, name);
     if (rec && !inNested && legacyDigest === rec.digest) {
       // Write it in the current shape (the comparable form drops the legacy `enabled` flag).
-      const migratedEntry = adapter.normalizeComparable(entry);
+      const migratedEntry = adapter.normalizeComparable(
+        adapter.legacyToCurrent ? adapter.legacyToCurrent(entry) : entry,
+      );
       existingMap[name] = migratedEntry;
       prevManaged[name] = { ...rec, digest: sha256Hex(stableJson(migratedEntry)) };
       migrated.add(name);

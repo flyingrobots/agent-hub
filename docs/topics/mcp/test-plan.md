@@ -26,6 +26,8 @@ under `test/`; the documentation gate fails if a cited test does not exist.
 | MCP-OC-10 | An agent-hub old-layout entry with a same-named user entry in `mcp.servers` is not moved, even with `--force` | Exit 1; file byte-identical (kills a twin-ignoring mutant) | E2E | Implemented | `opencode-v2.test.ts › an agent-hub legacy entry with a same-named user entry in mcp.servers is a conflict; the user's entry survives --force` |
 | MCP-OC-11 | A user key named `__proto__` under `mcp` survives a render | Own key present after migration | E2E | Implemented | `opencode-v2.test.ts › a user key named __proto__ under mcp survives a migration render` |
 | MCP-OC-12 | Unmanaged old-layout entries are reported | `--explain` names the entry | E2E | Implemented | `opencode-v2.test.ts › an unmanaged old-layout entry is left in place and reported by --explain` |
+| MCP-OC-13 | A managed `mcp.servers` entry carrying `enabled` (not a key of the current layout) is drift | `--check` 1 | E2E | Implemented | `opencode-v2.test.ts › an enabled key added to a managed mcp.servers entry is drift, not in sync` |
+| MCP-OC-14 | Migration and a hub spec change in one run: moved, then updated | Layout; no conflict; `--check` 0 | E2E | Implemented | `opencode-v2.test.ts › migration and a hub spec change in the same run: moved, then updated; --check is clean` |
 
 ## Codex TOML editing
 

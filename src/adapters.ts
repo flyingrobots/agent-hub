@@ -84,6 +84,8 @@ export type McpAdapterDef = {
   readonly reservedNames?: readonly string[];
   /** Comparable form used for ledger digests of entries in the previous (direct) layout. */
   readonly legacyNormalizeComparable?: (entry: unknown) => Record<string, unknown>;
+  /** Rewrite a previous-layout entry in the current layout's shape (for migration). */
+  readonly legacyToCurrent?: (entry: unknown) => Record<string, unknown>;
   readonly defaultMode: number;
   readonly supportedTransports: readonly McpTransport[];
   readonly rootDir: (homeDir: string, configBase: string) => string;
@@ -136,7 +138,25 @@ export function normalizeCursorComparable(entry: unknown): Record<string, unknow
  * objects use `disabled` (default false); the deprecated direct `mcp.<name>` objects use `enabled`
  * (default true). Both map to the current form, so a migrated entry compares equal.
  */
+/**
+ * The comparable form of an entry in OpenCode's current mcp.servers layout. `enabled` is not a
+ * key of that layout, so it is kept: an entry carrying it differs from what agent-hub writes.
+ */
 export function normalizeOpenCodeComparable(entry: unknown): Record<string, unknown> {
+  if (!isPlainObject(entry)) return {};
+  const copy: Record<string, unknown> = { ...entry };
+  if (copy.disabled === false) delete copy.disabled;
+  if (isPlainObject(copy.environment) && Object.keys(copy.environment).length === 0) {
+    delete copy.environment;
+  }
+  if (isPlainObject(copy.headers) && Object.keys(copy.headers).length === 0) {
+    delete copy.headers;
+  }
+  return copy;
+}
+
+/** A previous-layout OpenCode entry in the current shape: `enabled` becomes `disabled`. */
+export function legacyOpenCodeToCurrent(entry: unknown): Record<string, unknown> {
   if (!isPlainObject(entry)) return {};
   const copy: Record<string, unknown> = { ...entry };
   if (copy.enabled === false) copy.disabled = true;
@@ -287,6 +307,7 @@ export const MCP_ADAPTERS: readonly McpAdapterDef[] = [
     nestedKey: "servers",
     reservedNames: ["servers", "timeout"],
     legacyNormalizeComparable: normalizeLegacyOpenCodeComparable,
+    legacyToCurrent: legacyOpenCodeToCurrent,
     defaultMode: 0o600,
     supportedTransports: ["stdio", "http", "sse"],
     rootDir: (_homeDir, configBase) => join(configBase, "opencode"),

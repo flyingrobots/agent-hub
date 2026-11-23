@@ -199,7 +199,7 @@ describe("OpenCode adapter writes the current mcp.servers layout (flyingrobots/a
     const text = writeCfg(cfg, { mcp: { servers: { type: "local", command: ["/bin/mine"], enabled: true } } });
     const r = runSync(base);
     expect(r.exitCode).toBe(1);
-    expect(out(r)).toContain("server object");
+    expect(out(r)).toContain("not server objects");
     expect(readFileSync(cfg, "utf8")).toBe(text);
     expect(runSync({ ...base, checkOnly: true }).exitCode).toBe(1);
   });
@@ -301,5 +301,29 @@ describe("OpenCode adapter writes the current mcp.servers layout (flyingrobots/a
     expect(r.exitCode).toBe(0);
     expect(out(r)).toContain("my-legacy");
     expect(out(r)).toContain("deprecated");
+  });
+
+  test("an enabled key added to a managed mcp.servers entry is drift, not in sync", () => {
+    const { hub, cfg, base } = sandbox();
+    server(hub, "alpha", { command: "/bin/alpha" });
+    expect(runSync(base).exitCode).toBe(0);
+    const doc = JSON.parse(readFileSync(cfg, "utf8"));
+    doc.mcp.servers.alpha.enabled = true;
+    writeFileSync(cfg, JSON.stringify(doc, null, 2) + "\n");
+    expect(runSync({ ...base, checkOnly: true }).exitCode).toBe(1);
+  });
+
+  test("migration and a hub spec change in the same run: moved, then updated; --check is clean", () => {
+    const { home, hub, cfg, base } = sandbox();
+    server(hub, "alpha", { command: "/bin/alpha-v2" });
+    const legacy = { type: "local", command: ["/bin/alpha"], enabled: true };
+    writeCfg(cfg, { mcp: { alpha: legacy } });
+    seedLedger(home, hub, cfg, base.xdgStateHome!, { alpha: legacy });
+    const r = runSync(base);
+    expect(out(r)).not.toContain("conflict");
+    expect(r.exitCode).toBe(0);
+    const doc = JSON.parse(readFileSync(cfg, "utf8"));
+    expect(doc.mcp).toEqual({ servers: { alpha: { type: "local", command: ["/bin/alpha-v2"] } } });
+    expect(runSync({ ...base, checkOnly: true }).exitCode).toBe(0);
   });
 });
