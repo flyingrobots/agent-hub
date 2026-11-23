@@ -50,6 +50,7 @@ under `test/`; the documentation gate fails if a cited test does not exist.
 | MCP-TOML-15 | A managed table is cut after its last token as the scanner reads it, identical to the previous parse-equivalence search, with no whole-span fallbacks on valid documents | Cut equality per section over PR #16 fuzz seeds 1-3; fallback count 0 | Unit | Implemented | `toml-cut.test.ts › cuts match the previous parse-equivalence search on the PR #16 fuzz corpus (seeds 1-3) with zero fallbacks` |
 | MCP-TOML-16 | Cutting a table holding a 3000-line multiline string whose lines start with `#` is linear, LF and CRLF | Cut under 50 ms; trailing user comment kept | Unit | Implemented | `toml-cut.test.ts › a multiline string of 3000 #-led lines in a managed table is cut after the string, quickly, LF and CRLF` |
 | MCP-TOML-17 | A literal multiline string whose last lines start with `#` is never cut inside | Remainder byte equality | Unit | Implemented | `toml-cut.test.ts › a literal multiline string whose last lines start with # is never cut inside` |
+| MCP-TOML-18 | A UTF-8 BOM before the first table or root key is kept and does not hide a managed header | Output starts with the BOM; rewrite(BOM + doc) = BOM + rewrite(doc) over the corpus | Unit | Implemented | `toml-edit.test.ts › a BOM before the first managed header is kept, and the table is rewritten in place`, `toml-cut.test.ts › with a BOM prefix, every corpus rewrite is the BOM plus the rewrite without it (flyingrobots/agent-hub#28)` |
 
 ## Strict JSON refusals
 

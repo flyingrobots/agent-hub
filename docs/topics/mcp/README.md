@@ -89,10 +89,17 @@ Entries in the previous layout, directly under `mcp.<name>`:
   and then remove `mcp.<name>` by hand; removing it without the override brings the server back.
   An unmanaged entry that carries `enabled` cannot be adopted, because the current layout has no
   such key;
-- any other is left where it is, and `--explain` lists it (`leave-legacy-unmanaged`). A file
-  holding both layouts is valid under OpenCode's schema, which still accepts the old one as
-  deprecated; whether OpenCode itself still loads the old entries once `mcp.servers` exists has
-  not been verified, so move your own entries to `mcp.servers` to be sure.
+- any other is left where it is, and `--explain` lists it (`leave-legacy-unmanaged`).
+
+A file holding both layouts keeps working: OpenCode reads the direct `mcp.<name>` entries and
+the `mcp.servers` map and merges them, so your own old-layout servers still load next to the
+ones agent-hub writes. If both layouts name the same server, the two OpenCode code lines differ:
+release v1.19.6 keeps the direct entry (its `v2-compat/read/mcp-merge` test fixture), while the
+`dev` branch keeps the `mcp.servers` one and reports a conflict (`mergeMaps` in
+`packages/core/src/config/normalize.ts`). agent-hub never writes such a pair: a same-named
+entry in the old layout stops the run, as above. On `dev`, a direct entry that has only an
+`enabled` key is dropped with a diagnostic. These statements come from reading OpenCode's source
+(anomalyco/opencode, tag `v1.19.6` and `dev` at `7b70422`), not from running OpenCode.
 
 The hub server names `servers` and `timeout` are refused for OpenCode. They are legal names
 inside `mcp.servers`, but in the previous layout they collide with OpenCode's own `mcp.servers`

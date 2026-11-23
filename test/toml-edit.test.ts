@@ -236,3 +236,21 @@ describe("toml-edit: comments and placement around managed sections (flyingrobot
     expect(h1).not.toMatch(/\n\n\n/);
   });
 });
+
+describe("toml-edit: a UTF-8 BOM (flyingrobots/agent-hub#28)", () => {
+  test("a BOM before the first managed header is kept, and the table is rewritten in place", () => {
+    for (const eol of ["\n", "\r\n"]) {
+      const doc = `﻿[mcp_servers.a]${eol}command = "x"${eol}# user${eol}[u]${eol}k = 1${eol}`;
+      const out = rewriteCodexToml(doc, new Map([["a", { command: "/new" }]]));
+      expect(out.startsWith("﻿[mcp_servers.a]")).toBe(true);
+      expect(out).toContain(`# user${eol}[u]`);
+      expect(Bun.TOML.parse(out)).toEqual({ mcp_servers: { a: { command: "/new" } }, u: { k: 1 } });
+    }
+  });
+
+  test("a BOM before root keys is kept byte for byte", () => {
+    const doc = '﻿model = "m"\n[mcp_servers.a]\ncommand = "x"\n';
+    const out = rewriteCodexToml(doc, new Map([["a", { command: "/new" }]]));
+    expect(out).toBe('﻿model = "m"\n[mcp_servers.a]\ncommand = "/new"\n');
+  });
+});
