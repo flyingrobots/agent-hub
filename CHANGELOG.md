@@ -10,6 +10,9 @@ changes are called out under **Changed** with what to do.
 
 ### Changed
 
+- Codex `config.toml` tables, keys and new sections are rendered in plain code-unit order instead of
+  `localeCompare`, so the bytes never depend on the locale (flyingrobots/agent-hub#11). Ordering
+  changes only for keys whose locale order differs from code-unit order.
 - **A literal credential in a hub MCP spec now stops the sync** (flyingrobots/agent-hub#50). A
   field the plaintext detector flags still prints its `agent_hub.warning` (schema 1.1.0, same
   fields, clarified description), and now also an `agent_hub.conflict`, so the run writes nothing
@@ -27,6 +30,10 @@ changes are called out under **Changed** with what to do.
   and any invalid entry fails the run closed. Plaintext secrets block; vault servers use the bare
   `sync-agents` launcher and grants are never created. `--relock` rebuilds the lockfile.
   Antigravity is not supported in project mode.
+  Project mode refuses symlinks and non-regular files under `.agents/mcp`, a non-regular lockfile
+  (which `--relock` replaces), a git toplevel that does not contain the working directory, and
+  case-only path collisions on case-folding volumes; apply runs on one repository are serialized by
+  a writer lock in the user's state directory.
 - Vault secrets for stdio MCP servers (flyingrobots/agent-hub#10). `${vault:KEY}` as a whole `env`
   value makes every agent run the server through `sync-agents exec`, which checks an exact
   (key, variable, command line, real program, pass-through variables) grant, reads the value from the macOS keychain, scrubs the

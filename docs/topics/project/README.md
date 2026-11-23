@@ -19,7 +19,10 @@ sync-agents --project --relock        # rebuild the lockfile (see below)
 ```
 
 With `--project`, `--dir` names the repository, not a hub. Outside a git repository and without
-`--dir`, the run fails with an `agent_hub.error` line of code `config`.
+`--dir`, the run fails with an `agent_hub.error` line of code `config`. Without `--dir`, the
+repository root that git reports must contain the working directory; otherwise (for example when
+`.git/config` sets a hostile `core.worktree`) the run fails with `config` and you must name the
+repository with `--dir`.
 
 Project mode never reads or writes the user's home configs, the user hub, or the user-scope
 ownership ledger. It does not read `disabledTargets` from `config.json` either, so committed outputs
@@ -34,6 +37,13 @@ prints prose.
 `<repo>/.agents/` has the same layout as the user hub: `AGENTS.md`, `skills/<name>/SKILL.md`, and
 `mcp/<name>/mcp.json` with the same overrides, `disabled` and per-agent override files. It must be
 a real directory; a symlinked `.agents` is refused.
+
+Everything under `.agents/mcp/` must be a real directory or a regular file. A symlink anywhere
+there (the `mcp` directory itself, a server directory, an `mcp.json`, a per-agent override) or a
+FIFO, device or socket fails the run with `config`, naming the path, before any server is read.
+A symlink could otherwise pull config, including an allow-listed literal, from outside the
+repository into committed files, and a FIFO would hang the read. Skill directories and
+`.agents/AGENTS.md` that are symlinks are skipped rather than linked.
 
 ## What it writes
 
@@ -55,7 +65,7 @@ ever written, pruned or claimed.
 - The two rules links are written only when `.agents/AGENTS.md` exists. `CLAUDE.md` and the skill
   links belong to `claude:links`; `AGENTS.md` to the links domain of Codex, Cursor or OpenCode.
 - JSON files are 2-space JSON with a trailing newline, servers in code-unit name order; the TOML
-  comes from the same renderer as user scope. The bytes depend only on the hub, never on the
+  comes from the same renderer as user scope, which orders keys by code unit, never by locale. The bytes depend only on the hub, never on the
   machine, the user or the repository's path.
 - **Antigravity is not supported in project mode.** Its workspace MCP config path is unverified,
   so nothing is ever written for it, even with `--targets antigravity`.
@@ -96,7 +106,9 @@ outputs that are not yet claimed; `--adopt` or `--relock` claims them.
 
 Keys are sorted, paths are repo-relative, and there are no timestamps, absolute paths or user
 names, so a clone on another machine produces a byte-identical lockfile and `--project --check`
-exits 0 there. Commit it with the outputs. It is written atomically.
+exits 0 there. Commit it with the outputs. It is written atomically, always as a regular file. It
+must be a regular file to be read: a symlink, FIFO or device there fails a normal run with
+`config` and is never read.
 
 ## The attacker model and validation
 
@@ -144,11 +156,27 @@ Project mode never materializes a secret.
 When the lockfile has a merge conflict, or after an interrupted run, `--project --relock` rebuilds
 it without reading the old one. It claims each intended output whose bytes or link target already
 equal the intended output and nothing else; a file whose bytes differ is left unclaimed, and the
-next sync reports it. `--relock --dry-run` shows what would be claimed. `--relock` cannot be
+next sync reports it. A lockfile that is not a regular file (a symlink, FIFO or device) is never
+read and is replaced with a regular file; a symlink's target is left untouched.
+`--relock --dry-run` shows what would be claimed. `--relock` cannot be
 combined with `--targets`, `--check` or `--explain`.
+
+## Concurrency
+
+Apply runs on one repository are serialized by an advisory `flock(2)` writer lock at
+`$XDG_STATE_HOME/agent-hub/project-locks/<sha256 of the repository's real path>.lock` (default
+`~/.local/state/agent-hub/...`), outside every committed path. A second apply run while one holds
+it fails with an `agent_hub.error` of code `lock` and writes nothing. That lock file, which is kept
+and reused, is the only thing project mode writes outside the repository. `--check`, `--dry-run`
+and `--explain` never take it.
+
+## Case-folding volumes
+
+On a volume that folds case (APFS and HFS+ by default), two output or lockfile paths that differ
+only in case, such as `.claude/skills/demo` and `.claude/skills/Demo` after a case-only skill
+rename, fail the run with `config` at plan time, before anything is written. Remove the stale link,
+or run `--relock`, then sync again.
 
 ## Limits
 
-- Project runs are not serialized against each other by the user-scope apply lock; do not run two
-  at once on the same repository.
 - Empty directories (`.cursor/`, `.claude/skills/`) are left behind after a prune.
