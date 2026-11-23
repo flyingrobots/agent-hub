@@ -10,6 +10,13 @@ changes are called out under **Changed** with what to do.
 
 ### Added
 
+- `sync-agents import` and `sync-agents pull`: bring agents' existing MCP servers, rules and
+  skills into the hub. Each entry is imported only if compiling it back reproduces it exactly;
+  identical specs across agents become the base and differences become overrides; plaintext
+  secrets stop an import unless `--rewrite-secrets`. Planning is the default; `--apply` writes.
+  See docs/topics/import.
+- `overrides.<agent>.extra`: native fields for one agent that the canonical spec does not model.
+
 - Environment references: write `${env:NAME}` in a hub server spec instead of a secret. Claude
   Code, Cursor and OpenCode get their native syntax in every field; Codex gets `env_vars`,
   `bearer_token_env_var` and `env_http_headers` for the forms it can express; anything a target

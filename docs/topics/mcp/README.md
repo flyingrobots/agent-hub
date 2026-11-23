@@ -48,6 +48,11 @@ Rules:
   target names. A `gemini` key or directory fails with a message to rename it `antigravity`.
 - **Family switching.** An override that switches between stdio and remote drops the inherited
   fields of the other family (`command`/`args`/`env` versus `url`/`headers`).
+- **Extra.** `overrides.<agent>.extra` holds native fields for that agent the canonical spec
+  does not model (for example Codex `startup_timeout_sec`, or OpenCode `timeout`); they are
+  added to that agent's entry as written. It is refused on the base `mcp`, and for a field
+  `sync-agents` writes itself (such as `command` or `env`). For Codex, values must be strings,
+  numbers, booleans, arrays of those, or one level of table.
 - **Disabled.** `"disabled": true` omits the server from that target. It is applied before
   transport validation, so a disabled SSE server is never rejected by a target that lacks SSE.
 - **Scope.** A target excluded from the run (see

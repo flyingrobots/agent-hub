@@ -12,6 +12,7 @@ Start with the [README](../README.md) for installation and a first sync.
 | Sync and targets | [sync/README.md](topics/sync/README.md) | [sync/test-plan.md](topics/sync/test-plan.md) | You want to know what `sync-agents` writes where, how to scope a run, or how to upgrade |
 | MCP servers | [mcp/README.md](topics/mcp/README.md) | [mcp/test-plan.md](topics/mcp/test-plan.md) | You are writing a canonical `mcp.json`, or a target config was refused |
 | Installing and releasing | [install/README.md](topics/install/README.md) | [install/test-plan.md](topics/install/test-plan.md) | You are installing from source or a release binary, switching layouts, or cutting a release |
+| Importing | [import/README.md](topics/import/README.md) | [import/test-plan.md](topics/import/test-plan.md) | You already have servers, rules or skills in your agents and want them in the hub |
 | Output | [output/README.md](topics/output/README.md) | [output/test-plan.md](topics/output/test-plan.md) | You are parsing `sync-agents` output, or want prose with `--human` |
 | Ownership and recovery | [ownership/README.md](topics/ownership/README.md) | [ownership/test-plan.md](topics/ownership/test-plan.md) | You need to know what `sync-agents` considers its own, how it recovers from interruption, or how to migrate legacy v1 state |
 
