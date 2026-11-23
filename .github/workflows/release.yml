@@ -1,0 +1,148 @@
+name: Release
+
+# Builds unsigned standalone sync-agents binaries for a pushed v* tag and publishes
+# them, with SHA256SUMS, to that tag's GitHub release.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build ${{ matrix.asset }}
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - target: bun-linux-x64
+            asset: sync-agents-linux-x64
+            runner: ubuntu-latest
+            native: true
+          - target: bun-linux-arm64
+            asset: sync-agents-linux-arm64
+            runner: ubuntu-24.04-arm
+            native: true
+          - target: bun-darwin-arm64
+            asset: sync-agents-darwin-arm64
+            runner: macos-latest
+            native: true
+          # Cross-compiled on Apple silicon: no Intel runner is assumed, so this
+          # binary is only executed if the runner can run x86_64 code (Rosetta).
+          - target: bun-darwin-x64
+            asset: sync-agents-darwin-x64
+            runner: macos-latest
+            native: false
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Setup pinned Bun runtime
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: "1.4.5"
+
+      - name: Install devDependencies
+        run: bun install --frozen-lockfile
+
+      - name: Compile ${{ matrix.target }}
+        env:
+          TARGET: ${{ matrix.target }}
+          ASSET: ${{ matrix.asset }}
+        run: bun build src/cli.ts --compile --target="$TARGET" --outfile "release/$ASSET"
+
+      # A cross-compiled darwin binary keeps the downloaded Bun runtime's Developer ID
+      # signature, which the appended bundle invalidates, and macOS may SIGKILL it.
+      # Replace it with an ad-hoc signature (no identity, no notarization) and verify.
+      - name: Ad-hoc re-sign macOS binary
+        if: runner.os == 'macOS'
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          codesign --remove-signature "release/$ASSET"
+          codesign --force --sign - "release/$ASSET"
+          codesign --verify --verbose "release/$ASSET"
+
+      - name: Run compiled-binary integration suite against the release artifact
+        if: matrix.native
+        env:
+          AGENT_HUB_BINARY: release/${{ matrix.asset }}
+        run: bun test test/binary.test.ts
+
+      - name: Smoke-run cross-compiled binary when x86_64 execution is available
+        if: ${{ !matrix.native }}
+        env:
+          ASSET: ${{ matrix.asset }}
+        run: |
+          if arch -x86_64 /usr/bin/true 2>/dev/null; then
+            "release/$ASSET" --help
+          else
+            echo "::warning::$ASSET was cross-compiled and not executed (no x86_64 support on this runner)"
+          fi
+
+      - name: Upload binary
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ${{ matrix.asset }}
+          path: release/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Download binaries
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          path: release
+          pattern: sync-agents-*
+          merge-multiple: true
+
+      - name: Package bundled skill and write SHA256SUMS
+        run: |
+          tar -czf release/agent-hub-skill.tar.gz -C skills agent-hub
+          chmod 755 release/sync-agents-*
+          cd release
+          sha256sum agent-hub-skill.tar.gz sync-agents-* > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Publish to the GitHub release for this tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          cat > notes.md <<'NOTES'
+          Standalone `sync-agents` binaries built with `bun build --compile` (Bun 1.4.5).
+
+          **These binaries are unsigned.** They are not code-signed with a developer identity
+          or notarized (the macOS builds carry only an ad-hoc signature). On macOS,
+          a downloaded binary carries the `com.apple.quarantine` attribute; after verifying
+          its checksum, clear it with `xattr -d com.apple.quarantine <file>`.
+
+          Verify downloads with `shasum -a 256 -c SHA256SUMS` (macOS) or
+          `sha256sum -c SHA256SUMS` (Linux). To install one as your runtime, from a checkout
+          of this tag: `./install.sh --binary <path-to-binary>`.
+
+          `agent-hub-skill.tar.gz` is the bundled agent-hub skill; install it with
+          `sync-agents --skill agent-hub-skill.tar.gz`.
+          NOTES
+          files=(release/sync-agents-* release/agent-hub-skill.tar.gz release/SHA256SUMS)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${files[@]}" --clobber
+          else
+            gh release create "$TAG" "${files[@]}" --verify-tag --title "$TAG" --notes-file notes.md
+          fi

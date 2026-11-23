@@ -35,6 +35,15 @@ jobs:
       - name: TypeScript typecheck
         run: bun run typecheck
 
+      - name: Build standalone binary
+        run: bun run build:bin
+
+      - name: Smoke-run standalone binary
+        run: ./dist/sync-agents --help
+
+      # Includes test/binary.test.ts, which rebuilds dist/sync-agents with build:bin and
+      # runs the integration slice against it. CI=true makes that suite fail rather than
+      # skip if bun build --compile is unavailable.
       # Nonexistent XDG values make any test that falls back to the runner's real environment
       # (instead of its sandbox) fail here rather than silently touch the runner's home.
       - name: Run native Bun test suite
