@@ -1,0 +1,53 @@
+# Sync and targets: test plan
+
+Contract ledger for [Sync and targets](README.md). Each requirement names its oracle and the
+test that checks it, written as `<file> › <exact test name>` under `test/`. The documentation
+gate (`test/docs.test.ts`) fails if a cited test does not exist.
+
+Evidence types: **E2E** runs the real `bin/sync-agents` in a sandbox `HOME`; **unit** calls a
+module directly.
+
+## Hub resolution
+
+| ID | Requirement | Oracle | Evidence | Status | Test |
+| --- | --- | --- | --- | --- | --- |
+| SYNC-HUB-1 | The hub resolves from `--dir`, then `$AGENTS_DIR`, then `config.json` `agentsDir`, then `~/.agents` | `--print-dir` output per layer | E2E | Implemented | `agent-hub.test.ts › resolves hub directory with precedence: --dir > AGENTS_DIR > config.json > ~/.agents` |
+| SYNC-HUB-2 | A relative `--dir` is canonicalized, so links are absolute and `--check` works from any working directory | Link targets absolute; `--check` from another CWD exits 0, and 1 once a link breaks | E2E | Implemented | `agent-hub.test.ts › Contract 7 (MUST #6): relative --dir hub canonicalizes to absolute links and --check catches broken links across CWDs` |
+
+## Links and skills
+
+| ID | Requirement | Oracle | Evidence | Status | Test |
+| --- | --- | --- | --- | --- | --- |
+| SYNC-LINK-1 | Rules and skills are linked into every target whose root exists; tool-owned directories are preserved; removed skills are pruned | Symlinks present, `.system` dir untouched, link gone after hub removal (checked with `lstat`) | E2E | Implemented | `agent-hub.test.ts › installs skills, preserves tool-owned dirs, compiles MCP configs, passes --check, and prunes cleanly` |
+| SYNC-LINK-2 | Unsafe skill sources (escaping, absolute or cyclic symlinks) are refused with no hub change | Exit 1, message, skill absent from hub | E2E | Implemented | `hardening.test.ts › F3 & F12: cyclic symlinks and escaping/absolute symlinks in skills & archives are rejected safely` |
+| SYNC-LINK-3 | A failed skill install leaves no staging directories in the hub | No `.staging-*` entries | Unit | Implemented | `hardening.test.ts › F4: applySkillInstall cleans up .staging-* on mid-install failure (zero leaks in <hub>/skills)` |
+| SYNC-LINK-4 | The skill name comes from `SKILL.md` frontmatter, including quoted values and inline comments | Installed directory name | E2E | Implemented | `hardening.test.ts › F10: YAML frontmatter name parses inline comments and quoted scalars cleanly` |
+| SYNC-LINK-5 | A local source path starting with `-` is a path, not a flag | Install succeeds | E2E | Implemented | `hardening.test.ts › F11: local skill source filename starting with '-' is not parsed as a CLI flag` |
+
+## Read-only modes
+
+| ID | Requirement | Oracle | Evidence | Status | Test |
+| --- | --- | --- | --- | --- | --- |
+| SYNC-RO-1 | `--check`, `--dry-run` and `--explain` create no lock, state or journal file | State dir contents unchanged | E2E | Implemented | `recovery.test.ts › read-only --check, --dry-run, and --explain create zero lock, state, or journal artifacts` |
+| SYNC-RO-2 | `--dry-run` and `--explain` honor `--targets` and change nothing | Output names only the selected target; files unchanged | E2E | Implemented | `adapters.test.ts › R-4c: --dry-run and --explain honor --targets and change nothing` |
+
+## Target scoping
+
+| ID | Requirement | Oracle | Evidence | Status | Test |
+| --- | --- | --- | --- | --- | --- |
+| SYNC-SCOPE-1 | `--targets` and `disabledTargets` skip excluded targets and never prune them; `--targets` replaces `disabledTargets`; an unknown `--targets` name exits 2 | Excluded link, MCP entry and ledger record unchanged after hub removal | E2E | Implemented | `adapters.test.ts › --targets and config disabledTargets skip untargeted adapters and NEVER prune them` |
+| SYNC-SCOPE-2 | An invalid `disabledTargets` (unknown name, non-array) exits 1 and mutates no target | Exit code, message, target bytes | E2E | Implemented | `adapters.test.ts › R-4a: invalid disabledTargets (unknown name, non-array) fails closed without mutating any target` |
+| SYNC-SCOPE-3 | Selectors mix whole targets and single domains | Per-target links and MCP entries match the selection | E2E | Implemented | `adapters.test.ts › --targets mixes whole targets and single domains` |
+| SYNC-SCOPE-4 | An unknown domain exits 2 from `--targets` and 1 from `config.json` | Exit codes and message | E2E | Implemented | `adapters.test.ts › unknown domain is rejected: exit 2 from --targets, exit 1 from config` |
+| SYNC-SCOPE-5 | `"<target>:mcp"` disabled keeps that target's links syncing past a refused MCP config | Links created; `.jsonc` untouched; `--check` exits 0 | E2E | Implemented | `adapters.test.ts › disabledTargets ["opencode:mcp"] keeps OpenCode links syncing past an opencode.jsonc` |
+| SYNC-SCOPE-6 | A scoped run keeps link records it cannot attribute to a target under the current `HOME` | Record and link survive | E2E | Implemented | `adapters.test.ts › restricted --targets sync never prunes link records whose owning target cannot be resolved` |
+| SYNC-SCOPE-7 | Ownership is never inferred from an overlapping earlier `HOME` | Claude link under old `HOME=~/.cursor` survives `--targets cursor` | E2E | Implemented | `adapters.test.ts › a Claude link recorded under an old HOME nested in ~/.cursor survives a --targets cursor run` |
+| SYNC-SCOPE-8 | A scoped run still prunes the active target's own stale links | Cursor link gone (by `lstat`), Claude link kept, scoped `--check` 0, unscoped `--check` 1 | E2E | Implemented | `adapters.test.ts › --targets cursor:links prunes a removed skill from Cursor and keeps Claude's` |
+| SYNC-SCOPE-9 | Re-enabling an excluded target catches up its missed prunes | Next run prunes the removed server and skill | E2E | Gap: exercised by a review probe (Baker Street round 2, blind pass E-6), not a maintained test | — |
+
+## Upgrade
+
+| ID | Requirement | Oracle | Evidence | Status | Test |
+| --- | --- | --- | --- | --- | --- |
+| SYNC-UP-1 | A three-target v2 ledger loads and syncs with zero churn | State bytes and generation unchanged | E2E | Implemented | `adapters.test.ts › backward-compatible loading of existing 3-agent v2 ledger causes zero churn` |
+| SYNC-UP-2 | Zero churn also holds when `~/.cursor` and `~/.config/opencode` already exist, under the three legacy targets | State bytes unchanged | E2E | Planned: flyingrobots/agent-hub#3 | — |
