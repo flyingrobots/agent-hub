@@ -497,7 +497,7 @@ export function runProjectSync(options: SyncOptions, hooks?: ApplyHooks): SyncRu
         const k = pl.rel.toLowerCase();
         const prev = seen.get(k);
         if (prev !== undefined && prev !== pl.rel) {
-          throw new ProjectError("config", `${label}: ${prev} and ${pl.rel} differ only in case, and this volume folds case; nothing was written (remove the stale one, or run --relock)`);
+          throw new ProjectError("config", `${label}: ${prev} and ${pl.rel} differ only in case, and this volume folds case; nothing was written (run sync-agents --project --relock, then remove the stale path and sync again)`);
         }
         seen.set(k, pl.rel);
       }
