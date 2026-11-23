@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { runSync } from "../src/cli.ts";
+import { runSync } from "./jsonl.ts";
 import { loadCanonicalServers } from "../src/mcp.ts";
 import { getStatePaths, loadOwnershipState } from "../src/state.ts";
 import { parseTargetSelector, type SyncOptions, type TargetSelector } from "../src/types.ts";

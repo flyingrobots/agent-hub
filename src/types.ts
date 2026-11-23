@@ -156,6 +156,8 @@ export type SyncOptions = {
   explain?: boolean;
   targets?: TargetSelector[];
   disownLegacy?: Array<{ agent: AgentId; name: string }>;
+  /** Called with each output event as it happens (the CLI prints it at once). */
+  onEvent?: (event: import("./output.ts").OutputEvent) => void;
 };
 
 export type ApplyHooks = {

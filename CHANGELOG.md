@@ -38,10 +38,14 @@ changes are called out under **Changed** with what to do.
 ### Changed
 
 - **Breaking: output is JSON Lines by default.** Scripts that read `sync-agents` output as text
-  must add `--human` (alias `--humanize`) to get the previous prose, for example
-  `"$(sync-agents --print-dir --human)"`; `--help` prints a JSON line too. The messages are the
-  same; exit codes are unchanged. A successful apply now ends with a summary line
-  (`applied N change(s)`).
+  must add `--human` (alias `--humanize`) to get prose, for example
+  `"$(sync-agents --print-dir --human)"`; `--help` prints JSON lines too. Earlier versions reject
+  `--human` (exit 2), so change such scripts when you upgrade, not before; `sync-agents --schema`
+  exits 0 only on a version with JSON Lines. Exit codes are unchanged. The prose is the same
+  except that every run now ends with one summary or error line: a sync that changed something
+  ends with `applied N change(s).`, `--dry-run` and `--explain` with `N change(s) planned`, and
+  an ambiguous recovery with an error line after the recovery line. Lines are printed as they
+  happen rather than at the end of the run.
 - OpenCode servers are written in its current `mcp.servers` layout instead of the deprecated
   direct `mcp.<name>` form. Run `sync-agents --dry-run` first: entries `sync-agents` wrote in the
   old layout, unchanged since, move on the next sync (`mcp-migrate-layout`), without the old

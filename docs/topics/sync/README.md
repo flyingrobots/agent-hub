@@ -22,7 +22,7 @@ instead of a plan: `--check` exits `1`, and the next real run handles it in Phas
 | Command | Result |
 | --- | --- |
 | `sync-agents` | Recover, plan, apply |
-| `sync-agents --dry-run` | Print `[plan]` lines for the changes a sync would make |
+| `sync-agents --dry-run` | Print a planned `op` line for each change a sync would make, then a `planned` summary |
 | `sync-agents --check` | Exit `0` if nothing needs doing, `1` if anything does |
 | `sync-agents --explain` | Print observed state, intended state, ownership basis, reason and next step per object |
 

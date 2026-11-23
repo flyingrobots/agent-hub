@@ -49,6 +49,7 @@
         "hub_not_found",
         "lock",
         "plan",
+        "recovery",
         "apply",
         "internal"
       ]

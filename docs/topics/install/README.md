@@ -9,8 +9,8 @@ releases are built. Contracts are tracked in [test-plan.md](test-plan.md).
 
 | Layout | Installed with | What the runtime holds | Needs Bun at run time |
 | --- | --- | --- | --- |
-| `source` | `./install.sh` | `bin/sync-agents` (a Bash wrapper) and the TypeScript sources | Yes, except `--help` and `--print-dir` |
-| `binary` | `./install.sh --binary <file>` | One standalone `sync-agents` executable built with `bun build --compile` | No |
+| `source` | `./install.sh` | `bin/sync-agents` (a Bash wrapper), the TypeScript sources and `schemas/` | Yes, except `--print-dir` and a schema-less `--help` |
+| `binary` | `./install.sh --binary <file>` | One standalone `sync-agents` executable built with `bun build --compile` (schemas embedded), plus `schemas/` | No |
 
 The runtime's `.agent-hub-runtime` marker records the layout. Each run of `install.sh` installs
 the layout you ask for: a later plain `./install.sh` switches a binary install back to the source
@@ -28,7 +28,7 @@ as a whole, including any `src/mcp-sync.ts` that only the source layout has.
 - **Source layout.** Installing or syncing the bundled skill runs the Bun sources, so a source
   install without Bun needs `--no-skill`; the binary layout needs no Bun at all.
 - **`--agents-dir`** writes `config.json` with Bun or `python3`. When `config.json` exists but
-  neither is available, `bin/sync-agents --print-dir` (which `install.sh` uses for its hub-overlap
+  neither is available, `bin/sync-agents --print-dir --human` (which `install.sh` uses for its hub-overlap
   check) refuses rather than guessing; with `--binary`, `install.sh` also checks the binary's own
   view of the hub.
 - **Paths.** A relative path is resolved against the physical current directory, `..` is

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/flyingrobots/agent-hub/schemas/agent_hub.summary.schema.json",
   "title": "agent_hub.summary",
-  "description": "The outcome of a run.",
+  "description": "The outcome of a run. Every run that gets past argument parsing ends with exactly one agent_hub.summary or agent_hub.error line.",
   "x-schema-version": "1.0.0",
   "type": "object",
   "required": [
@@ -45,6 +45,7 @@
     "status": {
       "enum": [
         "in_sync",
+        "planned",
         "out_of_sync",
         "conflicts",
         "recovered_in_sync",

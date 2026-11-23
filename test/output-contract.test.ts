@@ -194,4 +194,72 @@ describe("JSON Lines output contract (flyingrobots/agent-hub#5)", () => {
       chmodSync(join(home, "locked"), 0o755);
     }
   });
+
+  test("an uncaught throw in the engine becomes one agent_hub.error line with code internal, exit 1", () => {
+    if (process.getuid?.() === 0) return;
+    const { home, env } = sandbox();
+    mkdirSync(join(home, "locked", "sub"), { recursive: true });
+    chmodSync(join(home, "locked"), 0o000);
+    try {
+      const r = raw(["bun", ENGINE, "--print-dir", "--dir", join(home, "locked", "sub", "hub")], env);
+      expect(r.exitCode).toBe(1);
+      expect(r.stdout).toBe("");
+      const { events } = decodeStream(r.stderr, "stderr");
+      expect(events.length).toBe(1);
+      expect(events[0]!.code).toBe("internal");
+    } finally {
+      chmodSync(join(home, "locked"), 0o755);
+    }
+  });
+
+  test("a child process's stderr (tar, unzip) arrives inside a valid error line, never as raw text", () => {
+    const { home, hub, env } = sandbox();
+    const tarball = join(home, "corrupt.tar.gz");
+    writeFileSync(tarball, "this is not a tarball\n");
+    const r = raw(["bun", ENGINE, "--dir", hub, "--skill", tarball], { ...env, LC_ALL: "C" });
+    expect(r.exitCode).toBe(1);
+    const { events } = decodeOutput(r.stdout, r.stderr);
+    const err = events.find((e) => e.kind === "error");
+    expect(err).toBeDefined();
+    expect(String(err!.message)).toContain("tar extract");
+    const zip = join(home, "corrupt.zip");
+    writeFileSync(zip, "this is not a zip\n");
+    const z = raw(["bun", ENGINE, "--dir", hub, "--skill", zip], { ...env, LC_ALL: "C" });
+    expect(z.exitCode).toBe(1);
+    expect(String(decodeOutput(z.stdout, z.stderr).events.find((e) => e.kind === "error")!.message)).toContain("unzip");
+  });
+
+  test("--humanize works in the engine as in the wrapper, and an option value spelled --human is not the flag", () => {
+    const { hub, env } = sandbox();
+    expect(raw(["bun", ENGINE, "--print-dir", "--dir", hub, "--humanize"], env).stdout).toBe(`${hub}\n`);
+    for (const cmd of [["bun", ENGINE], [WRAPPER]]) {
+      const r = raw([...cmd, "--print-dir", "--dir", "--human"], env);
+      expect(r.exitCode).toBe(0);
+      const { events } = decodeStream(r.stdout, "stdout");
+      expect(String(events[0]!.hub).endsWith("/--human")).toBe(true);
+    }
+  });
+
+  test("--schema wins over --help and --print-dir in the wrapper as in the engine", () => {
+    const { hub, env } = sandbox();
+    for (const cmd of [["bun", ENGINE], [WRAPPER]]) {
+      const r = raw([...cmd, "--print-dir", "--dir", hub, "--schema", "--help"], env);
+      expect(r.exitCode).toBe(0);
+      const { events } = decodeStream(r.stdout, "stdout");
+      expect(events.every((e) => e.kind === "schema")).toBe(true);
+      expect(events.length).toBe(Object.keys(SCHEMAS).length);
+    }
+  });
+
+  test("every run past argument parsing ends with one summary or error line: dry-run with changes, explain, check", () => {
+    const { hub, env } = sandbox();
+    for (const args of [["--dry-run"], ["--explain"], ["--check"]]) {
+      const r = raw(["bun", ENGINE, "--dir", hub, "--targets", "claude", ...args], env);
+      const { events } = decodeOutput(r.stdout, r.stderr);
+      const terminal = events.filter((e) => e.kind === "summary" || e.kind === "error");
+      expect(terminal.length).toBe(1);
+    }
+    const dry = decodeStream(raw(["bun", ENGINE, "--dir", hub, "--targets", "claude", "--dry-run"], env).stdout, "stdout").events;
+    expect(dry[dry.length - 1]!.status).toBe("planned");
+  });
 });

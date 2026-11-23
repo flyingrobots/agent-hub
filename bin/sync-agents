@@ -70,8 +70,16 @@ lexical_normalize() {
 # The same contract as the engine (src/output.ts, schemas/); this wrapper emits only the
 # agent_hub.help, agent_hub.print_dir and agent_hub.error message types itself.
 HUMAN=0
+SHOW_SCHEMA=0
+skip_value=0
 for a in "$@"; do
-  case "$a" in --human|--humanize) HUMAN=1 ;; esac
+  # An option's value (e.g. `--dir --human`) is not a flag, as in the engine's wantsHuman.
+  if [[ "$skip_value" -eq 1 ]]; then skip_value=0; continue; fi
+  case "$a" in
+    --dir|--skill|--targets|--disown-legacy) skip_value=1 ;;
+    --human|--humanize) HUMAN=1 ;;
+    --schema) SHOW_SCHEMA=1 ;;
+  esac
 done
 RUN_ID="$(od -An -tx1 -N8 /dev/urandom | tr -d ' \n')"
 SCHEMA_IDS='"agent_hub.op","agent_hub.conflict","agent_hub.recovery","agent_hub.summary","agent_hub.error","agent_hub.help","agent_hub.print_dir","agent_hub.schema"'
@@ -300,6 +308,15 @@ while [[ "$i" -lt "${#ARGS[@]}" ]]; do
   esac
   i=$((i + 1))
 done
+
+# --schema wins over --help and --print-dir, as in the engine; only the engine has the schemas.
+if [[ "$SHOW_SCHEMA" -eq 1 ]]; then
+  if ! command -v bun >/dev/null 2>&1; then
+    emit_error internal "sync-agents: bun is required to print the schemas (they are also in $INSTALL_ROOT/schemas/)"
+    exit 1
+  fi
+  exec bun "$CLI_SCRIPT" "$@"
+fi
 
 if [[ "$SHOW_HELP" -eq 1 && "$HUMAN" -eq 0 ]] && command -v bun >/dev/null 2>&1 && [[ -f "$CLI_SCRIPT" ]]; then
   # The engine prints the help line and then every message schema.

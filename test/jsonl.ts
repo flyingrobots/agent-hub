@@ -5,7 +5,8 @@
  * their meaning while every run also validates the machine contract.
  */
 import Ajv2020 from "ajv/dist/2020";
-import { SCHEMAS, type SchemaId } from "../src/output.ts";
+import { runSync as realRunSync } from "../src/cli.ts";
+import { renderJsonLine, SCHEMAS, type SchemaId } from "../src/output.ts";
 
 const ajv = new Ajv2020({ strict: false, allErrors: true });
 const validators = new Map(
@@ -58,4 +59,29 @@ export function printedHub(stdout: string): string {
   const ev = events.find((e) => e._schema.id === "agent_hub.print_dir");
   if (!ev) throw new Error(`no agent_hub.print_dir line in: ${stdout.slice(0, 300)}`);
   return ev.hub as string;
+}
+
+/**
+ * runSync, checked: every event it produced validates against its schema, the human messages
+ * are exactly the events' messages per stream, and the run ends with exactly one summary or
+ * error event. Tests import this instead of src/cli.ts's runSync, so in-process runs (recovery,
+ * apply failure, locks) are held to the same contract as spawned ones.
+ */
+export function runSync(...args: Parameters<typeof realRunSync>): ReturnType<typeof realRunSync> {
+  const res = realRunSync(...args);
+  assertEventContract(res);
+  return res;
+}
+
+export function assertEventContract(res: ReturnType<typeof realRunSync>): void {
+  decodeStream(res.events.map((e) => renderJsonLine(e)).join("\n"), "runSync events");
+  const msgs = (stream: "stdout" | "stderr") => res.events.filter((e) => e.stream === stream).map((e) => e.message);
+  if (JSON.stringify(msgs("stdout")) !== JSON.stringify(res.stdout)) throw new Error("runSync stdout differs from its stdout events");
+  if (JSON.stringify(msgs("stderr")) !== JSON.stringify(res.stderr)) throw new Error("runSync stderr differs from its stderr events");
+  const terminal = res.events.filter((e) => e.id === "agent_hub.summary" || e.id === "agent_hub.error");
+  if (terminal.length !== 1 || res.events[res.events.length - 1] !== terminal[0]) {
+    throw new Error(
+      `runSync must end with exactly one summary or error event; got ${res.events.map((e) => e.id).join(", ")}`,
+    );
+  }
 }

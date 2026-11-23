@@ -275,8 +275,10 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
     message: string,
     data: Record<string, unknown> = {},
   ): void => {
-    events.push({ stream, id, message, data });
+    const event: OutputEvent = { stream, id, message, data };
+    events.push(event);
     (stream === "stdout" ? stdout : stderr).push(message);
+    options.onEvent?.(event);
   };
   const done = (exitCode: number, extra: { recovery?: RecoveryReport } = {}): SyncRunResult => ({
     exitCode,
@@ -287,6 +289,8 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
   });
   const fail = (code: string, message: string, data: Record<string, unknown> = {}) =>
     emit("stderr", "agent_hub.error", message, { code, ...data });
+  // An error message from a lower layer may already carry the command prefix.
+  const labeled = (msg: string) => (msg.startsWith(`${cmdLabel}: `) || msg.startsWith("sync-agents: ") || msg.startsWith("mcp-sync: ") ? msg : `${cmdLabel}: ${msg}`);
   const emitConflict = (op: PlannedOp): void => {
     const next = op.nextStep ? ` (${op.nextStep})` : "";
     emit("stderr", "agent_hub.conflict", `[conflict] ${op.reason}${next}`, {
@@ -328,7 +332,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
     scope = resolveTargetScope(options.targets, userCfg.disabledTargets);
     configPath = userCfg.configPath;
   } catch (err) {
-    fail("config", `${cmdLabel}: ${err instanceof Error ? err.message : String(err)}`);
+    fail("config", labeled(err instanceof Error ? err.message : String(err)));
     return done(1);
   }
   const configBase = xdgConfigBase(homeDir, xdgConfigHome);
@@ -373,7 +377,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       state = loadOwnershipState(paths.statePath, canonicalHubPath).state;
       pendingJournal = loadPendingJournal(paths.journalPath);
     } catch (err) {
-      fail("plan", `${cmdLabel}: ${err instanceof Error ? err.message : String(err)}`);
+      fail("plan", labeled(err instanceof Error ? err.message : String(err)));
       return done(1);
     }
 
@@ -408,6 +412,9 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
           `[conflict] pending recovery ambiguous: ${inspection.reason}\n  next: ${inspection.nextStep}`,
           { event: "ambiguous", ...pendingData },
         );
+        fail("recovery", `${cmdLabel}: pending recovery is ambiguous; nothing was changed (see the recovery line above).`, {
+          detail: inspection.reason,
+        });
         return done(1);
       }
       emit(
@@ -474,12 +481,18 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
         });
         return done(1);
       }
-      if (plan.changeOps.length === 0 && !explain) {
+      // Every run ends with one summary or error line.
+      if (plan.changeOps.length === 0) {
         emit("stdout", "agent_hub.summary", `${cmdLabel}: everything is in sync.`, { status: "in_sync", changes: 0 });
+      } else {
+        emit("stdout", "agent_hub.summary", `${cmdLabel}: ${plan.changeOps.length} change(s) planned; nothing was changed.`, {
+          status: "planned",
+          changes: plan.changeOps.length,
+        });
       }
       return done(0);
     } catch (err) {
-      fail("plan", `${cmdLabel}: ${err instanceof Error ? err.message : String(err)}`);
+      fail("plan", labeled(err instanceof Error ? err.message : String(err)));
       return done(1);
     } finally {
       if (plan) cleanupStagedTempDirs(plan.stagedSkills.tempDirs);
@@ -523,6 +536,9 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
         emit("stderr", "agent_hub.recovery", `[conflict] pending recovery ambiguous: ${recoveryReport.error}`, {
           event: "ambiguous",
           reason: String(recoveryReport.error),
+        });
+        fail("recovery", `${cmdLabel}: pending recovery is ambiguous; nothing new was applied (see the recovery line above).`, {
+          detail: String(recoveryReport.error),
         });
         return done(1, { recovery: recoveryReport });
       }
@@ -665,7 +681,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       "plan",
       recoveryReport.hadPending
         ? `${cmdLabel}: Phase 0 recovery completed above; preflight failed (${msg}), so no new Phase 2 target or ledger changes were applied.`
-        : `${cmdLabel}: ${msg}`,
+        : labeled(msg),
       { detail: msg },
     );
     return done(1, { recovery: recoveryReport });
@@ -791,9 +807,20 @@ function parseDisownArg(raw: string): { agent: AgentId; name: string } {
   return { agent: agent as AgentId, name };
 }
 
-/** --human or --humanize anywhere on the command line, even when parsing fails. */
+/** Options whose next argument is their value, so a value spelled "--human" is not the flag. */
+const VALUE_OPTIONS = new Set(["--dir", "--skill", "--targets", "--disown-legacy"]);
+
+/** --human or --humanize as an option (not as another option's value), even when parsing fails. */
 export function wantsHuman(argv: readonly string[]): boolean {
-  return argv.includes("--human") || argv.includes("--humanize");
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i]!;
+    if (VALUE_OPTIONS.has(a)) {
+      i += 1;
+      continue;
+    }
+    if (a === "--human" || a === "--humanize") return true;
+  }
+  return false;
 }
 
 /** --help: what the command does, then the schema of every message type it can print. */
@@ -847,8 +874,12 @@ export function cliMain(argv: string[], command = "sync-agents", usage = CLI_USA
       writeEvents([{ stream: "stdout", id: "agent_hub.print_dir", message: dir, data: { hub: dir } }], human);
       return 0;
     }
-    const res = runSync({ ...parsed.options, ...(mcpOnly ? { mcpOnly: true } : {}) });
-    writeEvents(res.events, human);
+    // Each line is printed as it happens, not buffered until the run ends.
+    const res = runSync({
+      ...parsed.options,
+      ...(mcpOnly ? { mcpOnly: true } : {}),
+      onEvent: (e) => writeEvents([e], human),
+    });
     return res.exitCode;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
