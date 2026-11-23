@@ -18,6 +18,7 @@ import {
   rewritePlaintextSecrets,
   roundTripDiff,
 } from "./import.ts";
+import { loadMachineOverrides } from "./machine.ts";
 import { mergeSpec, parseSpecSnippet } from "./mcp.ts";
 import type { OutputEvent, SchemaId } from "./output.ts";
 import { atomicWriteDurable, canonicalizeHubPath, isPlainObject, parseStrictJsonTargetFile, stableJson } from "./paths.ts";
@@ -440,6 +441,23 @@ export function runPull(opts: PullOptions): Run {
       ) {
         r.emit("stdout", "agent_hub.summary", `sync-agents: mcp/${name} already matches ${opts.from}; nothing to pull.`, { status: "in_sync", changes: 0 });
         return { exitCode: 0, events: r.events };
+      }
+      // An entry that differs from the hub only by this machine's override is what a sync
+      // writes here, so there is nothing to pull: a machine override never enters the hub.
+      const machineOv = loadMachineOverrides(configBase)?.servers.get(name);
+      if (machineOv) {
+        let onThisMachine = current;
+        for (const layer of [machineOv.base, machineOv.targets[opts.from]]) {
+          if (layer) onThisMachine = mergeSpec(onThisMachine, layer.spec, layer.label);
+        }
+        const { extra: machineExtra, ...machinePortable } = onThisMachine;
+        if (
+          stableJson(orderedSpec(machinePortable)) === stableJson(orderedSpec(d.spec)) &&
+          stableJson(machineExtra ?? {}) === stableJson(d.extra)
+        ) {
+          r.emit("stdout", "agent_hub.summary", `sync-agents: mcp/${name} matches ${opts.from} once this machine's override is applied; nothing to pull.`, { status: "in_sync", changes: 0 });
+          return { exitCode: 0, events: r.events };
+        }
       }
       if (!opts.asOverride) return fail(`mcp/${name} is already in the hub and differs from ${opts.from}'s entry`, "pass --as-override to record the difference for this agent only");
       const ov = minimalOverride(base, d.spec);

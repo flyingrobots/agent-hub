@@ -8,6 +8,22 @@ changes are called out under **Changed** with what to do.
 
 ## [Unreleased]
 
+### Added
+
+- **Machine overrides.** `${XDG_CONFIG_HOME:-~/.config}/agent-hub/machine.json` changes or
+  disables hub MCP servers on one machine, for every target or for one, without touching the
+  hub. A server disabled for a target there leaves an unowned entry of the same name alone
+  instead of reporting a conflict. See
+  [MCP servers](docs/topics/mcp/README.md#machine-overrides) and
+  [ADR 0001](docs/adr/0001-machine-overrides-live-outside-the-hub.md)
+  ([#58](https://github.com/flyingrobots/agent-hub/issues/58)).
+
+### Changed
+
+- Output schemas: `agent_hub.summary` is now `1.1.0` (optional `machine_overrides`) and
+  `agent_hub.warning` is `1.2.0` (new code `machine_override_unused`). Every summary and warning
+  line carries the new version; a parser that pins `_schema.version` needs updating.
+
 ### Fixed
 
 - A target JSON config that is empty or holds only whitespace (as Antigravity creates

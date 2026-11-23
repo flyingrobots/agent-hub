@@ -30,6 +30,7 @@ import {
   saveOwnershipState,
   writeJournal,
 } from "./state.ts";
+import type { MachineOverrides } from "./machine.ts";
 import { rewriteCodexToml } from "./toml-edit.ts";
 import {
   ALL_AGENTS,
@@ -50,12 +51,32 @@ import {
 
 export { normalizeAntigravityComparable, normalizeClaudeComparable };
 
-const SERVER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+export const SERVER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 /**
  * Per-server compiled entries, keyed by agent. `null` means the server is disabled for that agent;
  * an agent outside the run's scope has no key at all, so it can never be mistaken for disabled.
  */
+/** What a machine override did to one server for one target on this machine. */
+export type MachineEffect = "changed" | "disabled";
+export type MachineEffects = Map<string, Partial<Record<AgentId, MachineEffect>>>;
+/** What a run reports about this machine's overrides. */
+export type MachineReport = {
+  path: string;
+  /** Hub servers a machine override changed or omitted for at least one active target. */
+  inEffect: string[];
+  /** Names in the machine override file that the hub does not define. */
+  unused: string[];
+};
+/** Machine overrides to layer onto the hub, and where to report what they did. */
+export type MachineInput = {
+  overrides: MachineOverrides | null;
+  /** Filled per server and active target that a machine override changed or omitted. */
+  effects?: MachineEffects;
+  /** Filled with machine override names the hub does not define. */
+  unused?: string[];
+};
+
 export type CompiledServerMap = Map<string, Partial<Record<AgentId, Record<string, unknown> | null>>>;
 
 export type PlannedMcpTarget = {
@@ -90,6 +111,8 @@ type TargetPlanCtx = {
   basisUsed: OwnershipBasis | "managed";
   now: string;
   opts: { adopt: boolean; force: boolean; configPath: string };
+  /** What this machine's overrides did, and the file to name in a reason. */
+  machine?: { path: string; effects: MachineEffects };
 };
 
 function detectFamily(spec: McpServerSpec): TransportFamily {
@@ -345,6 +368,7 @@ export function loadCanonicalServers(
   activeTargets?: ReadonlySet<AgentId>,
   warnings?: PlaintextSecretWarning[],
   vault?: { execPath: string; invocations?: VaultInvocation[] },
+  machine?: MachineInput,
 ): CompiledServerMap {
   const result: CompiledServerMap = new Map();
   const mcpRoot = join(canonicalHubPath, "mcp");
@@ -430,6 +454,27 @@ export function loadCanonicalServers(
         layers.push([subOv, subPath]);
       }
 
+      // Machine overrides are layered last: hub base, hub target overrides, machine base,
+      // machine target override (docs/adr/0001).
+      const machineOv = machine?.overrides?.servers.get(name);
+      if (machineOv) {
+        const hubResolved = resolved;
+        for (const layer of [machineOv.base, machineOv.targets[agent]]) {
+          if (!layer) continue;
+          resolved = mergeSpec(resolved, layer.spec, layer.label);
+          layers.push([layer.spec, layer.label]);
+        }
+        const effect: MachineEffect | null =
+          resolved.disabled === true && hubResolved.disabled !== true
+            ? "disabled"
+            : stableJson(resolved) !== stableJson(hubResolved)
+              ? "changed"
+              : null;
+        if (effect && machine?.effects) {
+          machine.effects.set(name, { ...(machine.effects.get(name) ?? {}), [agent]: effect });
+        }
+      }
+
       if (warnings) {
         for (const w of detectPlaintextSecrets(resolved, allowPlaintext)) {
           const fieldIn = (s: McpServerSpec) => specFields(s).some(([f]) => f === w.field);
@@ -459,6 +504,12 @@ export function loadCanonicalServers(
     }
 
     result.set(name, compiled);
+  }
+
+  if (machine?.overrides && machine.unused) {
+    for (const name of machine.overrides.servers.keys()) {
+      if (!result.has(name)) machine.unused.push(name);
+    }
   }
 
   return result;
@@ -520,9 +571,28 @@ function planDisabledServerOp(
   existingDigest: string | null,
   managedRec: ManagedMcpRecord | undefined,
   isLegacy: boolean,
+  byMachine = false,
 ): void {
   const { adapter, configPath } = ctx;
   const agent = adapter.id;
+
+  // A server this machine opted out of for this target is not planned there at all, so an
+  // unowned entry of the same name is nobody's conflict: it stays, even under --force.
+  if (byMachine && hasExisting && !managedRec && !isLegacy) {
+    ctx.ops.push({
+      domain: "mcp",
+      action: "keep",
+      status: "ok",
+      destination: `${configPath}#${name}`,
+      observed: "unmanaged personal entry exists in target config",
+      intended: "omitted on this machine; the existing entry is left as it is",
+      ownershipBasis: "unmanaged",
+      reason: `MCP "${name}" is disabled for ${agent} on this machine, and the entry in ${configPath} is not owned by sync-agents`,
+      targetMutation: false,
+      ledgerMutation: false,
+    });
+    return;
+  }
 
   if (!hasExisting) {
     if (managedRec) {
@@ -1088,6 +1158,7 @@ function planSingleMcpTarget(
   disownSet: Set<string>,
   now: string,
   opts: { adopt: boolean; force: boolean; configPath: string; configBase: string },
+  machine?: { path: string; effects: MachineEffects },
 ): PlannedMcpTarget | null {
   const rootDir = adapter.rootDir(homeDir, opts.configBase);
   if (!existsSync(rootDir) || !statSync(rootDir).isDirectory()) return null;
@@ -1223,6 +1294,7 @@ function planSingleMcpTarget(
     basisUsed: "managed",
     now,
     opts,
+    ...(machine ? { machine } : {}),
   };
 
   // Keys of the root object the render drops (migrated or removed previous-layout entries).
@@ -1414,10 +1486,18 @@ function planSingleMcpTarget(
       : null;
     const existingDigest = comparableExisting ? sha256Hex(stableJson(comparableExisting)) : null;
 
+    const machineEffect = ctx.machine?.effects.get(name)?.[adapter.id];
+    const firstOp = ctx.ops.length;
     if (desired === null) {
-      planDisabledServerOp(ctx, name, hasExisting, existingDigest, managedRec, isLegacy);
+      planDisabledServerOp(ctx, name, hasExisting, existingDigest, managedRec, isLegacy, machineEffect === "disabled");
     } else {
       planEnabledServerOp(ctx, name, desired, hasExisting, existingDigest, managedRec, isLegacy);
+    }
+    // A machine override must never act silently: every op for a server it changed or omitted
+    // says so, and names the file.
+    if (machineEffect && ctx.machine) {
+      const note = machineEffect === "disabled" ? "omitted by a machine override" : "changed by a machine override";
+      for (const op of ctx.ops.slice(firstOp)) op.reason = `${op.reason} (${note} in ${ctx.machine.path})`;
     }
   }
 
@@ -1500,10 +1580,28 @@ export function planMcpSync(
     /** XDG config base (`$XDG_CONFIG_HOME` or `~/.config`); defaults to `~/.config`. */
     configBase?: string;
     disownLegacy: Array<{ agent: AgentId; name: string }>;
+    /** This machine's overrides, or null when it has none. Project mode never passes any. */
+    machine?: MachineOverrides | null;
   },
-): { targets: PlannedMcpTarget[]; globalOps: PlannedOp[]; warnings: PlaintextSecretWarning[] } {
+): {
+  targets: PlannedMcpTarget[];
+  globalOps: PlannedOp[];
+  warnings: PlaintextSecretWarning[];
+  machine: MachineReport | null;
+} {
   const warnings: PlaintextSecretWarning[] = [];
-  const servers = loadCanonicalServers(canonicalHubPath, opts.activeTargets, warnings, { execPath: defaultExecPath(homeDir) });
+  const effects: MachineEffects = new Map();
+  const unused: string[] = [];
+  const servers = loadCanonicalServers(
+    canonicalHubPath,
+    opts.activeTargets,
+    warnings,
+    { execPath: defaultExecPath(homeDir) },
+    { overrides: opts.machine ?? null, effects, unused },
+  );
+  const machine: MachineReport | null = opts.machine
+    ? { path: opts.machine.path, inEffect: [...effects.keys()].sort(), unused: unused.sort() }
+    : null;
   const now = new Date().toISOString();
   const { disownByAgent, globalOps } = validateDisownRequests(opts.disownLegacy, legacyV1, servers);
 
@@ -1524,11 +1622,12 @@ export function planMcpSync(
         configPath: opts.configPath ?? "~/.config/agent-hub/config.json",
         configBase: opts.configBase ?? join(homeDir, ".config"),
       },
+      opts.machine ? { path: opts.machine.path, effects } : undefined,
     );
     if (plan) targets.push(plan);
   }
 
-  return { targets, globalOps, warnings };
+  return { targets, globalOps, warnings, machine };
 }
 
 export function applyMcpTarget(

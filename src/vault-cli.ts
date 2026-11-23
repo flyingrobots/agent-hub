@@ -1,6 +1,8 @@
 /** `sync-agents exec` and `sync-agents secret` (Phase 5, flyingrobots/agent-hub#10). */
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
+import { xdgConfigBase } from "./adapters.ts";
+import { loadMachineOverrides } from "./machine.ts";
 import { loadCanonicalServers, type VaultInvocation } from "./mcp.ts";
 import { writeEvents, type OutputEvent } from "./output.ts";
 import {
@@ -199,7 +201,10 @@ export function runSecretCli(argv: string[], human: boolean, resolveHub: (dir: s
       case "grant": {
         const hub = resolveHub(a.dir);
         const invocations: VaultInvocation[] = [];
-        loadCanonicalServers(hub, undefined, undefined, { execPath: "/", invocations });
+        // A grant binds the argv this machine will run. Without --dir that is the user hub as
+        // modified by this machine's overrides; an explicit --dir (a project's hub) is read as written.
+        const machine = a.dir === undefined ? loadMachineOverrides(xdgConfigBase(homedir(), process.env.XDG_CONFIG_HOME)) : null;
+        loadCanonicalServers(hub, undefined, undefined, { execPath: "/", invocations }, { overrides: machine });
         const mine = invocations.filter((v) => v.server === a.to && v.key === a.key);
         if (mine.length === 0) {
           emit(errorEvent("config", `sync-agents secret grant: mcp/${a.to} does not use \${vault:${a.key}} in ${hub}`));

@@ -279,6 +279,55 @@ editor's own, names the target, the resolved `config.json` path and the remedy: 
 that tool's MCP config alone while its rules and skill links keep syncing. Do not strip comments
 from a tool's own config just to make `sync-agents` run.
 
+## Machine overrides
+
+One hub is often cloned on several machines that differ: a home directory in a `command`, a
+program installed on one machine only, or a personal entry in one agent that has a hub server's
+name. A **machine override** states such a difference for one machine, in a file outside the hub:
+`${XDG_CONFIG_HOME:-~/.config}/agent-hub/machine.json`. Why it lives there is recorded in
+[ADR 0001](../../adr/0001-machine-overrides-live-outside-the-hub.md).
+
+```json
+{
+  "mcp": {
+    "ai-tts": { "mcp": { "command": "/Users/example/.local/bin/ai-tts-mcp" } },
+    "shadcn": { "overrides": { "codex": { "disabled": true } } }
+  }
+}
+```
+
+This example is illustrative. On this machine `ai-tts` runs from another path in every agent,
+and Codex does not receive `shadcn`.
+
+- **Shape.** `mcp` maps a hub server name to a document shaped like that server's own
+  `mcp.json`: `mcp` applies to every target on this machine, `overrides.<target>` to one. The
+  fields and their rules are those of the [canonical format](#canonical-format); `extra` is
+  allowed only under `overrides.<target>`. No other keys are accepted.
+- **Order.** Layers apply in this order, each on the last: the hub's base `mcp`, the hub's
+  target overrides, the machine's `mcp`, the machine's `overrides.<target>`.
+- **Only hub servers.** A machine override cannot add a server. A name the hub does not define
+  prints a `warning` line (`machine_override_unused`) and changes nothing, so removing a server
+  from the hub does not break the next sync on a machine that still mentions it.
+- **Disabling.** `"disabled": true` omits the server on this machine, for every target or for
+  one. An entry `sync-agents` owns there is removed. An entry it does not own, with the same
+  name, is left exactly as it is and is not a conflict, even with `--force`: the hub server is
+  simply not planned for that target on this machine.
+- **In sync means the hub as modified on this machine.** `--check` exits `0` when the targets
+  match that. So that an override never acts unseen, `--dry-run` and `--explain` add
+  `changed by a machine override in <file>` or `omitted by a machine override in <file>` to the
+  reason of each operation it affects, and the final `summary` line carries `machine_overrides`
+  (the number of hub servers changed or omitted for an active target) and says so in its message.
+- **Secrets.** The [plaintext-secret](#plaintext-secrets) check covers values written in
+  `machine.json`; the warning's `source` names the file.
+- **Import and pull** never write `machine.json`. `pull` reports nothing to pull when an agent's
+  entry differs from the hub only by this machine's override.
+- **Vault grants.** `sync-agents secret grant` without `--dir` binds the command line as
+  modified by this machine's overrides; with `--dir` it reads that hub as written.
+- **Project mode** (`--project`) never reads `machine.json`.
+- **A malformed file stops the run.** If `machine.json` is not JSON, or has a key, target or
+  field that is not accepted, every run that reads it exits `1` with an `error` line of code
+  `config` naming the file, before anything is planned.
+
 ## Entries agent-hub does not own
 
 A server already present in a target config, with the same name as a hub server but different

@@ -2,8 +2,8 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/flyingrobots/agent-hub/schemas/agent_hub.warning.schema.json",
   "title": "agent_hub.warning",
-  "description": "Something worth attention, with machine-readable details. code plaintext_secret: a literal value in a hub server spec looks like a credential (the value itself is never printed); the same field is also an agent_hub.conflict, so the run refuses.",
-  "x-schema-version": "1.1.0",
+  "description": "Something worth attention, with machine-readable details. code plaintext_secret: a literal value in a hub server spec looks like a credential (the value itself is never printed); the same field is also an agent_hub.conflict, so the run refuses. code machine_override_unused: the machine override file names a server the hub does not define, so that override changes nothing; the run continues.",
+  "x-schema-version": "1.2.0",
   "type": "object",
   "required": [
     "_schema",
@@ -30,7 +30,7 @@
           "const": "agent_hub.warning"
         },
         "version": {
-          "const": "1.1.0"
+          "const": "1.2.0"
         }
       }
     },
@@ -48,7 +48,8 @@
     },
     "code": {
       "enum": [
-        "plaintext_secret"
+        "plaintext_secret",
+        "machine_override_unused"
       ]
     },
     "server": {
@@ -56,7 +57,7 @@
     },
     "field": {
       "type": "string",
-      "description": "command, args[i], env.<KEY>, url or headers.<Name>"
+      "description": "command, args[i], env.<KEY>, url or headers.<Name>; for machine_override_unused, mcp.<server> in the machine override file"
     },
     "reason": {
       "type": "string"

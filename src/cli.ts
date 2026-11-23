@@ -16,7 +16,8 @@ import {
 import { applyFileOp, planPrimitives, type PlannedFileOp } from "./primitives.ts";
 import { runProjectSync } from "./project.ts";
 import { EXEC_USAGE, runExecCli, runSecretCli, SECRET_USAGE } from "./vault-cli.ts";
-import { applyMcpTarget, planMcpSync, type PlaintextSecretWarning, type PlannedMcpTarget } from "./mcp.ts";
+import { loadMachineOverrides, type MachineOverrides } from "./machine.ts";
+import { applyMcpTarget, planMcpSync, type MachineReport, type PlaintextSecretWarning, type PlannedMcpTarget } from "./mcp.ts";
 import { canonicalizeHubPath, isPlainObject, parseJsonFile } from "./paths.ts";
 import {
   applySkillInstall,
@@ -179,6 +180,8 @@ type BuiltSyncPlan = {
   allOps: PlannedOp[];
   /** Plaintext-secret warnings from the hub's server specs (Phase 2: warn, do not block). */
   warnings: PlaintextSecretWarning[];
+  /** What this machine's overrides did in this plan; null when the machine has none. */
+  machine: MachineReport | null;
   changeOps: PlannedOp[];
   conflicts: PlannedOp[];
 };
@@ -203,6 +206,7 @@ function buildSyncPlan(
     configPath: string;
     configBase: string;
     disownLegacy: Array<{ agent: AgentId; name: string }>;
+    machine: MachineOverrides | null;
   },
 ): BuiltSyncPlan {
   const legacyV1 = loadLegacyV1Manifest(canonicalHubPath, state);
@@ -242,7 +246,7 @@ function buildSyncPlan(
           });
 
     const mcpPlan = opts.skillOnly
-      ? { targets: [] as PlannedMcpTarget[], globalOps: [] as PlannedOp[], warnings: [] as PlaintextSecretWarning[] }
+      ? { targets: [] as PlannedMcpTarget[], globalOps: [] as PlannedOp[], warnings: [] as PlaintextSecretWarning[], machine: null }
       : planMcpSync(canonicalHubPath, homeDir, state, legacyV1, {
           adopt: opts.adopt,
           force: opts.force,
@@ -250,6 +254,7 @@ function buildSyncPlan(
           configPath: opts.configPath,
           configBase: opts.configBase,
           disownLegacy: opts.disownLegacy,
+          machine: opts.machine,
         });
 
     const allOps: PlannedOp[] = [
@@ -283,6 +288,7 @@ function buildSyncPlan(
       mcpTargets: mcpPlan.targets,
       allOps,
       warnings: mcpPlan.warnings,
+      machine: mcpPlan.machine,
       changeOps: allOps.filter((op) => op.status === "change"),
       conflicts: allOps.filter((op) => op.status === "conflict" || op.status === "error"),
     };
@@ -299,6 +305,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
   // Every printed line is an event: its message goes to stdout/stderr (what --human prints) and
   // the event to `events` (what the default JSON Lines output prints).
   let appliedChanges = 0;
+  let machineInEffect = 0;
   const emit = (
     stream: "stdout" | "stderr",
     id: SchemaId,
@@ -306,6 +313,12 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
     data: Record<string, unknown> = {},
   ): void => {
     if (id === "agent_hub.op" && data.phase === "sync") appliedChanges += 1;
+    // Once a plan exists, every summary says how many hub servers this machine's overrides
+    // changed or omitted, so an override never hides behind "everything is in sync".
+    if (id === "agent_hub.summary" && machineInEffect > 0) {
+      message = `${message} ${machineInEffect} machine override(s) in effect.`;
+      data = { ...data, machine_overrides: machineInEffect };
+    }
     const event: OutputEvent = { stream, id, message, data };
     events.push(event);
     (stream === "stdout" ? stdout : stderr).push(message);
@@ -329,6 +342,24 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
         "agent_hub.warning",
         `[warn] mcp/${w.server}: ${w.field} ${w.reason}; write it as \${env:NAME}, or list "${w.field}" in allowPlaintextFields`,
         { code: "plaintext_secret", server: w.server, field: w.field, reason: w.reason, source: w.source },
+      );
+    }
+  };
+  const emitMachine = (report: MachineReport | null): void => {
+    if (!report) return;
+    machineInEffect = report.inEffect.length;
+    for (const name of report.unused) {
+      emit(
+        "stderr",
+        "agent_hub.warning",
+        `[warn] ${report.path}: machine override "${name}" names a server the hub does not define; it changes nothing`,
+        {
+          code: "machine_override_unused",
+          server: name,
+          field: `mcp.${name}`,
+          reason: "names a server the hub does not define",
+          source: report.path,
+        },
       );
     }
   };
@@ -374,10 +405,12 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
 
   let scope: TargetScope;
   let configPath: string;
+  let machine: MachineOverrides | null;
   try {
     const userCfg = readUserConfig(homeDir, xdgConfigHome);
     scope = resolveTargetScope(options.targets, userCfg.disabledTargets);
     configPath = userCfg.configPath;
+    machine = loadMachineOverrides(xdgConfigBase(homeDir, xdgConfigHome));
   } catch (err) {
     fail("config", labeled(err instanceof Error ? err.message : String(err)));
     return done(1);
@@ -501,8 +534,10 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
         configPath,
         configBase,
         disownLegacy,
+        machine,
       });
       emitWarnings(plan.warnings);
+      emitMachine(plan.machine);
 
       for (const op of plan.allOps) {
         if (explain) {
@@ -613,8 +648,10 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       configPath,
       configBase,
       disownLegacy,
+      machine,
     });
     emitWarnings(plan.warnings);
+    emitMachine(plan.machine);
 
     if (plan.conflicts.length > 0) {
       for (const c of plan.conflicts) emitConflict(c);
