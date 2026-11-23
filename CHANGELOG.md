@@ -12,11 +12,21 @@ changes are called out under **Changed** with what to do.
 
 - Vault secrets for stdio MCP servers (flyingrobots/agent-hub#10). `${vault:KEY}` as a whole `env`
   value makes every agent run the server through `sync-agents exec`, which checks an exact
-  (key, variable, command line) grant, reads the value from the macOS keychain, scrubs the
+  (key, variable, command line, real program, pass-through variables) grant, reads the value from the macOS keychain, scrubs the
   environment and replaces itself with the server via `execve(2)` (same PID), appending a
   value-free line to `exec-audit.jsonl`. `sync-agents secret set|grant|revoke|list` manage values
   and grants; `secret set` never puts the value in an argv. New output message
   `agent_hub.grant` 1.0.0. Same-user threat model, documented in `docs/topics/vault/`.
+
+### Fixed
+
+- Shared skills directories: when `~/.claude/skills` and `~/.codex/skills` are both symlinks to
+  a third directory, replacing either one with a real directory no longer reports the other
+  agent's link as unmanaged. The link's record now stores its physical destination (`physical`,
+  an optional field; the ledger stays version 2 and older ledgers load unchanged, gaining the
+  field on the next sync of a shared layout). A scoped run such as `--targets codex:links` no
+  longer retires an excluded target's duplicate record for a shared link.
+  (flyingrobots/agent-hub#37)
 
 ## [0.1.0] - 2026-11-22
 
