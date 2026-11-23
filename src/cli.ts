@@ -270,6 +270,22 @@ function buildSyncPlan(
       ...filePlans.map((f) => f.op),
       ...mcpPlan.globalOps,
       ...mcpPlan.targets.flatMap((t) => t.ops),
+      // A literal that looks like a credential blocks the run (flyingrobots/agent-hub#50).
+      ...mcpPlan.warnings.map(
+        (w): PlannedOp => ({
+          domain: "mcp",
+          action: "plaintext-secret",
+          status: "conflict",
+          destination: w.source,
+          observed: `${w.field}: a literal value (${w.reason})`,
+          intended: `${w.field}: a reference`,
+          ownershipBasis: "hub spec",
+          reason: `mcp/${w.server}: ${w.field} in ${w.source} ${w.reason}; nothing is synced while a hub spec holds a literal credential`,
+          nextStep: `write it as \${env:NAME} or \${vault:KEY}, or list "${w.field}" in allowPlaintextFields if it is not secret`,
+          targetMutation: false,
+          ledgerMutation: false,
+        }),
+      ),
     ];
 
     return {

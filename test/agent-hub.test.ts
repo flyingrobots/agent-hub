@@ -743,6 +743,8 @@ describe("agent-hub sync-agents", () => {
           url: "https://example.invalid/remote",
           headers: { Authorization: "Bearer tok" },
         },
+        // A placeholder, not a credential: since flyingrobots/agent-hub#50 a literal here blocks.
+        allowPlaintextFields: ["headers.Authorization"],
         overrides: {
           codex: {
             command: "/usr/local/bin/local-bridge",

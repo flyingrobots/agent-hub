@@ -222,7 +222,7 @@ describe("hub mcp.json: allowPlaintextFields and detector wiring (flyingrobots/a
   });
 });
 
-describe("a sync warns about plaintext secrets and still syncs (flyingrobots/agent-hub#6)", () => {
+describe("a plaintext secret blocks the sync (flyingrobots/agent-hub#6, flyingrobots/agent-hub#50)", () => {
   function sb(doc: unknown) {
     const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "agent-hub-envsync-")));
     const hub = path.join(home, ".agents");
@@ -242,20 +242,52 @@ describe("a sync warns about plaintext secrets and still syncs (flyingrobots/age
     };
   }
 
-  test("a literal token is one warning line per field; the run still writes the config and exits 0", () => {
+  test("a literal token is a warning and a conflict per field; nothing is written and the run exits 1", () => {
     const { home, opts } = sb({ mcp: { command: "/bin/gh", env: { GITHUB_TOKEN: "ghp_0123456789abcdefghijABCDEFGHIJ012345" } } });
     for (const mode of [{}, { dryRun: true }, { checkOnly: true }]) {
       const r = runSync({ ...opts, ...mode });
+      expect(r.exitCode).toBe(1);
       const warnings = r.events.filter((e) => e.id === "agent_hub.warning");
       expect(warnings.map((w) => [w.stream, w.data.server, w.data.field, w.data.code])).toEqual([["stderr", "gh", "env.GITHUB_TOKEN", "plaintext_secret"]]);
-      expect(JSON.stringify(warnings)).not.toContain("ghp_0123");
+      const conflicts = r.events.filter((e) => e.id === "agent_hub.conflict");
+      expect(conflicts.length).toBe(1);
+      expect(String(conflicts[0]!.data.reason)).toContain("env.GITHUB_TOKEN");
+      expect(String(conflicts[0]!.data.next_step)).toContain("${vault:KEY}");
+      expect(JSON.stringify(r.events)).not.toContain("ghp_0123");
     }
-    expect(JSON.parse(fs.readFileSync(path.join(home, ".claude.json"), "utf8")).mcpServers.gh.env.GITHUB_TOKEN).toMatch(/^ghp_/);
+    expect(fs.existsSync(path.join(home, ".claude.json"))).toBe(false);
   });
 
-  test("allowPlaintextFields silences the warning; a reference never warns", () => {
+  test("two literal fields give two conflicts, and the summary counts both", () => {
+    const { home, opts } = sb({ mcp: { command: "/bin/gh", env: { GITHUB_TOKEN: "ghp_0123456789abcdefghijABCDEFGHIJ012345", API_KEY: "sk-FAKE0123456789abcdefghijklmnop" } } });
+    const r = runSync(opts);
+    expect(r.exitCode).toBe(1);
+    expect(r.events.filter((e) => e.id === "agent_hub.conflict").map((e) => String(e.data.reason).includes("env.API_KEY") || String(e.data.reason).includes("env.GITHUB_TOKEN"))).toEqual([true, true]);
+    expect(r.events.find((e) => e.id === "agent_hub.summary")!.data.conflicts).toBe(2);
+    expect(fs.existsSync(path.join(home, ".claude.json"))).toBe(false);
+  });
+
+  test("a plaintext secret in a per-agent override file blocks the sync too", () => {
+    const { home, opts } = sb({ mcp: { command: "/bin/gh" } });
+    const hub = opts.hubDir;
+    fs.mkdirSync(path.join(hub, "mcp", "gh", "claude"), { recursive: true });
+    fs.writeFileSync(path.join(hub, "mcp", "gh", "claude", "mcp.json"), JSON.stringify({ mcp: { env: { API_KEY: "sk-FAKE0123456789abcdefghijklmnop" } } }));
+    expect(runSync(opts).exitCode).toBe(1);
+    expect(fs.existsSync(path.join(home, ".claude.json"))).toBe(false);
+  });
+
+  test("a vault reference never counts as plaintext", () => {
+    const { opts } = sb({ mcp: { command: "/bin/gh", env: { GITHUB_TOKEN: "${vault:gh}" } } });
+    const r = runSync({ ...opts, dryRun: true });
+    expect(r.exitCode).toBe(0);
+    expect(r.events.some((e) => e.id === "agent_hub.warning" || e.id === "agent_hub.conflict")).toBe(false);
+  });
+
+  test("allowPlaintextFields silences the warning and the conflict; a reference never warns", () => {
     const a = sb({ mcp: { command: "/bin/gh", env: { GITHUB_TOKEN: "ghp_0123456789abcdefghijABCDEFGHIJ012345" } }, allowPlaintextFields: ["env.GITHUB_TOKEN"] });
-    expect(runSync(a.opts).events.some((e) => e.id === "agent_hub.warning")).toBe(false);
+    const ra = runSync(a.opts);
+    expect(ra.exitCode).toBe(0);
+    expect(ra.events.some((e) => e.id === "agent_hub.warning" || e.id === "agent_hub.conflict")).toBe(false);
     const b = sb({ mcp: { command: "/bin/gh", env: { GITHUB_TOKEN: "${env:GITHUB_TOKEN}" } } });
     const r = runSync(b.opts);
     expect(r.exitCode).toBe(0);
