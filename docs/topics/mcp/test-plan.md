@@ -93,3 +93,5 @@ under `test/`; the documentation gate fails if a cited test does not exist.
 | MCP-ENV-14 | Only written fields are checked for references | Throws / equality | Unit | Implemented | `env-refs.test.ts › only fields the transport writes are checked for Antigravity and Codex` |
 | MCP-SEC-7 | Name matching is by parts; references never warn | Throws / equality | Unit | Implemented | `env-refs.test.ts › common non-secret names do not warn; the docs' Bearer reference does not warn` |
 | MCP-ENV-15 | Codex refusals carry server and source | Throws / equality | Unit | Implemented | `env-refs.test.ts › a Codex refusal names the server and its source` |
+| MCP-ENV-16 | An Authorization header spelled twice is refused wherever it sits | Throws | Unit | Implemented | `env-refs.test.ts › an Authorization header spelled twice is refused for Codex wherever it sits among the headers` |
+| MCP-SEC-8 | Credential names in camelCase, compound or header form warn | Warned fields | Unit | Implemented | `env-refs.test.ts › credential names in camelCase, compound or header form still warn` |

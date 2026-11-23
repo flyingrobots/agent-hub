@@ -244,9 +244,12 @@ function compileCodexRefs(
     const fromEnv: Record<string, string> = {};
     // Header names are case-insensitive: two spellings of one header cannot both be compiled.
     const lower = Object.keys(headers).map((h) => h.toLowerCase());
-    const dup = lower.find((h, i) => lower.indexOf(h) !== i);
-    if (dup !== undefined && Object.entries(headers).some(([h, v]) => h.toLowerCase() === dup && hasEnvRef(v))) {
-      refuse(`headers.${dup}`, "the header is set twice under different capitalizations");
+    for (const dup of new Set(lower.filter((h, i) => lower.indexOf(h) !== i))) {
+      // Authorization is compiled specially, so any second spelling of it is refused; another
+      // header only when one of its spellings carries a reference.
+      if (dup === "authorization" || Object.entries(headers).some(([h, v]) => h.toLowerCase() === dup && hasEnvRef(v))) {
+        refuse(`headers.${dup}`, "the header is set twice under different capitalizations");
+      }
     }
     for (const [h, v] of Object.entries(headers)) {
       if (!hasEnvRef(v)) continue;

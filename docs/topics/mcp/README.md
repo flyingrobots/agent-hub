@@ -137,10 +137,13 @@ overrides and `<target>/mcp.json` files, as each target resolves them); a field 
 several targets is reported once. It does not refuse, and the exit code is
 unchanged; the value is never printed. It checks for known token patterns (`sk-…`, `ghp_…`, `github_pat_…`,
 Slack `xox?-…`, Google `AIza…`, AWS `AKIA…`, PEM private keys), any literal under an `env` key or
-header name with a credential word as one of its parts (split on `_`, `-` and `.`: `token`,
-`secret`, `password`, `passwd`, `pwd`, `apikey`, `credential(s)`, `authorization`, `bearer`, or
-the pairs `api key`, `access key`, `private key`, `secret key`, `auth token`), and a URL with an
-embedded user and password.
+header name with a credential word as one of its parts (split on `_`, `-`, `.` and camelCase:
+`token`, `secret`, `password`, `passwd`, `pwd`, `pass`, `passphrase`, `pat`, `apikey`,
+`credential(s)`, `authorization`, `bearer`; the pairs `api key`, `access key`, `private key`,
+`secret key`, `auth key`, `session key`, `auth token`; `password`, `secret`, `apikey` or
+`credential` inside a longer part, as in `PGPASSWORD`; or the `Cookie` header), and a URL with
+an embedded user and password. A second literal for the same field in another layer (a
+per-target `mcp.json`) is reported on its own.
 These are known token patterns and secret-bearing field names, not a scanner: a secret in any
 other shape is not noticed. To keep a literal you intend, name its field:
 

@@ -401,10 +401,10 @@ export function loadCanonicalServers(
 
       if (warnings) {
         for (const w of detectPlaintextSecrets(resolved, allowPlaintext)) {
-          if (warnedFields.has(w.field)) continue;
-          warnedFields.add(w.field);
           const fieldIn = (s: McpServerSpec) => specFields(s).some(([f]) => f === w.field);
           const source = [...layers].reverse().find(([s]) => fieldIn(s))?.[1] ?? basePath;
+          if (warnedFields.has(`${w.field}\0${source}`)) continue;
+          warnedFields.add(`${w.field}\0${source}`);
           warnings.push({ server: name, field: w.field, reason: w.reason, source });
         }
       }

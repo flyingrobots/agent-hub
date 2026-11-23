@@ -109,11 +109,22 @@ const TOKEN_PATTERNS: Array<[RegExp, string]> = [
 // Field names that usually hold a credential.
 // Matched against a name's segments (split on _, - and .), so AUTHOR, MAX_TOKENS or
 // X-Session-Id do not count; API_KEY, X-Api-Key, ACCESS_KEY and PRIVATE_KEY do.
-const SECRET_SEGMENTS = new Set(["token", "secret", "password", "passwd", "pwd", "apikey", "credential", "credentials", "authorization", "bearer"]);
-const SECRET_PAIRS: Array<[string, string]> = [["api", "key"], ["access", "key"], ["private", "key"], ["secret", "key"], ["auth", "token"]];
+const SECRET_SEGMENTS = new Set([
+  "token", "secret", "password", "passwd", "pwd", "pass", "passphrase", "pat", "apikey",
+  "credential", "credentials", "authorization", "bearer",
+]);
+const SECRET_PAIRS: Array<[string, string]> = [
+  ["api", "key"], ["access", "key"], ["private", "key"], ["secret", "key"], ["auth", "key"],
+  ["session", "key"], ["auth", "token"],
+];
+// Credential words that are safe to find inside a longer word (PGPASSWORD, SECRETKEY).
+const SECRET_INFIXES = ["password", "passwd", "secret", "apikey", "credential"];
 function isSecretName(name: string): boolean {
-  const seg = name.toLowerCase().split(/[_.\-]+/).filter(Boolean);
-  if (seg.some((s) => SECRET_SEGMENTS.has(s))) return true;
+  // camelCase parts too: accessToken, clientSecret.
+  const seg = name.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase().split(/[_.\-]+/).filter(Boolean);
+  if (seg.some((s) => SECRET_SEGMENTS.has(s) || SECRET_INFIXES.some((w) => s.includes(w)))) return true;
+  // The Cookie header itself, not names that merely mention cookies (COOKIE_DOMAIN).
+  if (seg.length === 1 && seg[0] === "cookie") return true;
   return SECRET_PAIRS.some(([a, b]) => seg.some((s, i) => s === a && seg[i + 1] === b));
 }
 

@@ -379,4 +379,20 @@ describe("Baker Street PR #33 Moriarty repairs", () => {
   test("a Codex refusal names the server and its source", () => {
     expect(() => compile("codex", "stdio", { command: "/x", env: { A: "${env:lower}" } })).toThrow(/mcp\/srv\/mcp\.json: MCP "srv"/);
   });
+
+  test("an Authorization header spelled twice is refused for Codex wherever it sits among the headers", () => {
+    for (const headers of [
+      { "A-A": "1", "a-a": "2", authorization: "Bearer ${env:X}", Authorization: "Bearer ${env:Y}" },
+      { "A-A": "1", "a-a": "2", Authorization: "Bearer ${env:X}", authorization: "Basic lit" },
+    ]) {
+      expect(() => codex("http", { url: "https://h", headers })).toThrow(/twice/);
+    }
+  });
+
+  test("credential names in camelCase, compound or header form still warn", () => {
+    const names = ["accessToken", "authToken", "clientSecret", "refreshToken", "PGPASSWORD", "AUTH_KEY", "SESSION_KEY", "SECRETKEY", "DB_PASS", "PASSPHRASE", "GITHUB_PAT", "BEARER", "API_KEY", "AUTH_TOKEN"];
+    const env = Object.fromEntries(names.map((n) => [n, "value"]));
+    expect(detectPlaintextSecrets({ command: "/x", env }).map((w) => w.field.slice(4)).sort()).toEqual([...names].sort());
+    expect(detectPlaintextSecrets({ url: "https://h", headers: { Cookie: "c=1", "X-Auth-Key": "k" } }).map((w) => w.field).sort()).toEqual(["headers.Cookie", "headers.X-Auth-Key"]);
+  });
 });
