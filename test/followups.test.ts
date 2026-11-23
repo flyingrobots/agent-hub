@@ -387,12 +387,13 @@ describe("Ownership is compared by physical path, not spelling (Baker Street PR 
 
   test("symlinked ~/.config: XDG unset then $HOME/.config is zero-conflict and keeps every link", () => {
     const { home, base } = dotfilesSandbox();
-    bothSpellings(home, base, undefined, join(home, ".config"));
+    // "" means unset without falling back to the runner's own XDG_CONFIG_HOME (CI sets one).
+    bothSpellings(home, base, "", join(home, ".config"));
   });
 
   test("symlinked ~/.config: XDG $HOME/.config then unset is zero-conflict and keeps every link", () => {
     const { home, base } = dotfilesSandbox();
-    bothSpellings(home, base, join(home, ".config"), undefined);
+    bothSpellings(home, base, join(home, ".config"), "");
   });
 
   test("a HOME given through a symlinked alias syncs with zero conflicts after a canonical-HOME sync", () => {
