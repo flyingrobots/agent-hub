@@ -894,6 +894,8 @@ export function wantsHuman(argv: readonly string[]): boolean {
       continue;
     }
     if (a === "--human" || a === "--humanize") return true;
+    // Everything after "--" belongs to another program (sync-agents exec).
+    if (a === "--") return false;
   }
   return false;
 }

@@ -52,6 +52,7 @@ export type LinkActionKind =
   | "drop-absent-link"
   | "drop-duplicate-record"
   | "rekey-link-record"
+  | "record-shared-link"
   | "conflict";
 
 export type PlannedLinkOp = {
@@ -60,8 +61,13 @@ export type PlannedLinkOp = {
   linkKind: "rules" | "skill";
   src?: string;
   dst: string;
-  /** rekey-link-record: the spelling the record is stored under now. */
+  /**
+   * rekey-link-record: the spelling the record is stored under now. record-shared-link: the
+   * record to copy (the same spelling when only its physical destination is being recorded).
+   */
   fromDst?: string;
+  /** The physical destination to record when several desired spellings share this link. */
+  sharedPhysical?: string;
   basis?: OwnershipBasis;
   beforeSnapshot: TargetSnapshot;
   srcSnapshot?: Extract<TargetSnapshot, { kind: "tree" }>;
@@ -599,11 +605,15 @@ export function planLinkSync(
   for (const dup of [...duplicateKeys].sort()) {
     // A scoped run only retires duplicates it can attribute to an active target; the others are
     // kept untouched (and are skipped by the prune loop below), like any excluded target's record.
+    // Both spellings count: a duplicate under an excluded target's spelling (~/.claude/skills/x
+    // beside ~/.codex/skills/x in a shared directory) is that target's record, whichever spelling
+    // holds the primary. A spelling no target resolves (an aliased HOME) is attributed through
+    // the other.
     if (scoped) {
       const primary = recordedByPhysical.get(physicalPath(dup))!;
-      const owner =
-        resolveLinkTargetId(primary, homeDir, configBase) ?? resolveLinkTargetId(dup, homeDir, configBase);
-      if (owner === null || !opts.activeTargets!.has(owner)) continue;
+      const owners = [resolveLinkTargetId(primary, homeDir, configBase), resolveLinkTargetId(dup, homeDir, configBase)]
+        .filter((o): o is AgentId => o !== null);
+      if (owners.length === 0 || !owners.every((o) => opts.activeTargets!.has(o))) continue;
     }
     const rec = state.links[dup]!;
     plans.push({
@@ -625,6 +635,29 @@ export function planLinkSync(
       },
     });
   }
+  // Records that name a shared link by its recorded physical destination although their own
+  // spelling no longer resolves there: the directory holding that spelling was split off, and the
+  // other agents' spellings still reach the link agent-hub made.
+  const splitFromByPhysical = new Map<string, string>();
+  for (const key of Object.keys(state.links).sort()) {
+    const stored = state.links[key]!.physical;
+    if (stored === undefined || duplicateKeys.has(key) || physicalPath(key) === stored) continue;
+    if (!splitFromByPhysical.has(stored)) splitFromByPhysical.set(stored, key);
+  }
+  const desiredByPhysical = new Map<string, number>();
+  for (const dst of desired.keys()) {
+    const phys = physicalPath(dst);
+    desiredByPhysical.set(phys, (desiredByPhysical.get(phys) ?? 0) + 1);
+  }
+  // Records the physical destination on the record of a link several desired spellings share,
+  // when it is not recorded yet (ledger-only; a ledger from before #37 is upgraded this way).
+  const recordShared = (key: string, plan: PlannedLinkOp, shared: string | undefined): PlannedLinkOp[] => {
+    if (shared === undefined) return [plan];
+    plan.sharedPhysical = shared;
+    const rec = state.links[key];
+    if (plan.actionKind !== "keep" || !rec || rec.physical === shared) return [plan];
+    return [sharedRecordOp(key, key, rec, shared), plan];
+  };
   const desiredPhysical = new Set<string>();
   // Two desired spellings can name one physical link (~/.codex/skills a symlink to
   // ~/.claude/skills). It is one object: plan it once, under the spelling that holds its record,
@@ -637,9 +670,21 @@ export function planLinkSync(
     desiredPhysical.add(phys);
     if (plannedPhysical.has(phys)) continue;
     plannedPhysical.add(phys);
+    const shared = (desiredByPhysical.get(phys) ?? 0) > 1 ? phys : undefined;
     const recordedKey = state.links[dst] ? dst : (recordedByPhysical.get(phys) ?? dst);
     const stagedSrcDir =
       entry.skillName !== undefined ? opts.plannedSkillSources?.get(entry.skillName) : undefined;
+    const splitFrom = recordedKey === dst && !state.links[dst] ? splitFromByPhysical.get(phys) : undefined;
+    if (splitFrom !== undefined) {
+      // The link is still the one recorded under splitFrom before its directory was split off.
+      // It stays owned only if it is unchanged; then this spelling gets its own copy of the record.
+      const rec = state.links[splitFrom]!;
+      const plan = planDesiredLinkOp(dst, entry.src, entry.kind, stagedSrcDir, rec, opts);
+      plan.sharedPhysical = shared;
+      if (plan.actionKind === "keep") plans.push(sharedRecordOp(dst, splitFrom, rec, shared));
+      plans.push(plan);
+      continue;
+    }
     // Re-key only a record that names this destination for the same target under a spelling no
     // longer desired. A record held by another desired spelling, or attributed to another target
     // (an excluded one included), stays where it is.
@@ -650,7 +695,13 @@ export function planLinkSync(
       // physical spelling and that one is not (both targets are in this run).
       const intoPhysical = desired.has(recordedKey) && symlinksIn(dst) < symlinksIn(recordedKey);
       if (!intoPhysical && (desired.has(recordedKey) || (recordedOwner !== null && recordedOwner !== dstOwner))) {
-        plans.push(planDesiredLinkOp(recordedKey, entry.src, entry.kind, stagedSrcDir, state.links[recordedKey], opts));
+        plans.push(
+          ...recordShared(
+            recordedKey,
+            planDesiredLinkOp(recordedKey, entry.src, entry.kind, stagedSrcDir, state.links[recordedKey], opts),
+            shared,
+          ),
+        );
         continue;
       }
     }
@@ -678,7 +729,16 @@ export function planLinkSync(
         },
       });
     }
-    plans.push(planDesiredLinkOp(dst, entry.src, entry.kind, stagedSrcDir, state.links[recordedKey], opts));
+    const desiredPlan = planDesiredLinkOp(dst, entry.src, entry.kind, stagedSrcDir, state.links[recordedKey], opts);
+    if (shared === undefined) {
+      plans.push(desiredPlan);
+    } else if (recordedKey !== dst && desiredPlan.actionKind === "keep" && state.links[recordedKey]!.physical !== shared) {
+      // Re-keyed above; record the physical destination on the moved record.
+      desiredPlan.sharedPhysical = shared;
+      plans.push(sharedRecordOp(dst, dst, state.links[recordedKey]!, shared), desiredPlan);
+    } else {
+      plans.push(...recordShared(recordedKey, desiredPlan, shared));
+    }
   }
 
   // Prune ONLY verified v2 state.links records for ACTIVE targets.
@@ -694,6 +754,47 @@ export function planLinkSync(
   }
 
   return plans;
+}
+
+function sharedRecordOp(
+  dst: string,
+  fromDst: string,
+  rec: ManagedLinkRecord,
+  shared: string | undefined,
+): PlannedLinkOp {
+  const copy = dst !== fromDst;
+  return {
+    actionKind: "record-shared-link",
+    linkKind: rec.kind,
+    dst,
+    fromDst,
+    ...(shared !== undefined ? { sharedPhysical: shared } : {}),
+    beforeSnapshot: { kind: "absent" },
+    op: {
+      domain: "link",
+      action: "record-shared-link",
+      status: "change",
+      destination: dst,
+      observed: copy
+        ? `unchanged managed symlink recorded under ${fromDst}, whose directory was split off`
+        : `managed symlink shared by several agents' skills directories, physical destination not recorded`,
+      intended: copy
+        ? "record this spelling's own ownership of the link; the link itself is unchanged"
+        : `record the physical destination ${shared} on the ownership record; the link itself is unchanged`,
+      ownershipBasis: rec.basis,
+      reason: copy
+        ? "the link agent-hub made is still reached through this spelling after the shared directory was split"
+        : "splitting any one of the shared directories must leave every agent's link owned",
+      targetMutation: false,
+      ledgerMutation: true,
+    },
+  };
+}
+
+/** A new or rewritten record, carrying the shared physical destination when there is one. */
+function withPhysical(rec: ManagedLinkRecord, physical: string | undefined): ManagedLinkRecord {
+  const { physical: _old, ...rest } = rec;
+  return physical !== undefined ? { ...rest, physical } : rest;
 }
 
 function atomicCreateOrReplaceSymlink(src: string, dst: string): void {
@@ -738,12 +839,10 @@ export function applyLinkOp(
         `stale snapshot: ${plan.dst} changed after planning; refusing ledger adoption`,
       );
     }
-    const rec: ManagedLinkRecord = {
-      kind: plan.linkKind,
-      target: plan.src!,
-      basis: "adopted",
-      updatedAt: now,
-    };
+    const rec = withPhysical(
+      { kind: plan.linkKind, target: plan.src!, basis: "adopted", updatedAt: now },
+      plan.sharedPhysical,
+    );
     hooks?.beforeLedgerOnlyCommit?.(`adopt-symlink ${plan.dst}`);
     const nextState = applyStateDelta(state, {
       kind: "link-set",
@@ -765,6 +864,20 @@ export function applyLinkOp(
       ...applyStateDelta(moved, { kind: "link-set", destination: plan.dst, record: rec }),
       generation: state.generation + 1,
     };
+    saveOwnershipState(statePath, nextState);
+    return nextState;
+  }
+
+  if (plan.actionKind === "record-shared-link") {
+    // Ledger-only: copy the record to this spelling, or record its shared physical destination.
+    const rec = state.links[plan.fromDst!];
+    if (!rec) throw new Error(`record-shared-link: no ownership record at ${plan.fromDst}`);
+    hooks?.beforeLedgerOnlyCommit?.(`record-shared-link ${plan.fromDst} -> ${plan.dst}`);
+    const nextState = applyStateDelta(state, {
+      kind: "link-set",
+      destination: plan.dst,
+      record: withPhysical(rec, plan.sharedPhysical),
+    });
     saveOwnershipState(statePath, nextState);
     return nextState;
   }
@@ -838,12 +951,10 @@ export function applyLinkOp(
     return nextState;
   }
 
-  const newRecord: ManagedLinkRecord = {
-    kind: plan.linkKind,
-    target: plan.src!,
-    basis: plan.basis ?? "created",
-    updatedAt: now,
-  };
+  const newRecord = withPhysical(
+    { kind: plan.linkKind, target: plan.src!, basis: plan.basis ?? "created", updatedAt: now },
+    plan.sharedPhysical,
+  );
   const afterSnapshot: TargetSnapshot = {
     kind: "symlink",
     target: plan.src!,

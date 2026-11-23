@@ -12,7 +12,9 @@
     "message",
     "key",
     "env",
-    "argv"
+    "argv",
+    "program",
+    "keep"
   ],
   "additionalProperties": false,
   "properties": {
@@ -63,6 +65,17 @@
     "server": {
       "type": "string",
       "description": "The hub server the grant was made for."
+    },
+    "program": {
+      "type": "string",
+      "description": "The real path of argv[0] when the grant was made; exec runs only that program."
+    },
+    "keep": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "The exact set of variables exec passes through from the agent (--keep)."
     }
   }
 }

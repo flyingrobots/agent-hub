@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import Ajv2020 from "ajv/dist/2020";
@@ -228,7 +228,7 @@ describe("vault-backed exec (flyingrobots/agent-hub#10)", () => {
     expect(r.exitCode).toBe(0);
     expect(r.raw).not.toContain(SECRET);
     const grants = r.decode().events.filter((e) => e.kind === "grant");
-    expect(grants.map((g) => [g.key, g.env, g.argv])).toEqual([["k", "T", SH_ARGV]]);
+    expect(grants.map((g) => [g.key, g.env, g.argv, g.program, g.keep])).toEqual([["k", "T", SH_ARGV, realpathSync("/bin/sh"), ["A"]]]);
   });
 
   test("every exec-audit.jsonl line validates against schemas/files/agent_hub.exec_audit.schema.json", () => {
@@ -240,5 +240,152 @@ describe("vault-backed exec (flyingrobots/agent-hub#10)", () => {
     const lines = readFileSync(m.statePath("exec-audit.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l));
     expect(lines.map((l) => l.outcome)).toEqual(["refused", "exec"]);
     for (const l of lines) expect(validate(l)).toBe(true);
+  });
+
+});
+
+describe("vault exec repairs (Baker Street PR #48 Moriarty)", () => {
+  const keychainCalls = (kc: string) => (existsSync(join(kc, "argv.log")) ? readFileSync(join(kc, "argv.log"), "utf8") : "");
+
+  test("a vault server needs an absolute command; a relative one is refused at sync", () => {
+    const m = machine();
+    m.server("s", { mcp: { command: "printenv", args: ["T"], env: { T: "${vault:k}" } } });
+    expect(run(["--dir", m.hub], m.env).exitCode).not.toBe(0);
+    expect(existsSync(join(m.home, ".claude.json"))).toBe(false);
+  });
+
+  test("exec refuses a relative command, so PATH cannot pick a different program", () => {
+    const m = grantedMachine();
+    const evil = join(m.home, "evil");
+    mkdirSync(evil);
+    writeFileSync(join(evil, "sh"), "#!/bin/sh\necho STOLEN=$T\n");
+    chmodSync(join(evil, "sh"), 0o755);
+    const r = run(["exec", "--keep", "A", "--vault", "T=k", "--", "sh", ...SH_ARGV.slice(1)], { ...m.env, PATH: `${evil}:${m.env.PATH}` });
+    expect(r.exitCode).toBe(1);
+    expect(r.raw).not.toContain(SECRET);
+    expect(r.raw).not.toContain("STOLEN");
+  });
+
+  test("a grant binds the real program: retargeting a symlinked command is refused", () => {
+    const m = machine();
+    const bin = join(m.home, "bin");
+    mkdirSync(bin);
+    const good = join(bin, "good");
+    const bad = join(bin, "bad");
+    writeFileSync(good, "#!/bin/sh\necho good\n");
+    writeFileSync(bad, "#!/bin/sh\necho STOLEN=$T\n");
+    chmodSync(good, 0o755);
+    chmodSync(bad, 0o755);
+    const link = join(bin, "server");
+    symlinkSync(good, link);
+    m.server("s", { mcp: { command: link, env: { T: "${vault:k}" } } });
+    expect(run(["secret", "set", "k"], m.env, `${SECRET}\n`).exitCode).toBe(0);
+    expect(run(["secret", "grant", "k", "--to", "s", "--dir", m.hub], m.env).exitCode).toBe(0);
+    expect(run(["exec", "--vault", "T=k", "--", link], m.env).stdout).toBe("good\n");
+    unlinkSync(link);
+    symlinkSync(bad, link);
+    const r = run(["exec", "--vault", "T=k", "--", link], m.env);
+    expect(r.exitCode).toBe(1);
+    expect(r.raw).not.toContain("STOLEN");
+  });
+
+  test("a --keep set that differs from the grant is refused (no smuggled BASH_ENV or loader variables)", () => {
+    const m = grantedMachine();
+    for (const keep of [["A", "BASH_ENV"], ["A", "DYLD_INSERT_LIBRARIES"], []]) {
+      const r = run(["exec", ...keep.flatMap((k) => ["--keep", k]), "--vault", "T=k", "--", ...SH_ARGV], { ...m.env, A: "1", BASH_ENV: "/x" });
+      expect(r.exitCode).toBe(1);
+      expect(r.raw).not.toContain(SECRET);
+    }
+  });
+
+  test("an argv with an extra argument appended or prepended is refused", () => {
+    const m = grantedMachine();
+    for (const argv of [[...SH_ARGV, "extra"], [SH_ARGV[0]!, "-e", ...SH_ARGV.slice(1)]]) {
+      const r = run(["exec", "--keep", "A", "--vault", "T=k", "--", ...argv], m.env);
+      expect(r.exitCode).toBe(1);
+      expect(r.raw).not.toContain(SECRET);
+    }
+  });
+
+  test("one granted and one ungranted pair is refused before the keychain is read", () => {
+    const m = grantedMachine();
+    expect(run(["secret", "set", "other"], m.env, "FAKE-other-value\n").exitCode).toBe(0);
+    const before = keychainCalls(m.kc);
+    const r = run(["exec", "--keep", "A", "--vault", "T=k", "--vault", "U=other", "--", ...SH_ARGV], m.env);
+    expect(r.exitCode).toBe(1);
+    expect(keychainCalls(m.kc)).toBe(before);
+  });
+
+  test("a vault reference in headers or in extra is refused at sync, and no config gains it", () => {
+    for (const doc of [
+      { mcp: { url: "https://h.invalid", headers: { "X-Key": "${vault:k}" } } },
+      { mcp: { command: "/bin/sh", env: { T: "${vault:k}" } }, overrides: { codex: { extra: { startup_timeout_sec: "${vault:k}" } } } },
+      { mcp: { command: "/bin/sh" }, overrides: { codex: { extra: { tool_note: { x: "${vault:k}" } } } } },
+    ]) {
+      const m = machine();
+      mkdirSync(join(m.home, ".codex"), { recursive: true });
+      m.server("s", doc);
+      expect(run(["--dir", m.hub], m.env).exitCode).not.toBe(0);
+      for (const f of [join(m.home, ".claude.json"), join(m.home, ".codex", "config.toml")]) {
+        if (existsSync(f)) expect(readFileSync(f, "utf8")).not.toContain("${vault:");
+      }
+    }
+  });
+
+  test("exec does not run when its audit line cannot be written", () => {
+    const m = grantedMachine();
+    const dir = m.statePath("");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "exec-audit.jsonl"), "");
+    chmodSync(join(dir, "exec-audit.jsonl"), 0o400);
+    const r = run(["exec", "--keep", "A", "--vault", "T=k", "--", ...SH_ARGV], m.env);
+    chmodSync(join(dir, "exec-audit.jsonl"), 0o600);
+    expect(r.exitCode).toBe(1);
+    expect(r.stdout).toBe("");
+  });
+
+  test("--human after -- belongs to the program: exec's own errors stay JSON lines", () => {
+    const m = machine();
+    const r = run(["exec", "--vault", "T=k", "--", "/usr/bin/printenv", "--human", "T"], m.env);
+    expect(r.exitCode).toBe(1);
+    expect(r.decode().events.filter((e) => e.kind === "error").length).toBe(1);
+  });
+
+  test("concurrent secret grant runs keep every grant", async () => {
+    const m = machine();
+    for (let i = 0; i < 6; i++) m.server(`s${i}`, { mcp: { command: "/bin/sh", args: ["-c", `echo ${i}`], env: { T: "${vault:k}" } } });
+    const procs = Array.from({ length: 6 }, (_, i) =>
+      Bun.spawn(["bun", ENGINE, "secret", "grant", "k", "--to", `s${i}`, "--dir", m.hub], { env: m.env, stdout: "pipe", stderr: "pipe" }),
+    );
+    const codes = await Promise.all(procs.map((p) => p.exited));
+    expect(codes).toEqual([0, 0, 0, 0, 0, 0]);
+    const grants = JSON.parse(readFileSync(m.statePath("grants.json"), "utf8")).grants;
+    expect(grants.map((g: { server: string }) => g.server).sort()).toEqual(["s0", "s1", "s2", "s3", "s4", "s5"]);
+  });
+
+  test("secret list accepts --human", () => {
+    const m = grantedMachine();
+    const r = run(["secret", "list", "--human"], m.env);
+    expect(r.exitCode).toBe(0);
+    expect(r.raw).toContain("1 grant(s)");
+  });
+});
+
+
+describe("compileVaultSpec refuses a vault reference everywhere but a whole stdio env value", () => {
+  test("headers, url, command, args, extra, a partial env value and a relative command are each refused, naming the field", async () => {
+    const { compileVaultSpec } = await import("../src/vault.ts");
+    const cases: Array<[Record<string, unknown>, string]> = [
+      [{ url: "https://h.invalid", headers: { "X-Key": "${vault:k}" } }, "headers.X-Key"],
+      [{ url: "https://h.invalid/${vault:k}" }, "url"],
+      [{ command: "/x${vault:k}" }, "command"],
+      [{ command: "/x", args: ["${vault:k}"] }, "args[0]"],
+      [{ command: "/x", extra: { a: { b: ["${vault:k}"] } } }, "extra.a.b[0]"],
+      [{ command: "/x", env: { T: "Bearer ${vault:k}" } }, "env.T"],
+      [{ command: "x", env: { T: "${vault:k}" } }, "absolute command"],
+    ];
+    for (const [spec, field] of cases) {
+      expect(() => compileVaultSpec(spec as never, "/sa")).toThrow(field);
+    }
   });
 });
