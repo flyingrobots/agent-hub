@@ -109,7 +109,9 @@ Limits worth knowing:
   (`"Bearer ${env:X}-suffix"`), is refused for Codex. In `env` the key must be the variable's own
   name (`GITHUB_TOKEN = "${env:GITHUB_TOKEN}"`; `TOKEN = "${env:GH_TOKEN}"` is refused). The
   `Authorization` header name is matched in any case; the value must be exactly
-  `Bearer ${env:X}` with one space.
+  `Bearer ${env:X}` with one space, and a header set twice in different capitalizations is
+  refused. Only fields the transport writes are checked (a stdio server's leftover `headers`
+  are ignored).
 - Antigravity expands nothing, so a server that needs a reference is refused there; disable it
   for Antigravity, or give Antigravity a literal in `overrides.antigravity` (which keeps one
   plaintext copy, and is reported as below).
@@ -135,8 +137,10 @@ overrides and `<target>/mcp.json` files, as each target resolves them); a field 
 several targets is reported once. It does not refuse, and the exit code is
 unchanged; the value is never printed. It checks for known token patterns (`sk-…`, `ghp_…`, `github_pat_…`,
 Slack `xox?-…`, Google `AIza…`, AWS `AKIA…`, PEM private keys), any literal under an `env` key or
-header name that suggests a credential (`token`, `secret`, `password`, `api_key`, `auth`,
-`credential`, `private_key`, `session`, `cookie`), and a URL with an embedded user and password.
+header name with a credential word as one of its parts (split on `_`, `-` and `.`: `token`,
+`secret`, `password`, `passwd`, `pwd`, `apikey`, `credential(s)`, `authorization`, `bearer`, or
+the pairs `api key`, `access key`, `private key`, `secret key`, `auth token`), and a URL with an
+embedded user and password.
 These are known token patterns and secret-bearing field names, not a scanner: a secret in any
 other shape is not noticed. To keep a literal you intend, name its field:
 
@@ -146,8 +150,10 @@ other shape is not noticed. To keep a literal you intend, name its field:
 
 `allowPlaintextFields` sits at the top level of `<hub>/mcp/<server>/mcp.json`, next to `mcp` and
 `overrides`, and applies to every target's resolved spec. Field paths are `command`, `args[i]`,
-`env.<KEY>`, `url` and `headers.<Name>`. Name matching is case-insensitive and by substring, so
-`X-Session-Id` or `AUTH_MODE` with a non-secret value is reported too: list such fields.
+`env.<KEY>`, `url` and `headers.<Name>`. Name matching is case-insensitive and by whole parts, so
+`GIT_AUTHOR_NAME`, `MAX_TOKENS` or `X-Session-Id` are not reported; a non-secret
+`SECRET_FILE` is, and can be listed. Paths match exactly (case-sensitive), and an entry naming
+a field that does not exist is accepted silently.
 
 ## What each target receives
 

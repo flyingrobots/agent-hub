@@ -339,3 +339,44 @@ describe("references through a real sync, every native target (Baker Street PR #
     expect(w.map((e) => String(e.data.source).endsWith(path.join("mcp", "gh", "cursor", "mcp.json")))).toEqual([true]);
   });
 });
+
+describe("Baker Street PR #33 Moriarty repairs", () => {
+  const codex = (t: McpTransport, spec: McpServerSpec) => compile("codex", t, spec);
+  test("Codex refuses a header set twice in different case, and a reference with text after it in any header", () => {
+    expect(() => codex("http", { url: "https://h", headers: { authorization: "Bearer ${env:X}", Authorization: "Bearer ${env:Y}" } })).toThrow(/twice/);
+    expect(() => codex("http", { url: "https://h", headers: { "X-Key": "${env:X}-suffix" } })).toThrow(/Codex/);
+    // Bearer mapping is for Authorization only.
+    expect(() => codex("http", { url: "https://h", headers: { "X-Token": "Bearer ${env:X}" } })).toThrow(/Codex/);
+  });
+
+  test("a Codex env key that is not a variable name gets a refusal that says so", () => {
+    expect(() => codex("stdio", { command: "/x", env: { "A.B": "${env:AB}" } })).toThrow(/not a valid variable name/);
+  });
+
+  test("Codex env_vars compare as a set, sorted on write", () => {
+    const out = codex("stdio", { command: "/x", env: { ZED: "${env:ZED}", ALPHA: "${env:ALPHA}" } });
+    expect(out.env_vars).toEqual(["ALPHA", "ZED"]);
+    const { normalizeCodexComparable } = require("../src/toml-edit.ts") as typeof import("../src/toml-edit.ts");
+    expect(normalizeCodexComparable({ command: "/x", env_vars: ["ZED", "ALPHA"] })).toEqual(normalizeCodexComparable({ command: "/x", env_vars: ["ALPHA", "ZED"] }));
+    expect(normalizeCodexComparable({ command: "/x", env_vars: [] })).toEqual({ command: "/x" });
+  });
+
+  test("only fields the transport writes are checked for Antigravity and Codex", () => {
+    expect(() => compile("antigravity", "stdio", { command: "/x", headers: { H: "${env:H}" } })).not.toThrow(/expand/);
+    expect(() => codex("http", { url: "https://h", command: "${env:C}" })).not.toThrow(/command/);
+  });
+
+  test("common non-secret names do not warn; the docs' Bearer reference does not warn", () => {
+    const names = ["GIT_AUTHOR_NAME", "MAX_TOKENS", "AUTH_MODE", "OAUTH_CLIENT_ID", "SESSION_DIR", "COOKIE_DOMAIN"];
+    const env = Object.fromEntries(names.map((n) => [n, "value"]));
+    expect(detectPlaintextSecrets({ command: "/x", env, headers: undefined })).toEqual([]);
+    expect(detectPlaintextSecrets({ url: "https://h", headers: { "X-Session-Id": "abc", Authorization: "Bearer ${env:EXAMPLE_TOKEN}" } })).toEqual([]);
+    expect(detectPlaintextSecrets({ command: "/x", env: { ACCESS_KEY: "v", "X-Api-Key": "v" } }).map((w) => w.field).sort()).toEqual(["env.ACCESS_KEY", "env.X-Api-Key"]);
+    // Text on both sides of a reference is not one token.
+    expect(detectPlaintextSecrets({ command: "/x", args: ["sk-abcdefgh${env:X}ijklmnopqrst"] })).toEqual([]);
+  });
+
+  test("a Codex refusal names the server and its source", () => {
+    expect(() => compile("codex", "stdio", { command: "/x", env: { A: "${env:lower}" } })).toThrow(/mcp\/srv\/mcp\.json: MCP "srv"/);
+  });
+});

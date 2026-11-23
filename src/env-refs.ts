@@ -107,7 +107,15 @@ const TOKEN_PATTERNS: Array<[RegExp, string]> = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----/, "looks like a PEM private key"],
 ];
 // Field names that usually hold a credential.
-const SECRET_NAME = /(token|secret|passw(or)?d|api[_-]?key|apikey|auth|credential|private[_-]?key|session|cookie)/i;
+// Matched against a name's segments (split on _, - and .), so AUTHOR, MAX_TOKENS or
+// X-Session-Id do not count; API_KEY, X-Api-Key, ACCESS_KEY and PRIVATE_KEY do.
+const SECRET_SEGMENTS = new Set(["token", "secret", "password", "passwd", "pwd", "apikey", "credential", "credentials", "authorization", "bearer"]);
+const SECRET_PAIRS: Array<[string, string]> = [["api", "key"], ["access", "key"], ["private", "key"], ["secret", "key"], ["auth", "token"]];
+function isSecretName(name: string): boolean {
+  const seg = name.toLowerCase().split(/[_.\-]+/).filter(Boolean);
+  if (seg.some((s) => SECRET_SEGMENTS.has(s))) return true;
+  return SECRET_PAIRS.some(([a, b]) => seg.some((s, i) => s === a && seg[i + 1] === b));
+}
 
 /**
  * Literal values that look like credentials: a known token pattern anywhere, any non-empty
@@ -119,23 +127,24 @@ export function detectPlaintextSecrets(spec: McpServerSpec, allow: readonly stri
   const warnings: PlaintextWarning[] = [];
   for (const [field, value] of specFields(spec)) {
     if (allowed.has(field)) continue;
-    let literal: string;
+    // Each literal part on its own: text on two sides of a reference was never contiguous.
+    let parts: string[];
     try {
-      literal = parseEnvRefs(value)
+      parts = parseEnvRefs(value)
         .filter((p) => p.kind === "literal")
-        .map((p) => (p as { text: string }).text)
-        .join("");
+        .map((p) => (p as { text: string }).text);
     } catch {
-      literal = value;
+      parts = [value];
     }
-    const pattern = TOKEN_PATTERNS.find(([re]) => re.test(literal));
+    const literal = parts.join(" ");
+    const pattern = TOKEN_PATTERNS.find(([re]) => parts.some((p) => re.test(p)));
     if (pattern) {
       warnings.push({ field, reason: pattern[1] });
       continue;
     }
     const name = field.startsWith("env.") ? field.slice(4) : field.startsWith("headers.") ? field.slice(8) : null;
     // "Bearer " or "Basic " alone is the scheme, not the credential.
-    if (name !== null && SECRET_NAME.test(name) && literal.replace(/^(Bearer|Basic|Token)\s*/i, "").trim().length > 0) {
+    if (name !== null && isSecretName(name) && literal.replace(/^(Bearer|Basic|Token)\s*/i, "").trim().length > 0) {
       warnings.push({ field, reason: `"${name}" usually holds a credential and has a literal value` });
       continue;
     }
