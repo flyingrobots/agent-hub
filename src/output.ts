@@ -72,8 +72,25 @@ function guardStreams(): void {
   guarded = true;
   for (const name of ["stdout", "stderr"] as const) {
     process[name].on("error", (err: NodeJS.ErrnoException) => {
-      if (err.code === "EPIPE") closed[name] = true;
-      else throw err;
+      closed[name] = true;
+      if (err.code === "EPIPE") return;
+      // Any other write failure (a full disk, a bad descriptor) is a failed run: say so on the
+      // other stream if it is still open, and exit 1.
+      process.exitCode = 1;
+      const other = name === "stdout" ? "stderr" : "stdout";
+      if (!closed[other]) {
+        const line = renderJsonLine({
+          stream: other,
+          id: "agent_hub.error",
+          message: `sync-agents: cannot write to ${name}: ${err.message}`,
+          data: { code: "internal", detail: `${err.code ?? "error"} writing ${name}` },
+        });
+        try {
+          process[other].write(`${line}\n`);
+        } catch {
+          // nothing more can be reported
+        }
+      }
     });
   }
 }
@@ -87,8 +104,8 @@ export function writeEvents(events: readonly OutputEvent[], human: boolean): voi
     try {
       process[e.stream].write(`${line}\n`);
     } catch (err) {
-      if ((err as NodeJS.ErrnoException).code === "EPIPE") closed[e.stream] = true;
-      else throw err;
+      closed[e.stream] = true;
+      if ((err as NodeJS.ErrnoException).code !== "EPIPE") process.exitCode = 1;
     }
   }
 }

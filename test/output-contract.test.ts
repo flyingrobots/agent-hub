@@ -3,7 +3,7 @@ import Ajv2020 from "ajv/dist/2020";
 import { chmodSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { CLI_USAGE } from "../src/cli.ts";
+import { CLI_USAGE, cliMain } from "../src/cli.ts";
 import { SCHEMAS } from "../src/output.ts";
 import { decodeOutput, decodeStream } from "./jsonl.ts";
 
@@ -196,20 +196,30 @@ describe("JSON Lines output contract (flyingrobots/agent-hub#5)", () => {
   });
 
   test("an uncaught throw in the engine becomes one agent_hub.error line with code internal, exit 1", () => {
-    if (process.getuid?.() === 0) return;
-    const { home, env } = sandbox();
-    mkdirSync(join(home, "locked", "sub"), { recursive: true });
-    chmodSync(join(home, "locked"), 0o000);
-    try {
-      const r = raw(["bun", ENGINE, "--print-dir", "--dir", join(home, "locked", "sub", "hub")], env);
-      expect(r.exitCode).toBe(1);
-      expect(r.stdout).toBe("");
-      const { events } = decodeStream(r.stderr, "stderr");
-      expect(events.length).toBe(1);
-      expect(events[0]!.code).toBe("internal");
-    } finally {
-      chmodSync(join(home, "locked"), 0o755);
+    // In-process, so it holds on every platform: the sync itself throws.
+    const writes: Array<["stdout" | "stderr", string]> = [];
+    const orig = { stdout: process.stdout.write, stderr: process.stderr.write };
+    for (const name of ["stdout", "stderr"] as const) {
+      (process[name] as unknown as { write: (s: string) => boolean }).write = (chunk: string) => {
+        writes.push([name, String(chunk)]);
+        return true;
+      };
     }
+    let code: number;
+    try {
+      code = cliMain(["--targets", "claude"], "sync-agents", CLI_USAGE, false, () => {
+        throw new Error("boom");
+      });
+    } finally {
+      process.stdout.write = orig.stdout;
+      process.stderr.write = orig.stderr;
+    }
+    expect(code).toBe(1);
+    expect(writes.filter(([n]) => n === "stdout")).toEqual([]);
+    const { events } = decodeStream(writes.map(([, c]) => c).join(""), "stderr");
+    expect(events.length).toBe(1);
+    expect(events[0]!.code).toBe("internal");
+    expect(String(events[0]!.message)).toContain("boom");
   });
 
   test("a child process's stderr (tar, unzip) arrives inside a valid error line, never as raw text", () => {
@@ -325,5 +335,19 @@ describe("JSON Lines output contract (flyingrobots/agent-hub#5)", () => {
         expect(w.some((e) => e.kind === "print_dir" || e.kind === "help")).toBe(false);
       }
     }
+  });
+
+  test("a write failure other than a closed pipe is an error line on the other stream and exit 1, not a crash", () => {
+    const { home, hub, env } = sandbox();
+    // stdout opened read-only: every write to it fails with EBADF.
+    const p = Bun.spawnSync(["bash", "-c", `exec 1</dev/null; bun "${ENGINE}" --dir "${hub}" --targets claude --dry-run`], {
+      env,
+      cwd: home,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    expect(p.exitCode).toBe(1);
+    const { events } = decodeStream(p.stderr.toString(), "stderr");
+    expect(events.some((e) => e.kind === "error" && e.code === "internal")).toBe(true);
   });
 });

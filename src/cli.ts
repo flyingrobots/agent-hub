@@ -846,7 +846,14 @@ export function helpEvents(command: string, usage: string): OutputEvent[] {
  * The CLI boundary: parse, run, and print every outcome as events, including usage errors and
  * unexpected throws, so stdout and stderr only ever carry schema'd lines (or prose with --human).
  */
-export function cliMain(argv: string[], command = "sync-agents", usage = CLI_USAGE, mcpOnly = false): number {
+export function cliMain(
+  argv: string[],
+  command = "sync-agents",
+  usage = CLI_USAGE,
+  mcpOnly = false,
+  // The sync to run; a parameter so a test can prove that a throw becomes an error line.
+  run: typeof runSync = runSync,
+): number {
   const human = wantsHuman(argv);
   try {
     let parsed;
@@ -881,7 +888,7 @@ export function cliMain(argv: string[], command = "sync-agents", usage = CLI_USA
       return 0;
     }
     // Each line is printed as it happens, not buffered until the run ends.
-    const res = runSync({
+    const res = run({
       ...parsed.options,
       ...(mcpOnly ? { mcpOnly: true } : {}),
       onEvent: (e) => writeEvents([e], human),

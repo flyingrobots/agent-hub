@@ -48,7 +48,8 @@ Lines are printed as they happen. Every run that gets past argument parsing ends
 one `agent_hub.summary` or `agent_hub.error` line, and it is the last line of the run. For
 `applied`, `changes` is the number of `op` lines with `phase: "sync"` the run printed. A reader
 that closes the pipe early (`| head -1`) gets no more lines; the run carries on and exits as it
-would have.
+would have. Any other failure to write (a full disk, a bad descriptor) ends that stream: an
+`internal` error line goes to the other stream if it is still open, and the run exits 1.
 
 | `summary.status` | Stream | Exit | Meaning |
 | --- | --- | --- | --- |
@@ -56,7 +57,7 @@ would have.
 | `planned` | stdout | 0 | `--dry-run` or `--explain`: `changes` changes would be made; nothing was changed |
 | `applied` | stdout | 0 | A sync made `changes` changes |
 | `recovered_in_sync` | stdout | 0 | Phase 0 recovery finished, and then nothing else was needed |
-| `pending_recovery` | stdout (dry-run), stderr (`--check`) | 0, 1 with `--check` | A recovery journal is waiting; run `sync-agents` to finish it |
+| `pending_recovery` | stdout (`--dry-run`, `--explain`), stderr (`--check`) | 0, 1 with `--check` | A recovery journal is waiting; run `sync-agents` to finish it |
 | `out_of_sync` | stderr | 1 | `--check`: `changes` changes are needed |
 | `conflicts` | stderr | 1 | `conflicts` conflicts were found; nothing new was applied (each has its own `conflict` line) |
 
@@ -72,7 +73,10 @@ would have.
 | `internal` | 1 | Anything else that threw |
 
 Exit codes are unchanged from the prose output: `0` success, `1` drift, conflict or failure,
-`2` a usage error.
+`2` a usage error. One correction comes with this: `bin/sync-agents` no longer takes another
+option's value for `--help` or `--print-dir` (`--skill --print-dir` names a skill source called
+`--print-dir`), so such a command now fails as the engine always did instead of printing help or
+the hub.
 
 ## Versions
 
@@ -94,6 +98,8 @@ These are the cases where a line may not be JSON, or may not be valid UTF-8:
   segfault in a native module), or a signal that kills the process; the run then also lacks its
   final `summary` or `error` line;
 - an error from `bash` itself before the wrapper's first line runs, or `bun` failing to start;
+- `bash`'s own warnings when the current directory no longer exists (`chdir:`,
+  `job-working-directory:`), printed while the wrapper locates itself, before its error line;
 - `bin/sync-agents --print-dir` with a path that is not valid UTF-8: the wrapper copies the bytes
   into the line as they are (the engine replaces them);
 - `bin/sync-agents --help` without Bun prints only the `agent_hub.help` line, since only the

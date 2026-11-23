@@ -41,7 +41,9 @@ changes are called out under **Changed** with what to do.
   must add `--human` (alias `--humanize`) to get prose, for example
   `"$(sync-agents --print-dir --human)"`; `--help` prints JSON lines too. Earlier versions reject
   `--human` (exit 2), so change such scripts when you upgrade, not before; `sync-agents --schema`
-  exits 0 only on a version with JSON Lines. Exit codes are unchanged. The prose is the same
+  exits 0 only on a version with JSON Lines. Exit codes are unchanged, except that
+  `bin/sync-agents` no longer reads another option's value as `--help` or `--print-dir`
+  (`--skill --print-dir` now fails as the engine does). The prose is the same
   except that every run now ends with one summary or error line: a sync that changed something
   ends with `applied N change(s).`, `--dry-run` and `--explain` with `N change(s) planned`, and
   an ambiguous recovery with an error line after the recovery line, and a doubled
