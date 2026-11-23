@@ -66,6 +66,8 @@ changes are called out under **Changed** with what to do.
 
 ### Fixed
 
+- Rewriting a Codex table that holds a long hand-written multiline string whose lines start
+  with `#` no longer takes time quadratic in its length; the cut comes from the TOML scanner.
 - `src/cli.ts --print-dir` ignored a valid `agentsDir` when `disabledTargets` was
   invalid. Codex editor refusals now carry the `codex:mcp` remedy.
 - `install.sh`'s hub-overlap guard missed a hub path written with `..` under a

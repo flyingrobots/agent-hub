@@ -24,6 +24,8 @@ export type TomlSection = {
   isArrayTable: boolean;
   startOffset: number;
   endOffset: number;
+  /** Offset just past the section's last token outside a comment (strings included whole). */
+  lastTokenEnd: number;
   rootAssignments: string[][];
 };
 
@@ -211,6 +213,11 @@ export function scanTomlDocument(src: string): TomlScanResult {
   let lineStartOffset = 0;
   let atLineStart = true;
   let depth = 0;
+  // Every branch below that consumes a token (not whitespace, a newline or a comment) marks
+  // where it ended, so each section knows its last content without re-parsing.
+  const mark = () => {
+    if (currentSection) currentSection.lastTokenEnd = i;
+  };
 
   while (i < src.length) {
     const ch = src[i]!;
@@ -265,6 +272,7 @@ export function scanTomlDocument(src: string): TomlScanResult {
         }
         closePos += 1;
       }
+      const headerContentEnd = closePos;
 
       closePos = skipInlineWs(src, closePos);
       if (closePos < src.length && src[closePos] === "#") {
@@ -286,11 +294,14 @@ export function scanTomlDocument(src: string): TomlScanResult {
         isArrayTable,
         startOffset: lineStartOffset,
         endOffset: src.length,
+        lastTokenEnd: lineStartOffset,
         rootAssignments: [],
       };
       sections.push(currentSection);
 
+      // The header itself is content; a trailing comment after it is not.
       i = closePos;
+      currentSection.lastTokenEnd = headerContentEnd;
       atLineStart = false;
       continue;
     }
@@ -310,6 +321,7 @@ export function scanTomlDocument(src: string): TomlScanResult {
           }
         }
         i = keyParsed.endPos + 1;
+        mark();
         atLineStart = false;
         continue;
       }
@@ -347,6 +359,7 @@ export function scanTomlDocument(src: string): TomlScanResult {
         }
         i += 1;
       }
+      mark();
       continue;
     }
 
@@ -368,6 +381,7 @@ export function scanTomlDocument(src: string): TomlScanResult {
         }
         i += 1;
       }
+      mark();
       continue;
     }
 
@@ -393,6 +407,7 @@ export function scanTomlDocument(src: string): TomlScanResult {
         if (c === "\n" || c === "\r") break;
         i += 1;
       }
+      mark();
       continue;
     }
 
@@ -402,21 +417,25 @@ export function scanTomlDocument(src: string): TomlScanResult {
         i += 1;
       }
       if (i < src.length && src[i] === "'") i += 1;
+      mark();
       continue;
     }
 
     if (ch === "[" || ch === "{") {
       depth += 1;
       i += 1;
+      mark();
       continue;
     }
     if (ch === "]" || ch === "}") {
       depth = Math.max(0, depth - 1);
       i += 1;
+      mark();
       continue;
     }
 
     i += 1;
+    if (ch !== " " && ch !== "\t") mark();
   }
 
   return { sections, rootAssignments, bareMcpServersHasAssignments };
@@ -589,53 +608,36 @@ export function verifyTomlPreservation(
   }
 }
 
-/**
- * Offset just past the last line in [start, end) that is neither blank nor a comment, so the
- * trailing blank and comment lines of a table's span are left in place.
- */
-function contentEnd(src: string, start: number, end: number): number {
-  let lineEnd = end;
-  while (lineEnd > start) {
-    let lineStart = lineEnd;
-    // Step back over the terminator of the previous line, then to that line's start.
-    if (src[lineStart - 1] === "\n") lineStart--;
-    if (src[lineStart - 1] === "\r") lineStart--;
-    while (lineStart > start && src[lineStart - 1] !== "\n") lineStart--;
-    const text = src.slice(lineStart, lineEnd).trim();
-    if (text.length > 0 && !text.startsWith("#")) return lineEnd;
-    if (lineStart === lineEnd) break;
-    lineEnd = lineStart;
-  }
-  return end;
+let cutFallbacks = 0;
+
+/** How many managed-table cuts fell back to the whole span (expected to stay zero). */
+export function tomlCutFallbacks(): number {
+  return cutFallbacks;
 }
 
 /**
- * Where to cut a managed table's span. The candidate is its last content line (contentEnd); it
- * is accepted only if the table alone parses to the same value as the whole span, so a cut can
- * never fall inside a multiline string. Otherwise the cut moves forward a line at a time until
- * the values agree (the line that closes the string), keeping what follows it.
+ * Where to cut a managed table's span: just past the line holding its last token (from the
+ * scanner, which reads strings whole, so the cut can never fall inside a multiline string). The
+ * trailing blank and comment lines after it are left in place. One parse-equivalence check
+ * guards the result; if the table alone does not parse to the same value as its whole span, the
+ * whole span is used and counted as a fallback.
  */
-function safeContentEnd(src: string, start: number, end: number): number {
-  let parsedFull: unknown;
-  try {
-    parsedFull = Bun.TOML.parse(src.slice(start, end));
-  } catch {
-    return end;
-  }
-  const full = JSON.stringify(parsedFull);
-  const sameValue = (cut: number): boolean => {
-    try {
-      return JSON.stringify(Bun.TOML.parse(src.slice(start, cut))) === full;
-    } catch {
-      return false;
-    }
-  };
-  let cut = contentEnd(src, start, end);
-  while (cut < end && !sameValue(cut)) {
+export function sectionCut(src: string, sec: TomlSection): number {
+  const { startOffset: start, endOffset: end } = sec;
+  let cut = Math.min(Math.max(sec.lastTokenEnd, start), end);
+  if (cut < end) {
     const nl = src.indexOf("\n", cut);
     cut = nl === -1 || nl + 1 > end ? end : nl + 1;
   }
-  return cut;
+  if (cut === end) return end;
+  try {
+    const full = JSON.stringify(Bun.TOML.parse(src.slice(start, end)));
+    if (JSON.stringify(Bun.TOML.parse(src.slice(start, cut))) === full) return cut;
+  } catch {
+    // fall through to the counted fallback
+  }
+  cutFallbacks += 1;
+  return end;
 }
 
 export function rewriteCodexToml(
@@ -684,7 +686,7 @@ export function rewriteCodexToml(
     ) {
       spans.push({
         start: sec.startOffset,
-        end: safeContentEnd(original, sec.startOffset, sec.endOffset),
+        end: sectionCut(original, sec),
         name: sec.headerPath[1]!,
       });
     }
