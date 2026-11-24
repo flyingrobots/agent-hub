@@ -8,6 +8,16 @@ changes are called out under **Changed** with what to do.
 
 ## [Unreleased]
 
+### Added
+
+- Weekly Dependabot updates for npm devDependencies and SHA-pinned GitHub Actions
+  (flyingrobots/agent-hub#65).
+
+### Changed
+
+- `@types/bun` and `typescript` are pinned to the exact versions `bun.lock` resolves (1.4.5 and
+  5.9.3) instead of caret ranges (flyingrobots/agent-hub#65).
+
 ### Fixed
 
 - A target JSON config that is empty or holds only whitespace (as Antigravity creates
