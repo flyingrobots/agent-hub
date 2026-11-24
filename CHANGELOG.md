@@ -10,7 +10,7 @@ changes are called out under **Changed** with what to do.
 
 ### Added
 
-- Weekly Dependabot updates for npm devDependencies and SHA-pinned GitHub Actions
+- Weekly Dependabot updates for Bun devDependencies (`bun.lock`) and SHA-pinned GitHub Actions
   (flyingrobots/agent-hub#65).
 
 ### Changed

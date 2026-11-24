@@ -2,7 +2,7 @@
 # SHAs with a version comment; Dependabot keeps that form, bumping the SHA and the comment.
 version: 2
 updates:
-  - package-ecosystem: npm
+  - package-ecosystem: bun
     directory: /
     schedule:
       interval: weekly
