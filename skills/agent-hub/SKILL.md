@@ -136,7 +136,7 @@ To **remove** a managed MCP server, delete `<hub>/mcp/<server-name>` and run `sy
 
 Edit `<hub>/AGENTS.md` directly. Run `sync-agents --check` to confirm all managed symlinks remain valid and in sync.
 
-**Instructions for one machine only** (a service only it can reach, a local path) go in that machine's `${XDG_CONFIG_HOME:-~/.config}/agent-hub/AGENTS.md`, never in the hub. While it holds anything but whitespace, `sync-agents` appends it to the hub's text in a generated `rules-<hash>.md` in the state directory and points every rules link there. Then: run `sync-agents` after editing either file (`--check` exits 1 until you do), and never edit through `~/.claude/CLAUDE.md` or another rules link, since the next sync overwrites the generated file. Delete or empty the machine file and sync to point the links back at the hub.
+**Instructions for one machine only** (a service only it can reach, a local path) go in that machine's `${XDG_CONFIG_HOME:-~/.config}/agent-hub/AGENTS.md`, never in the hub. While it holds anything but whitespace, `sync-agents` appends it to the hub's text in a generated `rules-<hash>.md` in the state directory and points every rules link there. Then: run `sync-agents` after editing either file (`--check` exits 1 until you do), and never edit through `~/.claude/CLAUDE.md` or another rules link, since the next sync overwrites the generated file. Delete or empty the machine file and sync to point the links back at the hub. Write references in the hub file as absolute or `~/` paths. If the state directory is lost while a machine file is present, the rules links dangle; recover with `sync-agents --force` after `--explain`.
 
 ### 6. Recovering or Migrating Legacy v1 State
 

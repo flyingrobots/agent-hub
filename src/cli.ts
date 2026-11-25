@@ -14,7 +14,7 @@ import {
   type ApplyLockHandle,
 } from "./lock.ts";
 import { applyFileOp, planPrimitives, type PlannedFileOp } from "./primitives.ts";
-import { applyMachineRulesRemove, applyMachineRulesWrite, planMachineRules, type MachineRulesPlan } from "./machine-rules.ts";
+import { applyMachineRulesRemove, applyMachineRulesWrite, planMachineRules, planMachineRulesRemoval, type MachineRulesPlan } from "./machine-rules.ts";
 import { runProjectSync } from "./project.ts";
 import { EXEC_USAGE, runExecCli, runSecretCli, SECRET_USAGE } from "./vault-cli.ts";
 import { applyMcpTarget, planMcpSync, type PlaintextSecretWarning, type PlannedMcpTarget } from "./mcp.ts";
@@ -228,7 +228,7 @@ function buildSyncPlan(
   try {
     const linksPlanned = !(opts.skillOnly || opts.mcpOnly) && opts.scope.links.size > 0;
     const machineRules = linksPlanned
-      ? planMachineRules(canonicalHubPath, homeDir, opts.configBase, opts.rulesPath, state, opts.scope.links)
+      ? planMachineRules(canonicalHubPath, homeDir, opts.configBase, opts.rulesPath)
       : null;
     const linkPlans: PlannedLinkOp[] =
       opts.skillOnly || opts.mcpOnly
@@ -248,6 +248,8 @@ function buildSyncPlan(
                 }
               : {}),
           });
+
+    if (machineRules) machineRules.removeOp = planMachineRulesRemoval(machineRules, state, linkPlans.map((l) => l.dst));
 
     // Commands and agents generated from the hub live with rules and skills (the links domain).
     const filePlans: PlannedFileOp[] =

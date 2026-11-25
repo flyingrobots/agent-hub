@@ -55,6 +55,13 @@ module directly.
 | SYNC-MI-7 | A scoped run keeps a generated file an excluded target's rules link points at | Link targets; file present until an unscoped run | E2E | Implemented | `machine-instructions.test.ts › a scoped run never removes a generated file an excluded target's rules link still points at` |
 | SYNC-MI-8 | The machine file follows `$XDG_CONFIG_HOME` | Generated text from the XDG file only | E2E | Implemented | `machine-instructions.test.ts › the machine instructions file follows $XDG_CONFIG_HOME` |
 | SYNC-MI-9 | Project mode ignores machine instructions | Output does not name the machine file; project link unchanged | E2E | Implemented | `machine-instructions.test.ts › --project ignores the machine instructions file` |
+| SYNC-MI-10 | A scoped run under a `HOME` alias keeps a generated file an excluded target's link still uses | Excluded link target; file present | E2E | Implemented | `machine-instructions.test.ts › F-1: a scoped run under a HOME alias never removes a generated file an excluded target's link still uses` |
+| SYNC-MI-11 | A scoped run with `XDG_STATE_HOME` through an alias keeps a generated file still in use | Excluded link target; file present | E2E | Implemented | `machine-instructions.test.ts › F-1: a scoped run with XDG_STATE_HOME reached through an alias keeps a generated file still in use` |
+| SYNC-MI-12 | Under a `HOME` alias, `--check` is clean and one sync removes an unwanted generated file | `--check` 0; file absent after one sync; links at the hub | E2E | Implemented | `machine-instructions.test.ts › F-1/F-3: under a HOME alias, --check stays clean and one sync removes a generated file no longer wanted` |
+| SYNC-MI-13 | With the hub `AGENTS.md` gone, the removal reason does not claim links point at it | `rules-remove` line text | E2E | Implemented | `machine-instructions.test.ts › F-5: removing the generated file after the hub AGENTS.md is deleted does not claim the links point at it` |
+| SYNC-MI-14 | The generated file carries the hub and machine bytes unchanged | Byte subsequence | E2E | Implemented | `machine-instructions.test.ts › F-6: the generated file carries the hub and machine bytes unchanged` |
+| SYNC-MI-15 | The generated file is mode `0600` | File mode | E2E | Implemented | `machine-instructions.test.ts › F-7: the generated file is readable by its owner only` |
+| SYNC-MI-16 | A marker naming the machine file separates hub and machine text | Text between the two | E2E | Implemented | `machine-instructions.test.ts › F-9: a marker naming the machine file separates the hub text from the machine text` |
 
 ## Installer
 
