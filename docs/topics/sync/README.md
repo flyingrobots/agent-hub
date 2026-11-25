@@ -67,6 +67,32 @@ target.
 Rules and skills are symlinks into the hub. MCP servers are compiled per target; see
 [MCP servers](../mcp/README.md).
 
+### Machine instructions
+
+Instructions that are true on one machine only go in that machine's
+`${XDG_CONFIG_HOME:-~/.config}/agent-hub/AGENTS.md`, outside the hub
+([ADR 0002](../../adr/0002-machine-instructions-extend-the-hub-rules.md)). When that file holds
+anything but whitespace, a run writes a generated rules file,
+`${XDG_STATE_HOME:-~/.local/state}/agent-hub/rules-<hash>.md`, and points every rules link at it
+instead of at the hub's `AGENTS.md`. The generated file holds, in order:
+
+1. a one-line HTML comment naming both source files;
+2. the hub's `AGENTS.md`;
+3. the machine instructions.
+
+What changes while a machine file is present:
+
+- **A hub edit reaches agents at the next sync**, not at once. `--check` exits `1` and names the
+  generated file until a sync regenerates it.
+- **Edits made through a rules link are overwritten.** `~/.claude/CLAUDE.md` and the other rules
+  links lead to the generated file, so edit the hub's `AGENTS.md` or the machine file instead.
+- **`--dry-run` and `--explain`** name the machine file as the reason for the generated file and
+  for each rules link that points at it.
+
+Deleting the machine file, or emptying it, and syncing points the rules links back at the hub's
+`AGENTS.md` and removes the generated file. A `--targets` run keeps the generated file while an
+excluded target's rules link still points at it. Project mode ignores machine instructions.
+
 Syncing proves that links, serialized configs and the ledger are in the intended state. It does
 not prove that an agent application loaded and honored that configuration.
 

@@ -42,6 +42,20 @@ module directly.
 | SYNC-LINK-23 | With HOME reached through an alias, the record lives under the spelling with fewer symlinks; a later split is clean | Ledger key; no conflict | E2E | Implemented | `rekey.test.ts › with HOME reached through an alias, the record still lives under the spelling with fewer symlinks` |
 | SYNC-LINK-24 | A scoped run never moves another target's record into its own physical spelling | Record key kept; no re-key | E2E | Implemented | `rekey.test.ts › a scoped run never moves another target's record into its own physical spelling` |
 
+## Machine instructions
+
+| ID | Requirement | Oracle | Evidence | Status | Test |
+| --- | --- | --- | --- | --- | --- |
+| SYNC-MI-1 | A machine instructions file points every rules link at a generated file holding a notice, the hub text, then the machine text | Link targets; generated file bytes; `--check` 0 | E2E | Implemented | `machine-instructions.test.ts › a machine instructions file points every rules link at a generated file: notice, hub text, then machine text` |
+| SYNC-MI-2 | No machine file, or a whitespace-only one, links the hub `AGENTS.md` and writes no generated file | Link target; generated file absent | E2E | Implemented | `machine-instructions.test.ts › no machine file, or a whitespace-only one, links the hub AGENTS.md and writes no generated file` |
+| SYNC-MI-3 | After the hub or the machine file changes, `--check` exits 1 naming the generated file; a sync regenerates it | Exit codes; output names the file; new text present | E2E | Implemented | `machine-instructions.test.ts › editing the hub or the machine file makes --check fail naming the generated file, and a sync regenerates it` |
+| SYNC-MI-4 | Removing the machine file points rules links back at the hub and removes the generated file | Link targets; generated file absent; `--check` 0 | E2E | Implemented | `machine-instructions.test.ts › removing the machine file points the rules links back at the hub and removes the generated file` |
+| SYNC-MI-5 | A generated file deleted by hand is recreated | File bytes; link target; `--check` 0 | E2E | Implemented | `machine-instructions.test.ts › a generated file deleted by hand is recreated by the next sync` |
+| SYNC-MI-6 | `--dry-run` and `--explain` name the machine file and write nothing | Output; generated file and links absent | E2E | Implemented | `machine-instructions.test.ts › --dry-run and --explain name the machine instructions file and write no generated file` |
+| SYNC-MI-7 | A scoped run keeps a generated file an excluded target's rules link points at | Link targets; file present until an unscoped run | E2E | Implemented | `machine-instructions.test.ts › a scoped run never removes a generated file an excluded target's rules link still points at` |
+| SYNC-MI-8 | The machine file follows `$XDG_CONFIG_HOME` | Generated text from the XDG file only | E2E | Implemented | `machine-instructions.test.ts › the machine instructions file follows $XDG_CONFIG_HOME` |
+| SYNC-MI-9 | Project mode ignores machine instructions | Output does not name the machine file; project link unchanged | E2E | Implemented | `machine-instructions.test.ts › --project ignores the machine instructions file` |
+
 ## Installer
 
 | ID | Requirement | Oracle | Evidence | Status | Test |

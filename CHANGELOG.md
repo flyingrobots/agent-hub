@@ -10,6 +10,12 @@ changes are called out under **Changed** with what to do.
 
 ### Added
 
+- **Machine instructions** (ADR 0002, flyingrobots/agent-hub#69): an optional
+  `${XDG_CONFIG_HOME:-~/.config}/agent-hub/AGENTS.md` holds instructions for one machine only.
+  While it holds anything but whitespace, `sync-agents` appends it to the hub's `AGENTS.md` in a
+  generated rules file under the state directory and points every rules link there. With no such
+  file nothing changes. While one is present, a hub `AGENTS.md` edit reaches agents at the next
+  sync (`--check` reports it), and edits made through a rules link are overwritten.
 - Weekly Dependabot updates for Bun devDependencies (`bun.lock`) and SHA-pinned GitHub Actions
   (flyingrobots/agent-hub#65).
 
