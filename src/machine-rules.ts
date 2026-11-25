@@ -51,8 +51,16 @@ function lstatOrNull(path: string) {
 }
 
 function readIfFile(path: string): Buffer | null {
-  if (!existsSync(path)) return null;
-  if (!statSync(path).isFile()) throw new Error(`machine instructions ${path} is not a regular file`);
+  // Not existsSync: it answers false for a path it cannot reach (EACCES), which would silently
+  // drop the machine instructions. Only a missing file means "no machine instructions".
+  let st;
+  try {
+    st = statSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+    throw err;
+  }
+  if (!st.isFile()) throw new Error(`machine instructions ${path} is not a regular file`);
   return readFileSync(path);
 }
 
