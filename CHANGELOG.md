@@ -38,7 +38,10 @@ machine without a machine instructions file.
   file ([#54](https://github.com/flyingrobots/agent-hub/issues/54)).
 - On macOS, `--adopt` no longer refuses an identical copy because one side carries
   `com.apple.provenance`, the attribute macOS adds to files written by some applications. Any
-  other differing extended attribute still blocks adoption.
+  other differing extended attribute still blocks adoption. The attribute is left out of every
+  macOS metadata read, including recovery-journal snapshots. **What to do:** if a v0.2.0 run was
+  interrupted, finish it (run `sync-agents` once) before upgrading; otherwise its recovery can report
+  `ambiguous` and asks you to inspect the target.
 
 ## [0.2.0] - 2026-11-23
 
