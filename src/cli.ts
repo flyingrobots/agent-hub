@@ -14,6 +14,7 @@ import {
   type ApplyLockHandle,
 } from "./lock.ts";
 import { applyFileOp, planPrimitives, type PlannedFileOp } from "./primitives.ts";
+import { applyMachineRulesRemove, applyMachineRulesWrite, planMachineRules, planMachineRulesRemoval, type MachineRulesPlan } from "./machine-rules.ts";
 import { runProjectSync } from "./project.ts";
 import { EXEC_USAGE, runExecCli, runSecretCli, SECRET_USAGE } from "./vault-cli.ts";
 import { applyMcpTarget, planMcpSync, type PlaintextSecretWarning, type PlannedMcpTarget } from "./mcp.ts";
@@ -173,6 +174,8 @@ const REKEY_ACTIONS = new Set(["rekey-link-record", "rekey-mcp-record"]);
 
 type BuiltSyncPlan = {
   stagedSkills: StagedSkillPlan;
+  /** Machine instructions (ADR 0002); null when links are not planned in this run. */
+  machineRules: MachineRulesPlan | null;
   linkPlans: PlannedLinkOp[];
   filePlans: PlannedFileOp[];
   mcpTargets: PlannedMcpTarget[];
@@ -203,6 +206,8 @@ function buildSyncPlan(
     configPath: string;
     configBase: string;
     disownLegacy: Array<{ agent: AgentId; name: string }>;
+    /** Where the generated rules file lives while this machine has machine instructions. */
+    rulesPath: string;
   },
 ): BuiltSyncPlan {
   const legacyV1 = loadLegacyV1Manifest(canonicalHubPath, state);
@@ -221,6 +226,10 @@ function buildSyncPlan(
         };
 
   try {
+    const linksPlanned = !(opts.skillOnly || opts.mcpOnly) && opts.scope.links.size > 0;
+    const machineRules = linksPlanned
+      ? planMachineRules(canonicalHubPath, homeDir, opts.configBase, opts.rulesPath)
+      : null;
     const linkPlans: PlannedLinkOp[] =
       opts.skillOnly || opts.mcpOnly
         ? []
@@ -230,7 +239,17 @@ function buildSyncPlan(
             activeTargets: opts.scope.links,
             configBase: opts.configBase,
             plannedSkillSources: stagedSkills.plannedSkillSources,
+            ...(machineRules
+              ? {
+                  rules: {
+                    src: machineRules.rulesSrc,
+                    ...(machineRules.writeOp ? { because: `machine instructions in ${machineRules.machineFile}` } : {}),
+                  },
+                }
+              : {}),
           });
+
+    if (machineRules) machineRules.removeOp = planMachineRulesRemoval(machineRules, state, linkPlans.map((l) => l.dst));
 
     // Commands and agents generated from the hub live with rules and skills (the links domain).
     const filePlans: PlannedFileOp[] =
@@ -254,7 +273,9 @@ function buildSyncPlan(
 
     const allOps: PlannedOp[] = [
       ...stagedSkills.installs.map((s) => s.op),
+      ...(machineRules?.writeOp ? [machineRules.writeOp] : []),
       ...linkPlans.map((l) => l.op),
+      ...(machineRules?.removeOp ? [machineRules.removeOp] : []),
       ...filePlans.map((f) => f.op),
       ...mcpPlan.globalOps,
       ...mcpPlan.targets.flatMap((t) => t.ops),
@@ -278,6 +299,7 @@ function buildSyncPlan(
 
     return {
       stagedSkills,
+      machineRules,
       linkPlans,
       filePlans,
       mcpTargets: mcpPlan.targets,
@@ -501,6 +523,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
         configPath,
         configBase,
         disownLegacy,
+        rulesPath: paths.rulesPath,
       });
       emitWarnings(plan.warnings);
 
@@ -613,6 +636,7 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       configPath,
       configBase,
       disownLegacy,
+      rulesPath: paths.rulesPath,
     });
     emitWarnings(plan.warnings);
 
@@ -659,6 +683,20 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
       });
     }
 
+    // The generated rules file exists before any link points at it, and goes only after every
+    // link has been pointed back at the hub (ADR 0002).
+    const machineRules = plan.machineRules;
+    if (machineRules?.writeOp?.status === "change") {
+      const op = machineRules.writeOp;
+      remainingWork.push({
+        label: `${op.action} ${op.destination}`,
+        run: () => {
+          applyMachineRulesWrite(machineRules);
+          emit("stdout", "agent_hub.op", formatOpSummary("sync", op), { phase: "sync", op: opData(op) });
+        },
+      });
+    }
+
     for (const lp of plan.linkPlans) {
       if (lp.op.status !== "change") continue;
       remainingWork.push({
@@ -674,6 +712,17 @@ export function runSync(options: SyncOptions, hooks?: ApplyHooks): SyncRunResult
             hooks,
           );
           emit("stdout", "agent_hub.op", formatOpSummary("sync", lp.op), { phase: "sync", op: opData(lp.op) });
+        },
+      });
+    }
+
+    if (machineRules?.removeOp) {
+      const op = machineRules.removeOp;
+      remainingWork.push({
+        label: `${op.action} ${op.destination}`,
+        run: () => {
+          applyMachineRulesRemove(machineRules);
+          emit("stdout", "agent_hub.op", formatOpSummary("sync", op), { phase: "sync", op: opData(op) });
         },
       });
     }

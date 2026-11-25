@@ -34,6 +34,8 @@ export type StatePaths = {
   statePath: string;
   journalPath: string;
   lockPath: string;
+  /** The generated rules file used while this machine has machine instructions (ADR 0002). */
+  rulesPath: string;
 };
 
 const VALID_BASES = new Set<string>(["created", "adopted", "forced"]);
@@ -247,6 +249,7 @@ export function getStatePaths(
     statePath: join(stateDir, `state-${hubHash}.json`),
     journalPath: join(stateDir, `journal-${hubHash}.json`),
     lockPath: join(stateDir, "apply.lock"),
+    rulesPath: join(stateDir, `rules-${hubHash}.md`),
   };
 }
 

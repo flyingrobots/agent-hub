@@ -24,6 +24,7 @@ Start with the [README](../README.md) for installation and a first sync.
 - [GLOSSARY.md](../GLOSSARY.md): the project's terms, and the words to avoid for each.
 - [CHANGELOG.md](../CHANGELOG.md): what changed in each release.
 - [ADR 0001](adr/0001-machine-overrides-live-outside-the-hub.md): why machine overrides live outside the hub (decided, not yet implemented).
+- [ADR 0002](adr/0002-machine-instructions-extend-the-hub-rules.md): why one machine's extra instructions are appended to the hub's `AGENTS.md` in a generated rules file.
 - GitHub issues carry planned work, in the `issue-dag/2` format read by the
   issue templates in [`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/config.yml).
   Planned behavior never appears in a topic reference.

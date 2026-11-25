@@ -31,6 +31,10 @@ _Avoid_: override, agent override
 A variation of one MCP server for one machine, kept outside the hub on that machine.
 _Avoid_: override, local override, host override
 
+**Machine instructions**:
+Instructions for one machine only, kept outside the hub on that machine and appended to the hub's `AGENTS.md` for every agent there.
+_Avoid_: local rules, local AGENTS.md
+
 ### How configuration moves
 
 **Sync**:

@@ -67,6 +67,48 @@ target.
 Rules and skills are symlinks into the hub. MCP servers are compiled per target; see
 [MCP servers](../mcp/README.md).
 
+### Machine instructions
+
+Instructions that are true on one machine only go in that machine's
+`${XDG_CONFIG_HOME:-~/.config}/agent-hub/AGENTS.md`, outside the hub
+([ADR 0002](../../adr/0002-machine-instructions-extend-the-hub-rules.md)). When that file holds
+anything but whitespace, a run writes a generated rules file,
+`${XDG_STATE_HOME:-~/.local/state}/agent-hub/rules-<hash>.md` (`<hash>` is the one in the ledger's
+`state-<hash>.json`, from the hub's path), and points every rules link at it instead of at the
+hub's `AGENTS.md`. The file is readable by its owner only, and holds, byte for byte:
+
+1. an HTML comment naming both source files;
+2. the hub's `AGENTS.md`;
+3. an HTML comment marking the start of this machine's instructions;
+4. the machine instructions.
+
+Directories on these paths are resolved through symlinks, so running under another spelling of
+`HOME` or `XDG_STATE_HOME` names the same files and is not drift. A symlink in the generated
+file's own place is replaced, never written through. A machine instructions path that exists but
+is not a regular file (a directory, say), or cannot be read, stops every run with one `error`
+line naming it, and exit `1`. A generated file whose mode drifted from `0600` is reported by
+`--check` and reset by the next sync.
+
+What changes while a machine file is present:
+
+- **A hub edit reaches agents at the next sync**, not at once. `--check` exits `1` and names the
+  generated file until a sync regenerates it.
+- **Edits made through a rules link are overwritten.** `~/.claude/CLAUDE.md` and the other rules
+  links lead to the generated file, so edit the hub's `AGENTS.md` or the machine file instead.
+- **`--dry-run` and `--explain`** name the machine file as the reason for the generated file and
+  for each rules link the run creates or re-points.
+- **Relative references resolve elsewhere.** An agent that resolves a rules link before reading
+  relative paths in it finds itself in the state directory, not the hub. Write references in the
+  hub's `AGENTS.md` as absolute or `~/` paths.
+- **Losing the state directory breaks the rules links.** The generated file lives there, so if
+  the state directory is deleted, or `XDG_STATE_HOME` changes, every rules link dangles, and with
+  the ledger gone a sync and `--adopt` refuse them as unmanaged broken symlinks. Run
+  `sync-agents --force` to recreate them.
+
+Deleting the machine file, or emptying it, and syncing points the rules links back at the hub's
+`AGENTS.md` and removes the generated file. A `--targets` run keeps the generated file while an
+excluded target's rules link still points at it. Project mode ignores machine instructions.
+
 Syncing proves that links, serialized configs and the ledger are in the intended state. It does
 not prove that an agent application loaded and honored that configuration.
 
