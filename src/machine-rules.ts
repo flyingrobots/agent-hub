@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { resolveLinkTargetId } from "./adapters.ts";
 import { atomicWriteDurable, canonicalizeHubPath, physicalPath } from "./paths.ts";
@@ -41,6 +41,15 @@ export function generatedRulesContent(hubRules: string, hubBytes: Buffer, machin
   return Buffer.concat([Buffer.from(notice), nl(hubBytes), Buffer.from(marker), nl(machineBytes)]);
 }
 
+function lstatOrNull(path: string) {
+  try {
+    return lstatSync(path);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code === "ENOENT") return null;
+    throw err;
+  }
+}
+
 function readIfFile(path: string): Buffer | null {
   if (!existsSync(path)) return null;
   if (!statSync(path).isFile()) throw new Error(`machine instructions ${path} is not a regular file`);
@@ -53,17 +62,36 @@ export function planMachineRules(
   configBase: string,
   rulesPath: string,
 ): MachineRulesPlan {
+  try {
+    return planMachineRulesUnwrapped(canonicalHubPath, homeDir, configBase, rulesPath);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.startsWith("machine instructions")) throw err;
+    throw new Error(`machine instructions ${machineInstructionsPath(configBase)}: ${msg}`);
+  }
+}
+
+function planMachineRulesUnwrapped(canonicalHubPath: string, homeDir: string, configBase: string, rulesPath: string): MachineRulesPlan {
   const hubRules = join(canonicalHubPath, "AGENTS.md");
+  // The machine file is only read, so following a symlink to it is fine. The generated file is
+  // written and removed, so only its directories are resolved: a symlink in its place is replaced,
+  // never written or deleted through.
   const machineFile = canonicalizeHubPath(machineInstructionsPath(configBase), homeDir, "/");
-  const generatedPath = canonicalizeHubPath(rulesPath, homeDir, "/");
+  const generatedPath = physicalPath(rulesPath);
   const hubBytes = existsSync(hubRules) && statSync(hubRules).isFile() ? readFileSync(hubRules) : null;
   const machineBytes = readIfFile(machineFile);
   const machineEmpty = machineBytes === null || machineBytes.toString("utf8").trim() === "";
 
   if (hubBytes !== null && !machineEmpty) {
     const content = generatedRulesContent(hubRules, hubBytes, machineFile, machineBytes!);
-    const current = existsSync(generatedPath) ? readFileSync(generatedPath) : null;
-    const same = current !== null && current.equals(content);
+    let current: Buffer | null = null;
+    let modeOk = false;
+    const lst = lstatOrNull(generatedPath);
+    if (lst?.isFile()) {
+      current = readFileSync(generatedPath);
+      modeOk = (lst.mode & 0o777) === 0o600;
+    }
+    const same = current !== null && current.equals(content) && modeOk;
     return {
       rulesSrc: generatedPath,
       machineFile,
@@ -76,7 +104,14 @@ export function planMachineRules(
         action: same ? "keep" : "rules-generate",
         status: same ? "ok" : "change",
         destination: generatedPath,
-        observed: current === null ? "absent" : same ? "generated rules are current" : "generated rules are stale",
+        observed:
+          current === null
+            ? lst ? "not a regular file" : "absent"
+            : same
+              ? "generated rules are current"
+              : current.equals(content)
+                ? "generated rules are current but not mode 0600"
+                : "generated rules are stale",
         intended: `${hubRules} followed by ${machineFile}`,
         ownershipBasis: "generated",
         reason: `machine instructions in ${machineFile} extend ${hubRules}${same ? "" : current === null ? "; writing the generated rules" : "; regenerating"}`,
@@ -110,7 +145,7 @@ export function planMachineRulesRemoval(
   state: OwnershipStateV2,
   linkDestinations: Iterable<string>,
 ): PlannedOp | null {
-  if (plan.unwantedBecause === null || !existsSync(plan.generatedPath)) return null;
+  if (plan.unwantedBecause === null || lstatOrNull(plan.generatedPath) === null) return null;
   const touched = new Set([...linkDestinations].map((d) => physicalPath(d)));
   const target = physicalPath(plan.generatedPath);
   const held = Object.entries(state.links).some(

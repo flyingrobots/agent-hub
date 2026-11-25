@@ -62,6 +62,9 @@ module directly.
 | SYNC-MI-14 | The generated file carries the hub and machine bytes unchanged | Byte subsequence | E2E | Implemented | `machine-instructions.test.ts › F-6: the generated file carries the hub and machine bytes unchanged` |
 | SYNC-MI-15 | The generated file is mode `0600` | File mode | E2E | Implemented | `machine-instructions.test.ts › F-7: the generated file is readable by its owner only` |
 | SYNC-MI-16 | A marker naming the machine file separates hub and machine text | Text between the two | E2E | Implemented | `machine-instructions.test.ts › F-9: a marker naming the machine file separates the hub text from the machine text` |
+| SYNC-MI-17 | A symlink at the generated path is replaced, never written or deleted through | Sentinel bytes unchanged after write and removal | E2E | Implemented | `machine-instructions.test.ts › a symlink at the generated path is replaced, never written or deleted through` |
+| SYNC-MI-18 | `--check` reports a generated file whose mode drifted from `0600`; a sync resets it | Exit codes; mode | E2E | Implemented | `machine-instructions.test.ts › --check reports a generated file whose mode drifted from 0600` |
+| SYNC-MI-19 | An unreadable machine instructions file fails the run with an error naming it | Exit 1; error text | E2E | Implemented | `machine-instructions.test.ts › an unreadable machine instructions file fails with an error naming it as machine instructions` |
 
 ## Installer
 

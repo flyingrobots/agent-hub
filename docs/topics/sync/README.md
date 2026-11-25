@@ -82,9 +82,12 @@ hub's `AGENTS.md`. The file is readable by its owner only, and holds, byte for b
 3. an HTML comment marking the start of this machine's instructions;
 4. the machine instructions.
 
-Paths are resolved through symlinks, so running under another spelling of `HOME` or
-`XDG_STATE_HOME` names the same files and is not drift. A machine instructions path that exists
-but is not a regular file (a directory, say) stops every run with one `error` line and exit `1`.
+Directories on these paths are resolved through symlinks, so running under another spelling of
+`HOME` or `XDG_STATE_HOME` names the same files and is not drift. A symlink in the generated
+file's own place is replaced, never written through. A machine instructions path that exists but
+is not a regular file (a directory, say), or cannot be read, stops every run with one `error`
+line naming it, and exit `1`. A generated file whose mode drifted from `0600` is reported by
+`--check` and reset by the next sync.
 
 What changes while a machine file is present:
 
