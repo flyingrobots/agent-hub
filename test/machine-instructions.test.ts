@@ -286,3 +286,43 @@ describe("machine instructions under other spellings and edge inputs (Baker Stre
     expect(between).toContain(sb.machineFile);
   });
 });
+
+describe("machine instructions: blind-pass findings (Baker Street BS-agent-hub-70-r1-blind)", () => {
+  test("a symlink at the generated path is replaced, never written or deleted through", () => {
+    const sb = sandbox();
+    const sentinel = join(sb.home, "sentinel.md");
+    writeFileSync(sentinel, "keep me\n");
+    mkdirSync(dirname(sb.generated), { recursive: true });
+    symlinkSync(sentinel, sb.generated);
+    writeMachine(sb.machineFile, MACHINE_TEXT);
+    expect(runSync(sb.base).exitCode).toBe(0);
+    expect(readFileSync(sentinel, "utf8")).toBe("keep me\n");
+    rmSync(sb.machineFile);
+    expect(runSync(sb.base).exitCode).toBe(0);
+    expect(readFileSync(sentinel, "utf8")).toBe("keep me\n");
+  });
+
+  test("--check reports a generated file whose mode drifted from 0600", () => {
+    const sb = sandbox();
+    writeMachine(sb.machineFile, MACHINE_TEXT);
+    expect(runSync(sb.base).exitCode).toBe(0);
+    chmodSync(sb.generated, 0o644);
+    expect(runSync({ ...sb.base, checkOnly: true }).exitCode).toBe(1);
+    expect(runSync(sb.base).exitCode).toBe(0);
+    expect(statSync(sb.generated).mode & 0o777).toBe(0o600);
+  });
+
+  test("an unreadable machine instructions file fails with an error naming it as machine instructions", () => {
+    if (process.getuid?.() === 0) return; // root reads anything
+    const sb = sandbox();
+    writeMachine(sb.machineFile, MACHINE_TEXT);
+    chmodSync(dirname(sb.machineFile), 0o000);
+    try {
+      const r = runSync(sb.base);
+      expect(r.exitCode).toBe(1);
+      expect(out(r)).toContain("machine instructions");
+    } finally {
+      chmodSync(dirname(sb.machineFile), 0o755);
+    }
+  });
+});
