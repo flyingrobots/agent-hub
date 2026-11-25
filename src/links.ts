@@ -516,13 +516,20 @@ export function planLinkSync(
     plannedSkillSources?: Map<string, string>;
     /** XDG config base (`$XDG_CONFIG_HOME` or `~/.config`); defaults to `~/.config`. */
     configBase?: string;
+    /**
+     * What rules links point at: the hub `AGENTS.md` by default, or the generated rules file
+     * while this machine has machine instructions (ADR 0002), with the reason they are named by.
+     */
+    rules?: { src: string; because?: string };
   },
 ): PlannedLinkOp[] {
   const configBase = opts.configBase ?? join(homeDir, ".config");
   const plans: PlannedLinkOp[] = [];
-  const canonicalRules = join(canonicalHubPath, "AGENTS.md");
+  const hubRules = join(canonicalHubPath, "AGENTS.md");
+  const canonicalRules = opts.rules?.src ?? hubRules;
   const canonicalSkills = join(canonicalHubPath, "skills");
-  const hasRules = existsSync(canonicalRules) && statSync(canonicalRules).isFile();
+  // The hub `AGENTS.md` decides whether there are rules at all; a generated file may not exist yet.
+  const hasRules = existsSync(hubRules) && statSync(hubRules).isFile();
   const skillNames = collectCanonicalSkillNames(canonicalHubPath, plannedSkillNames);
   const hasSkillsDir =
     (existsSync(canonicalSkills) && statSync(canonicalSkills).isDirectory()) ||
@@ -751,6 +758,16 @@ export function planLinkSync(
       if (ownerTarget === null || !opts.activeTargets.has(ownerTarget)) continue;
     }
     plans.push(planPruneLinkOp(dst, state.links[dst]!));
+  }
+
+  // Name the machine instructions as the reason a rules link changes (ADR 0002).
+  const because = opts.rules?.because;
+  if (because) {
+    for (const p of plans) {
+      if (p.linkKind === "rules" && p.src === canonicalRules && p.op.status === "change") {
+        p.op = { ...p.op, reason: `${p.op.reason} (${because})` };
+      }
+    }
   }
 
   return plans;
