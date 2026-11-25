@@ -17,7 +17,7 @@ Decided with the maintainer on 2026-11-23 (flyingrobots/agent-hub#55). Not yet i
 
 ## Consequences
 
-- **Scope.** A machine override changes MCP servers the hub already defines. It cannot add a server, and it does not reach skills, instructions, commands or subagents. A server that exists on one machine only stays an unowned entry in that agent.
+- **Scope.** A machine override changes MCP servers the hub already defines. It cannot add a server, and it does not reach skills, commands or subagents. Instructions vary per machine through a separate file; see [ADR 0002](0002-machine-instructions-extend-the-hub-rules.md). A server that exists on one machine only stays an unowned entry in that agent.
 - **Shape and precedence.** A machine override for a server has the shape of that server's own `mcp.json` (a base and target overrides) and is layered last: hub base, hub target overrides, machine base, machine target overrides. It can change fields, disable the server on this machine, or disable it for one target.
 - **Name clash.** A server disabled for a target by a machine override is not planned for that target, so an unowned entry of the same name there is left alone and is not a conflict. An entry `sync-agents` owns is removed, as when the hub disables it.
 - **In sync means hub plus machine overrides.** `--check` compares targets with the hub as modified on this machine. So that an override never hides silently, `--explain` and `--dry-run` name the machine override as the reason for each server it changes or omits, and the summary counts the overrides in effect.
