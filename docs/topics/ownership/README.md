@@ -67,7 +67,9 @@ extended attribute names and raw values plus ACLs. Extended attributes are read 
 macOS and Linux. ACLs are read natively on macOS; on Linux they are read with `getfacl` when it
 is installed, and otherwise are not verified and do not block adoption. Timestamps and inode
 identity are not compared. Nor is macOS's `com.apple.provenance` attribute, which records the
-application that wrote a file and so differs between identical copies.
+application that wrote a file and so differs between identical copies. It is left out of every
+metadata read on macOS, not only adoption: skill-install matching and the snapshots in a recovery
+journal ignore it too.
 
 ## Write-ahead recovery
 

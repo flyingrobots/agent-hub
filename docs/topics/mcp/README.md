@@ -263,7 +263,11 @@ when:
 
 A `.json` that holds nothing, or only spaces, tabs and line breaks, is not refused: it is treated
 like an absent file and written. (Antigravity creates `mcp_config.json` as an empty file.) A
-truncated document, such as a lone `{`, is still refused.
+truncated document, such as a lone `{`, is still refused. An empty file is not checked for
+being mid-rewrite: if another tool has just truncated its config to rewrite it in place and is
+still writing when the sync replaces the file, that tool's write lands in the replaced file and is
+lost until it writes again. Any tool that rewrites its config in place during a sync can lose a
+write this way; an empty file only widens the window.
 
 Codex is refused on invalid TOML, a non-table `mcp_servers`, or a form the editor cannot change
 safely (above).
