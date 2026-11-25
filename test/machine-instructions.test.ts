@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
+  statSync,
+  symlinkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
@@ -195,5 +197,92 @@ describe("machine instructions (ADR 0002, flyingrobots/agent-hub#69)", () => {
     expect(p.exitCode).toBe(0);
     expect(readlinkSync(join(repo, "CLAUDE.md"))).toBe(join(".agents", "AGENTS.md"));
     expect(existsSync(sb.generated)).toBe(false);
+  });
+});
+
+describe("machine instructions under other spellings and edge inputs (Baker Street BS-agent-hub-70-r1)", () => {
+  const aliasOf = (sb: ReturnType<typeof sandbox>) => {
+    const alias = `${sb.home}-alias`;
+    symlinkSync(sb.home, alias);
+    tempRoots.push(alias);
+    return {
+      ...sb.base,
+      homeDir: alias,
+      xdgConfigHome: join(alias, ".config"),
+      xdgStateHome: join(alias, ".local", "state"),
+    };
+  };
+
+  test("F-1: a scoped run under a HOME alias never removes a generated file an excluded target's link still uses", () => {
+    const sb = sandbox();
+    writeMachine(sb.machineFile, MACHINE_TEXT);
+    expect(runSync(sb.base).exitCode).toBe(0);
+    rmSync(sb.machineFile);
+    const viaAlias = aliasOf(sb);
+    expect(runSync({ ...viaAlias, targets: sel("claude") }).exitCode).toBe(0);
+    expect(readlinkSync(sb.rules.codex)).toBe(sb.generated);
+    expect(existsSync(sb.generated)).toBe(true);
+  });
+
+  test("F-1: a scoped run with XDG_STATE_HOME reached through an alias keeps a generated file still in use", () => {
+    const sb = sandbox();
+    writeMachine(sb.machineFile, MACHINE_TEXT);
+    expect(runSync(sb.base).exitCode).toBe(0);
+    rmSync(sb.machineFile);
+    const stateAlias = join(sb.home, "state-alias");
+    symlinkSync(join(sb.home, ".local", "state"), stateAlias);
+    expect(runSync({ ...sb.base, xdgStateHome: stateAlias, targets: sel("claude") }).exitCode).toBe(0);
+    expect(readlinkSync(sb.rules.codex)).toBe(sb.generated);
+    expect(existsSync(sb.generated)).toBe(true);
+  });
+
+  test("F-1/F-3: under a HOME alias, --check stays clean and one sync removes a generated file no longer wanted", () => {
+    const sb = sandbox();
+    writeMachine(sb.machineFile, MACHINE_TEXT);
+    expect(runSync(sb.base).exitCode).toBe(0);
+    const viaAlias = aliasOf(sb);
+    expect(runSync({ ...viaAlias, checkOnly: true }).exitCode).toBe(0);
+    rmSync(sb.machineFile);
+    expect(runSync(viaAlias).exitCode).toBe(0);
+    expect(existsSync(sb.generated)).toBe(false);
+    for (const link of Object.values(sb.rules)) expect(readlinkSync(link)).toBe(join(sb.hub, "AGENTS.md"));
+  });
+
+  test("F-5: removing the generated file after the hub AGENTS.md is deleted does not claim the links point at it", () => {
+    const sb = sandbox();
+    writeMachine(sb.machineFile, MACHINE_TEXT);
+    expect(runSync(sb.base).exitCode).toBe(0);
+    rmSync(join(sb.hub, "AGENTS.md"));
+    const r = runSync({ ...sb.base, dryRun: true });
+    const removal = out(r).split("\n").find((l) => l.includes("rules-remove"));
+    expect(removal).toBeDefined();
+    expect(removal).not.toContain("point at");
+  });
+
+  test("F-6: the generated file carries the hub and machine bytes unchanged", () => {
+    const sb = sandbox();
+    const hubBytes = Buffer.from([0x23, 0x20, 0x48, 0xe9, 0x0a]); // "# H", a Latin-1 byte, newline
+    writeFileSync(join(sb.hub, "AGENTS.md"), hubBytes);
+    writeMachine(sb.machineFile, MACHINE_TEXT);
+    expect(runSync(sb.base).exitCode).toBe(0);
+    const bytes = readFileSync(sb.generated);
+    expect(bytes.includes(hubBytes)).toBe(true);
+  });
+
+  test("F-7: the generated file is readable by its owner only", () => {
+    const sb = sandbox();
+    writeMachine(sb.machineFile, MACHINE_TEXT);
+    expect(runSync(sb.base).exitCode).toBe(0);
+    expect(statSync(sb.generated).mode & 0o777).toBe(0o600);
+  });
+
+  test("F-9: a marker naming the machine file separates the hub text from the machine text", () => {
+    const sb = sandbox();
+    writeMachine(sb.machineFile, MACHINE_TEXT);
+    expect(runSync(sb.base).exitCode).toBe(0);
+    const text = readFileSync(sb.generated, "utf8");
+    const between = text.slice(text.indexOf(HUB_TEXT) + HUB_TEXT.length, text.indexOf(MACHINE_TEXT));
+    expect(between).toContain("<!--");
+    expect(between).toContain(sb.machineFile);
   });
 });
