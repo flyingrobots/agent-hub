@@ -8,6 +8,11 @@ changes are called out under **Changed** with what to do.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-25
+
+Machine instructions: per-machine additions to the hub's `AGENTS.md`. Nothing changes on a
+machine without a machine instructions file.
+
 ### Added
 
 - **Machine instructions** (ADR 0002, flyingrobots/agent-hub#69): an optional
@@ -220,6 +225,7 @@ pull, commands and agents, JSON Lines output, and standalone binaries.
 - Two prune assertions in the test suite that could never fail (they used
   `existsSync` on a dangling link) now use `lstat`.
 
-[Unreleased]: https://github.com/flyingrobots/agent-hub/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/flyingrobots/agent-hub/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/flyingrobots/agent-hub/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/flyingrobots/agent-hub/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/flyingrobots/agent-hub/releases/tag/v0.1.0
